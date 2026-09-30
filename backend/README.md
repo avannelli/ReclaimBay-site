@@ -1,7 +1,8 @@
 # ReclaimBay backend
 
 A small Fastify + Prisma (PostgreSQL) service for anonymous product analytics,
-referral attribution, and a private admin funnel. The public site stays a
+referral attribution, a private admin funnel, and manual prospect research
+with transparent scoring (see [PROSPECTS.md](PROSPECTS.md)). The public site stays a
 static export on Cloudflare Pages. This service runs separately on Railway.
 
 ## Privacy guarantee
@@ -94,7 +95,11 @@ local site through.
 | `npm run db:migrate`      | `prisma migrate deploy` (applies committed migrations)     |
 | `npm run db:migrate:dev`  | `prisma migrate dev` (creates a new migration while developing) |
 | `npm run prospect:create` | Creates one prospect (after `npm run build`)               |
+| `npm run prospects:rescore` | Recomputes cached scores for rows from an older scoring version (`-- --all` for every row) |
 | `npm run seed:dev`        | Seeds three example prospects. Refuses to run in production or on Railway |
+| `npm test`                | Unit tests for scoring and status rules (no database)      |
+| `npm run test:integration`| Service and admin tests against `TEST_DATABASE_URL` (see [PROSPECTS.md](PROSPECTS.md#tests)) |
+| `npm run typecheck`       | Type-checks `src` and `test`                               |
 
 ## Environment variables
 
@@ -131,7 +136,17 @@ Frontend (Cloudflare Pages build variable, inlined at build time):
 | GET    | `/admin/login`    | Sign-in form                                                 |
 | POST   | `/admin/login`    | Rate limited to 10 attempts per 15 min per IP                |
 | POST   | `/admin/logout`   | Clears the session                                           |
-| POST   | `/admin/prospects`| Creates a prospect from the dashboard form                   |
+| GET    | `/admin/prospects`| Prospect list with search, filters, and sorting              |
+| GET    | `/admin/prospects/new` | Create form                                             |
+| POST   | `/admin/prospects`| Creates a prospect                                           |
+| GET    | `/admin/prospects/:id` | Detail: score breakdown, status, evidence, notes        |
+| GET/POST | `/admin/prospects/:id/edit`, `/admin/prospects/:id` | Edit form / save (recomputes the score) |
+| POST   | `/admin/prospects/:id/status` | Status change, checked against the lifecycle rules |
+| POST   | `/admin/prospects/:id/notes` | Adds a note                                        |
+| POST   | `/admin/prospects/:id/evidence` | Adds evidence; `…/evidence/:evidenceId/delete` removes it |
+
+Every `/admin` route except login and logout requires a session, and every
+admin POST must be same-origin. Admin write routes allow 60 requests per minute.
 
 ## Admin access
 
@@ -151,21 +166,23 @@ The dashboard shows:
   sample activity, last activity, and intent, plus a "No referral (direct)"
   row. **High intent** means a real scan and a real export.
 
-## Creating prospects
+## Prospects
 
-From the dashboard, use the **New prospect** form. It shows the referral link
-straight away.
+Prospects are managed at `/admin/prospects`. [PROSPECTS.md](PROSPECTS.md)
+documents the data model, each scoring signal's exact rules and weight, the
+status lifecycle (including the Milestone 1 status mapping), and what is
+deliberately not collected.
 
-Or from the command line, against whichever database `DATABASE_URL` points to:
+From the command line, against whichever database `DATABASE_URL` points to:
 
 ```bash
 npm run build
-npm run prospect:create -- --name "Smith Auto" --website smithauto.com --campaign launch-v1
+npm run prospect:create -- --name "Smith Auto" --website smithauto.com --city Springfield --state IL --campaign launch-v1
 ```
 
-`npm run seed:dev` creates Smith Auto, Ace Automotive, and Valley Motors for
-local testing. It exits with an error when `NODE_ENV=production` or on Railway,
-and nothing seeds automatically.
+`npm run seed:dev` creates Smith Auto, Ace Automotive, and Valley Motors
+(example.com data) for local testing. It exits with an error when
+`NODE_ENV=production` or on Railway, and nothing seeds automatically.
 
 ## Deploying to Railway
 
@@ -175,7 +192,7 @@ In the ReclaimBay project, open the app service's **Settings**:
 | ------------------ | --------------------- |
 | Root Directory     | `backend`             |
 | Build Command      | `npm run build`       |
-| Pre-deploy Command | `npm run db:migrate`  |
+| Pre-deploy Command | `npm run db:migrate && npm run prospects:rescore` |
 | Start Command      | `npm start`           |
 | Healthcheck Path   | `/health`             |
 | Watch Paths        | `/backend/**`         |

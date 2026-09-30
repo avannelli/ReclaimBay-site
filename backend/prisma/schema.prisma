@@ -11,11 +11,24 @@ datasource db {
   provider = "postgresql"
 }
 
+// Lifecycle rules (allowed transitions, entry requirements) live in
+// src/prospectStatus.ts. do_not_contact is terminal: a compliance flag.
 enum ProspectStatus {
   new
+  qualified
+  ready_to_contact
   contacted
-  active
+  engaged
+  customer
+  not_a_fit
+  do_not_contact
   archived
+}
+
+// A signal row exists only when the value is known; no row means unknown.
+enum SignalValue {
+  yes
+  no
 }
 
 enum EventType {
@@ -32,17 +45,99 @@ enum ExportType {
   copied_summary
 }
 
+// A prospective shop. Only public business information: never owner
+// personal details, and never anything from a customer's report.
 model Prospect {
-  id           String         @id @default(uuid()) @db.Uuid
-  referralCode String         @unique
+  id           String  @id @default(uuid()) @db.Uuid
+  referralCode String  @unique
   businessName String?
   website      String?
-  status       ProspectStatus @default(new)
-  createdAt    DateTime       @default(now())
-  updatedAt    DateTime       @updatedAt
 
-  sessions AnalyticsSession[]
-  events   ProductEvent[]
+  city       String? @db.VarChar(100)
+  state      String? @db.VarChar(50)
+  postalCode String? @db.VarChar(20)
+  country    String  @default("US") @db.Char(2)
+
+  // Publicly listed business contact details, each with where it was found.
+  phone          String? @db.VarChar(30)
+  phoneSourceUrl String? @db.VarChar(500)
+  email          String? @db.VarChar(254)
+  emailSourceUrl String? @db.VarChar(500)
+
+  // Cache of src/scoring.ts output, for sorting and filtering.
+  score        Int       @default(0)
+  scoreVersion String?   @db.VarChar(32)
+  scoredAt     DateTime?
+
+  status          ProspectStatus @default(new)
+  statusChangedAt DateTime       @default(now())
+  createdAt       DateTime       @default(now())
+  updatedAt       DateTime       @updatedAt
+
+  sessions      AnalyticsSession[]
+  events        ProductEvent[]
+  signals       ProspectSignal[]
+  evidence      ProspectEvidence[]
+  notes         ProspectNote[]
+  statusChanges ProspectStatusChange[]
+
+  @@index([status, score])
+  @@index([score])
+  @@index([state, city])
+}
+
+// One observed scoring input. Keys are defined in src/scoring.ts.
+model ProspectSignal {
+  id         String      @id @default(uuid()) @db.Uuid
+  prospectId String      @db.Uuid
+  key        String      @db.VarChar(64)
+  value      SignalValue
+  observedAt DateTime    @default(now())
+
+  prospect Prospect @relation(fields: [prospectId], references: [id], onDelete: Cascade)
+
+  @@unique([prospectId, key])
+  @@index([key, value])
+}
+
+// A short public excerpt supporting one signal. Never a copied page.
+model ProspectEvidence {
+  id         String   @id @default(uuid()) @db.Uuid
+  prospectId String   @db.Uuid
+  signalKey  String   @db.VarChar(64)
+  sourceUrl  String   @db.VarChar(500)
+  excerpt    String   @db.VarChar(280)
+  createdAt  DateTime @default(now())
+
+  prospect Prospect @relation(fields: [prospectId], references: [id], onDelete: Cascade)
+
+  @@index([prospectId, signalKey])
+}
+
+// Append-only admin notes.
+model ProspectNote {
+  id         String   @id @default(uuid()) @db.Uuid
+  prospectId String   @db.Uuid
+  body       String   @db.VarChar(2000)
+  createdAt  DateTime @default(now())
+
+  prospect Prospect @relation(fields: [prospectId], references: [id], onDelete: Cascade)
+
+  @@index([prospectId, createdAt])
+}
+
+// Audit trail of every status change.
+model ProspectStatusChange {
+  id         String          @id @default(uuid()) @db.Uuid
+  prospectId String          @db.Uuid
+  fromStatus ProspectStatus?
+  toStatus   ProspectStatus
+  reason     String?         @db.VarChar(500)
+  createdAt  DateTime        @default(now())
+
+  prospect Prospect @relation(fields: [prospectId], references: [id], onDelete: Cascade)
+
+  @@index([prospectId, createdAt])
 }
 
 model AnalyticsSession {

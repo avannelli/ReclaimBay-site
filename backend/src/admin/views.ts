@@ -3,7 +3,7 @@ import type { ProspectRow, Summary } from "./stats.js";
 
 /* Server-rendered admin pages. No scripts; every dynamic value is escaped. */
 
-const esc = (v: unknown) =>
+export const esc = (v: unknown) =>
   String(v ?? "").replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
 
 const STYLE = `
@@ -33,12 +33,37 @@ form.inline { display:flex; flex-wrap:wrap; gap:8px; align-items:end; }
 label { display:grid; gap:4px; font-size:12px; color:var(--muted); }
 input[type=text],input[type=password] { padding:7px 9px; border:1px solid var(--line); border-radius:6px; background:var(--bg); color:var(--ink); font:inherit; min-width:220px; }
 button { padding:7px 14px; border:0; border-radius:6px; background:var(--ink); color:var(--bg); font:inherit; font-weight:600; cursor:pointer; }
+a.btn { display:inline-block; padding:7px 14px; border-radius:6px; background:var(--ink); color:var(--bg); font-weight:600; text-decoration:none; }
+a.st { text-decoration:none; color:var(--ink); } a.st.on { background:var(--ink); color:var(--bg); }
 button.ghost { background:transparent; color:var(--ink); border:1px solid var(--line); }
 .err { color:var(--warn); margin:8px 0 0; }
 .login { max-width:360px; margin:12vh auto 0; }
+nav.top { display:flex; align-items:center; gap:16px; flex-wrap:wrap; }
+nav.top a { text-decoration:none; font-weight:600; color:var(--muted); } nav.top a.on { color:var(--ink); }
+.row { display:flex; flex-wrap:wrap; gap:12px; align-items:center; }
+.grid2 { display:grid; grid-template-columns:repeat(auto-fit,minmax(320px,1fr)); gap:14px; align-items:start; }
+.stack > * + * { margin-top:14px; }
+dl.kv { display:grid; grid-template-columns:max-content 1fr; gap:6px 14px; margin:0; } dl.kv dt { color:var(--muted); font-size:12px; padding-top:2px; } dl.kv dd { margin:0; overflow-wrap:anywhere; }
+.band-high { background:var(--accent); } .band-medium { background:#2563eb; } .band-low { background:var(--muted); }
+.q-meets_criteria { border-color:var(--accent); color:var(--accent); } .q-disqualified { border-color:var(--warn); color:var(--warn); } .q-unverified { border-style:dashed; color:var(--muted); }
+.st { display:inline-block; padding:1px 8px; border-radius:99px; font-size:12px; font-weight:600; border:1px solid var(--line); white-space:nowrap; }
+.st-do_not_contact { border-color:var(--warn); color:var(--warn); }
+.ok { color:var(--accent); margin:0 0 12px; font-weight:600; }
+.errs { border:1px solid var(--warn); border-radius:10px; padding:10px 14px; margin:0 0 14px; color:var(--warn); } .errs ul { margin:4px 0 0; padding-left:18px; }
+select,textarea { padding:7px 9px; border:1px solid var(--line); border-radius:6px; background:var(--bg); color:var(--ink); font:inherit; }
+textarea { width:100%; min-height:70px; resize:vertical; }
+fieldset { border:1px solid var(--line); border-radius:10px; padding:12px 14px; margin:0; } legend { font-weight:600; padding:0 4px; }
+.fields { display:grid; grid-template-columns:repeat(auto-fit,minmax(220px,1fr)); gap:10px; }
+.fields input[type=text] { min-width:0; width:100%; }
+.signal { border-top:1px solid var(--line); padding:10px 0; } .signal:first-of-type { border-top:0; }
+.choices { display:flex; flex-wrap:wrap; gap:14px; margin:6px 0; } .choices label { display:flex; gap:6px; align-items:center; font-size:14px; color:var(--ink); }
+details summary { cursor:pointer; color:var(--muted); font-size:12px; }
+blockquote { margin:0; padding-left:10px; border-left:3px solid var(--line); }
+.inline-form { display:inline; }
+button.link { background:none; color:var(--warn); padding:0; font-weight:600; font-size:12px; }
 `;
 
-function page(title: string, body: string): string {
+export function page(title: string, body: string): string {
   return `<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="robots" content="noindex,nofollow"><title>${esc(title)}</title><style>${STYLE}</style></head>
@@ -66,7 +91,17 @@ export function disabledPage(): string {
   );
 }
 
-const fmtDate = (d: Date | null) =>
+export type AdminSection = "funnel" | "prospects";
+
+/** Shared header for signed-in pages. */
+export function adminHeader(active: AdminSection): string {
+  const link = (href: string, label: string, on: boolean) =>
+    `<a href="${href}"${on ? ` class="on" aria-current="page"` : ""}>${label}</a>`;
+  return `<header><nav class="top"><h1>ReclaimBay</h1>${link("/admin", "Funnel", active === "funnel")}${link("/admin/prospects", "Prospects", active === "prospects")}</nav>
+  <form method="post" action="/admin/logout"><button class="ghost" type="submit">Sign out</button></form></header>`;
+}
+
+export const fmtDate = (d: Date | null) =>
   d ? new Date(d).toISOString().replace("T", " ").slice(0, 16) + " UTC" : "—";
 const fmtPct = (r: number | null) => (r === null ? "—" : `${(r * 100).toFixed(1)}%`);
 const num = (n: number) => (n > 0 ? String(n) : `<span class="muted">0</span>`);
@@ -76,15 +111,15 @@ interface DashboardOptions {
   rows: ProspectRow[];
   siteUrl: string;
   highlightId?: string;
-  formError?: string;
 }
 
 function prospectCell(r: ProspectRow): string {
   if (!r.id) return `<i class="muted">No referral (direct)</i>`;
+  const name = `<a href="/admin/prospects/${esc(r.id)}">${esc(r.businessName ?? "Unnamed prospect")}</a>`;
   const site = r.website
     ? `<div class="small"><a href="${esc(r.website)}" rel="noreferrer noopener" target="_blank">${esc(r.website.replace(/^https?:\/\//, ""))}</a></div>`
     : "";
-  return `${esc(r.businessName ?? "Unnamed prospect")}${site}<div class="small muted">${esc(r.status)}</div>`;
+  return `${name}${site}<div class="small muted">${esc(r.status)}</div>`;
 }
 
 function referralCell(r: ProspectRow, siteUrl: string): string {
@@ -110,7 +145,7 @@ function tableRow(r: ProspectRow, siteUrl: string, highlightId?: string): string
 </tr>`;
 }
 
-export function dashboardPage({ summary: s, rows, siteUrl, highlightId, formError }: DashboardOptions): string {
+export function dashboardPage({ summary: s, rows, siteUrl, highlightId }: DashboardOptions): string {
   const tiles: [string, string, string][] = [
     ["Attributed prospects", String(s.attributedProspects), "prospects with at least one visit"],
     ["Unique visitors", String(s.uniqueVisitors), "anonymous browser sessions"],
@@ -129,23 +164,12 @@ export function dashboardPage({ summary: s, rows, siteUrl, highlightId, formErro
 
   return page(
     "ReclaimBay admin",
-    `<header><h1>ReclaimBay funnel</h1>
-  <form method="post" action="/admin/logout"><button class="ghost" type="submit">Sign out</button></form></header>
+    `${adminHeader("funnel")}
 <p class="small muted" style="margin-top:-12px">Visitor, upload, scan and export tiles count unique browser sessions.</p>
 <div class="tiles">${tileHtml}</div>
 
-<h2>New prospect</h2>
-<div class="card">
-  <form class="inline" method="post" action="/admin/prospects">
-    <label>Business name<input type="text" name="businessName" maxlength="120" placeholder="Smith Auto"></label>
-    <label>Website (optional)<input type="text" name="website" maxlength="200" placeholder="smithauto.com"></label>
-    <button type="submit">Create referral link</button>
-  </form>
-  ${formError ? `<p class="err">${esc(formError)}</p>` : ""}
-  <p class="small muted" style="margin:10px 0 0">Referral codes are random and never contain the business name. Append <code>&amp;campaign=launch-v1</code> to a link to tag a campaign.</p>
-</div>
-
 <h2>Prospects</h2>
+<p class="small muted" style="margin-top:-4px">Funnel activity per referral link. <a href="/admin/prospects">Manage prospects</a> or <a href="/admin/prospects/new">add one</a>.</p>
 <div class="scroll"><table>
 <thead><tr><th>Prospect</th><th>Referral</th><th class="n">Visit</th><th class="n">Upload</th><th class="n">Scan</th><th class="n">Tour</th><th class="n">Export</th><th class="n">Sample</th><th>Last activity</th><th>Intent</th></tr></thead>
 <tbody>${body || `<tr><td colspan="10" class="muted">No prospects yet.</td></tr>`}</tbody>

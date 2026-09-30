@@ -9,13 +9,42 @@ import {
   sessionCookie,
   verifyToken,
 } from "../admin/auth.js";
+import { prospectDetailPage, prospectFormPage, prospectListPage } from "../admin/prospectViews.js";
 import { loadProspectRows, loadSummary } from "../admin/stats.js";
 import { dashboardPage, disabledPage, loginPage } from "../admin/views.js";
 import type { Config } from "../config.js";
 import type { Db } from "../db.js";
-import { cleanProspectInput, createProspect } from "../prospects.js";
+import type { Status } from "../prospectStatus.js";
+import {
+  ProspectError,
+  addEvidence,
+  addNote,
+  changeStatus,
+  createProspect,
+  deleteEvidence,
+  formValuesOf,
+  getProspectDetail,
+  listProspects,
+  updateProspect,
+} from "../prospects.js";
 
 type Form = Record<string, string>;
+type Values = Record<string, string | undefined>;
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
+/** Confirmation shown after a redirect, keyed so no free text is reflected. */
+const NOTICES: Record<string, string> = {
+  created: "Prospect created.",
+  saved: "Changes saved. Score recalculated.",
+  status: "Status changed.",
+  note: "Note added.",
+  evidence: "Evidence added.",
+  evidence_removed: "Evidence removed.",
+};
+
+/** Paths reachable without a session. */
+const PUBLIC_PATHS = new Set(["/admin/login", "/admin/logout"]);
 
 /**
  * Private admin at /admin, protected server-side by ADMIN_SECRET. The
@@ -27,7 +56,7 @@ export async function adminRoutes(app: FastifyInstance, opts: { config: Config; 
 
   app.addContentTypeParser(
     "application/x-www-form-urlencoded",
-    { parseAs: "string", bodyLimit: 4_096 },
+    { parseAs: "string", bodyLimit: 16_384 },
     (_req, body, done) => done(null, Object.fromEntries(new URLSearchParams(body as string))),
   );
 
@@ -68,6 +97,16 @@ export async function adminRoutes(app: FastifyInstance, opts: { config: Config; 
     }
   };
 
+  // Every admin route requires a session, and every POST must be same-origin.
+  app.addHook("preHandler", async (req, reply) => {
+    if (req.method === "POST" && !sameOrigin(req)) return reply.code(403).send();
+    const path = req.routeOptions.url ?? req.url;
+    if (PUBLIC_PATHS.has(path)) return;
+    if (!isAuthed(req)) return reply.redirect("/admin/login", 303);
+  });
+
+  // ---------- session ----------
+
   app.get("/admin/login", (req, reply) =>
     isAuthed(req) ? reply.redirect("/admin", 303) : html(reply, loginPage()),
   );
@@ -76,7 +115,6 @@ export async function adminRoutes(app: FastifyInstance, opts: { config: Config; 
     "/admin/login",
     { config: { rateLimit: { max: 10, timeWindow: "15 minutes" } } },
     (req, reply) => {
-      if (!sameOrigin(req)) return reply.code(403).send();
       const given = typeof req.body?.secret === "string" ? req.body.secret : "";
       if (!safeEqual(given, secret)) {
         req.log.warn("admin login failed");
@@ -87,33 +125,151 @@ export async function adminRoutes(app: FastifyInstance, opts: { config: Config; 
     },
   );
 
-  app.post("/admin/logout", (req, reply) => {
-    if (!sameOrigin(req)) return reply.code(403).send();
+  app.post("/admin/logout", (_req, reply) => {
     reply.header("Set-Cookie", clearedCookie(config.secureCookies));
     return reply.redirect("/admin/login", 303);
   });
 
-  const renderDashboard = async (reply: FastifyReply, extra: { highlightId?: string; formError?: string } = {}) => {
-    const [summary, rows] = await Promise.all([loadSummary(db), loadProspectRows(db)]);
-    return html(reply, dashboardPage({ summary, rows, siteUrl: config.publicSiteUrl, ...extra }), extra.formError ? 400 : 200);
-  };
+  // ---------- funnel ----------
 
   app.get<{ Querystring: { created?: string } }>("/admin", async (req, reply) => {
-    if (!isAuthed(req)) return reply.redirect("/admin/login", 303);
-    return renderDashboard(reply, { highlightId: req.query.created });
+    const [summary, rows] = await Promise.all([loadSummary(db), loadProspectRows(db)]);
+    return html(reply, dashboardPage({ summary, rows, siteUrl: config.publicSiteUrl, highlightId: req.query.created }));
   });
 
-  app.post<{ Body: Form }>(
-    "/admin/prospects",
-    { config: { rateLimit: { max: 30, timeWindow: "1 minute" } } },
-    async (req, reply) => {
-      if (!isAuthed(req)) return reply.redirect("/admin/login", 303);
-      if (!sameOrigin(req)) return reply.code(403).send();
-      const cleaned = cleanProspectInput({ businessName: req.body?.businessName, website: req.body?.website });
-      if (typeof cleaned === "string") return renderDashboard(reply, { formError: cleaned });
-      const prospect = await createProspect(db, cleaned);
+  // ---------- prospects ----------
+
+  const writeLimit = { config: { rateLimit: { max: 60, timeWindow: "1 minute" } } };
+
+  /** Maps service errors to a page; anything unexpected is rethrown. */
+  const handleError = (err: unknown, reply: FastifyReply, render: (errors: string[]) => Promise<unknown> | unknown) => {
+    if (!(err instanceof ProspectError)) throw err;
+    if (err.kind === "not_found") return reply.code(404).type("text/plain").send("Not found");
+    reply.code(err.kind === "conflict" ? 409 : 400);
+    return render(err.messages);
+  };
+
+  const renderDetail = async (reply: FastifyReply, id: string, extra: { notice?: string; errors?: string[]; values?: Values } = {}) => {
+    const detail = await getProspectDetail(db, id);
+    if (!detail) return reply.code(404).type("text/plain").send("Not found");
+    return html(reply, prospectDetailPage({ detail, siteUrl: config.publicSiteUrl, ...extra }), reply.statusCode);
+  };
+
+  const validId = (id: string, reply: FastifyReply) => {
+    if (UUID_RE.test(id)) return true;
+    reply.code(404).type("text/plain").send("Not found");
+    return false;
+  };
+
+  app.get<{ Querystring: Values }>("/admin/prospects", async (req, reply) => {
+    const filters = {
+      q: req.query.q,
+      status: req.query.status,
+      qualification: req.query.qualification,
+      band: req.query.band,
+      state: req.query.state,
+      city: req.query.city,
+      sort: req.query.sort,
+    };
+    const [list, grouped] = await Promise.all([
+      listProspects(db, filters),
+      db.prospect.groupBy({ by: ["status"], _count: { _all: true } }),
+    ]);
+    const statusCounts: Partial<Record<Status, number>> = {};
+    for (const g of grouped) statusCounts[g.status] = g._count._all;
+    return html(reply, prospectListPage({ list, filters, statusCounts }));
+  });
+
+  app.get("/admin/prospects/new", (_req, reply) => html(reply, prospectFormPage({ mode: "new" }, {})));
+
+  app.post<{ Body: Form }>("/admin/prospects", writeLimit, async (req, reply) => {
+    try {
+      const prospect = await createProspect(db, req.body ?? {});
       req.log.info({ prospectId: prospect.id }, "prospect created");
-      return reply.redirect(`/admin?created=${encodeURIComponent(prospect.id)}`, 303);
+      return reply.redirect(`/admin/prospects/${prospect.id}?done=created`, 303);
+    } catch (err) {
+      return handleError(err, reply, (errors) => html(reply, prospectFormPage({ mode: "new" }, req.body ?? {}, errors), reply.statusCode));
+    }
+  });
+
+  app.get<{ Params: { id: string }; Querystring: { done?: string } }>("/admin/prospects/:id", async (req, reply) => {
+    if (!validId(req.params.id, reply)) return reply;
+    const notice = req.query.done ? NOTICES[req.query.done] : undefined;
+    return renderDetail(reply, req.params.id, { notice });
+  });
+
+  app.get<{ Params: { id: string } }>("/admin/prospects/:id/edit", async (req, reply) => {
+    if (!validId(req.params.id, reply)) return reply;
+    const p = await db.prospect.findUnique({ where: { id: req.params.id }, include: { signals: true } });
+    if (!p) return reply.code(404).type("text/plain").send("Not found");
+    return html(reply, prospectFormPage({ mode: "edit", id: p.id, name: p.businessName }, formValuesOf(p)));
+  });
+
+  app.post<{ Params: { id: string }; Body: Form }>("/admin/prospects/:id", writeLimit, async (req, reply) => {
+    const { id } = req.params;
+    if (!validId(id, reply)) return reply;
+    try {
+      await updateProspect(db, id, req.body ?? {});
+      return reply.redirect(`/admin/prospects/${id}?done=saved`, 303);
+    } catch (err) {
+      return handleError(err, reply, async (errors) => {
+        const p = await db.prospect.findUnique({ where: { id }, select: { businessName: true } });
+        return html(reply, prospectFormPage({ mode: "edit", id, name: p?.businessName ?? null }, req.body ?? {}, errors), reply.statusCode);
+      });
+    }
+  });
+
+  app.post<{ Params: { id: string }; Body: Form }>("/admin/prospects/:id/status", writeLimit, async (req, reply) => {
+    const { id } = req.params;
+    if (!validId(id, reply)) return reply;
+    try {
+      const { from, to } = await changeStatus(db, id, req.body?.status ?? "", req.body?.reason);
+      req.log.info({ prospectId: id, from, to }, "prospect status changed");
+      return reply.redirect(`/admin/prospects/${id}?done=status`, 303);
+    } catch (err) {
+      return handleError(err, reply, (errors) => renderDetail(reply, id, { errors, values: pick(req.body, ["status", "reason"]) }));
+    }
+  });
+
+  app.post<{ Params: { id: string }; Body: Form }>("/admin/prospects/:id/notes", writeLimit, async (req, reply) => {
+    const { id } = req.params;
+    if (!validId(id, reply)) return reply;
+    try {
+      await addNote(db, id, req.body?.body);
+      return reply.redirect(`/admin/prospects/${id}?done=note`, 303);
+    } catch (err) {
+      return handleError(err, reply, (errors) => renderDetail(reply, id, { errors, values: pick(req.body, ["body"]) }));
+    }
+  });
+
+  app.post<{ Params: { id: string }; Body: Form }>("/admin/prospects/:id/evidence", writeLimit, async (req, reply) => {
+    const { id } = req.params;
+    if (!validId(id, reply)) return reply;
+    try {
+      await addEvidence(db, id, req.body ?? {});
+      return reply.redirect(`/admin/prospects/${id}?done=evidence`, 303);
+    } catch (err) {
+      return handleError(err, reply, (errors) =>
+        renderDetail(reply, id, { errors, values: pick(req.body, ["signalKey", "sourceUrl", "excerpt"]) }),
+      );
+    }
+  });
+
+  app.post<{ Params: { id: string; evidenceId: string } }>(
+    "/admin/prospects/:id/evidence/:evidenceId/delete",
+    writeLimit,
+    async (req, reply) => {
+      const { id, evidenceId } = req.params;
+      if (!validId(id, reply) || !validId(evidenceId, reply)) return reply;
+      try {
+        await deleteEvidence(db, id, evidenceId);
+        return reply.redirect(`/admin/prospects/${id}?done=evidence_removed`, 303);
+      } catch (err) {
+        return handleError(err, reply, (errors) => renderDetail(reply, id, { errors }));
+      }
     },
   );
 }
+
+const pick = (body: Form | undefined, keys: string[]): Values =>
+  Object.fromEntries(keys.map((k) => [k, typeof body?.[k] === "string" ? body[k] : undefined]));
