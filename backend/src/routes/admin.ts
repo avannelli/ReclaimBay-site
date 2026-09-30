@@ -65,7 +65,10 @@ export async function adminRoutes(app: FastifyInstance, opts: { config: Config; 
   app.addHook("onSend", async (_request, reply, payload) => {
     reply.header("Cache-Control", "no-store");
     reply.header("X-Robots-Tag", "noindex, nofollow");
-    reply.header("Referrer-Policy", "no-referrer");
+    // Not "no-referrer": with that policy browsers send `Origin: null` on the
+    // admin's own form POSTs, which the same-origin check must reject.
+    // "same-origin" still sends nothing to other sites.
+    reply.header("Referrer-Policy", "same-origin");
     reply.header("X-Content-Type-Options", "nosniff");
     reply.header(
       "Content-Security-Policy",
@@ -86,7 +89,12 @@ export async function adminRoutes(app: FastifyInstance, opts: { config: Config; 
 
   const isAuthed = (req: FastifyRequest) => verifyToken(secret, readCookie(req.headers.cookie, ADMIN_COOKIE));
 
-  /** Rejects cross-site form posts (defense in depth on top of SameSite=Strict). */
+  /**
+   * Rejects cross-site form posts (defense in depth on top of SameSite=Strict).
+   * Compares against this backend's own host (Railway domain or a custom one),
+   * never ALLOWED_ORIGIN, which is only the frontend's CORS allowlist. An
+   * opaque `Origin: null` is rejected: a hostile page can produce it.
+   */
   const sameOrigin = (req: FastifyRequest) => {
     const origin = req.headers.origin;
     if (!origin) return true;
@@ -99,7 +107,10 @@ export async function adminRoutes(app: FastifyInstance, opts: { config: Config; 
 
   // Every admin route requires a session, and every POST must be same-origin.
   app.addHook("preHandler", async (req, reply) => {
-    if (req.method === "POST" && !sameOrigin(req)) return reply.code(403).send();
+    if (req.method === "POST" && !sameOrigin(req)) {
+      req.log.warn({ origin: req.headers.origin, host: req.host }, "admin POST rejected: origin does not match host");
+      return reply.code(403).send();
+    }
     const path = req.routeOptions.url ?? req.url;
     if (PUBLIC_PATHS.has(path)) return;
     if (!isAuthed(req)) return reply.redirect("/admin/login", 303);

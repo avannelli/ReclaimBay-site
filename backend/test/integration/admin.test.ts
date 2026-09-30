@@ -56,6 +56,39 @@ describe("admin prospect workflow (HTTP)", { skip: skipReason }, () => {
     assert.equal(await db.prospect.count(), 0, "nothing created without a session");
   });
 
+  test("admin pages use a referrer policy that lets the browser send the real Origin on their own POSTs", async () => {
+    // "no-referrer" makes browsers send `Origin: null` on form POSTs, which
+    // the origin check rejects (the production login 403).
+    for (const url of ["/admin/login", "/admin", "/admin/prospects"]) {
+      assert.equal((await get(url)).headers["referrer-policy"], "same-origin", url);
+    }
+  });
+
+  test("login accepts the backend's own origin, whatever domain it is served on", async () => {
+    for (const host of ["reclaimbay-production.up.railway.app", "api.reclaimbay.com"]) {
+      const res = await app.inject({
+        method: "POST",
+        url: "/admin/login",
+        headers: { ...FORM, host, origin: `https://${host}` },
+        payload: form({ secret: SECRET }),
+      });
+      assert.equal(res.statusCode, 303, host);
+    }
+  });
+
+  test("login refuses an opaque or foreign Origin, including the frontend's", async () => {
+    for (const origin of ["null", "https://evil.example", "https://reclaimbay.com"]) {
+      const res = await app.inject({
+        method: "POST",
+        url: "/admin/login",
+        headers: { ...FORM, host: "reclaimbay-production.up.railway.app", origin },
+        payload: form({ secret: SECRET }),
+      });
+      assert.equal(res.statusCode, 403, origin);
+      assert.equal(res.headers["set-cookie"], undefined, `${origin}: no session issued`);
+    }
+  });
+
   test("cross-origin posts are refused", async () => {
     const res = await post("/admin/prospects", readyForm(), { origin: "https://evil.example" });
     assert.equal(res.statusCode, 403);
