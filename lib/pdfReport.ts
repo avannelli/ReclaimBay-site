@@ -764,7 +764,7 @@ class SummaryWriter {
     if (a.count > rows.length) {
       this.ensure(22);
       this.text(
-        `Showing the ${rows.length} largest of ${a.count.toLocaleString("en-US")} opportunities. Use Export CSV for the full list.`,
+        `Showing the ${rows.length} largest of ${a.count.toLocaleString("en-US")} opportunities. Download the CSV for the full list.`,
         M,
         this.y + 14,
         { size: 7.5, color: C.ink3 },

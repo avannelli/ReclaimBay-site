@@ -8,6 +8,7 @@ import {
   moneyFormat,
   undatedSplitNote,
 } from "@/lib/format";
+import { trackEvent, trackExport } from "@/lib/analytics";
 import { buildOpportunitiesCsv, exportFileName } from "@/lib/exportCsv";
 import { downloadSummaryPdf } from "@/lib/pdfReport";
 import { readTourState, saveTourState, type TourState } from "@/lib/prefs";
@@ -329,6 +330,7 @@ export default function Dashboard({
   const finishTour = (state: TourState) => {
     saveTourState(state);
     setTour(null);
+    if (state === "completed") trackEvent("tour_completed", isSample);
     // Finishing (not dismissing) the tour hands the report back from the top.
     if (state === "completed") scrollPageTo(0);
   };
@@ -346,6 +348,7 @@ export default function Dashboard({
       ok = legacyCopy(text);
     }
     setCopyStatus(ok ? "copied" : "failed");
+    if (ok) trackExport("copied_summary", isSample);
     window.clearTimeout(copyTimer.current);
     copyTimer.current = window.setTimeout(() => setCopyStatus("idle"), 2500);
   };
@@ -396,7 +399,8 @@ export default function Dashboard({
 
   const exportSource = { fileName, isSample, date: analyzedAt };
 
-  // Everything is generated in this tab; nothing is sent anywhere.
+  // Everything is generated in this tab; no report data is sent anywhere.
+  // Analytics record only that an export happened, and its format.
   const exportCsv = () => {
     const csv = buildOpportunitiesCsv(a.ranked);
     const url = URL.createObjectURL(
@@ -409,6 +413,7 @@ export default function Dashboard({
     link.click();
     link.remove();
     setTimeout(() => URL.revokeObjectURL(url), 0);
+    trackExport("csv", isSample);
   };
 
   // Builds the summary PDF in the browser and downloads it directly.
@@ -419,6 +424,7 @@ export default function Dashboard({
         { analysis: a, fileName, isSample, notes, analyzedAt },
         exportFileName("report", "pdf", exportSource),
       );
+      trackExport("pdf", isSample);
     } catch {
       window.alert("We couldn't create the PDF. Please try again.");
     } finally {
@@ -435,16 +441,16 @@ export default function Dashboard({
         onClick={downloadPdf}
         icon={ICONS.pdf}
         disabled={pdfBusy}
-        title="PDF summary of this analysis"
+        title="Download a PDF summary of this report"
       >
-        Download report
+        Download PDF
       </ActionButton>
       <ActionButton
         onClick={exportCsv}
         icon={ICONS.csv}
-        title="CSV of every opportunity"
+        title="Download every opportunity as a CSV spreadsheet"
       >
-        Export opportunities
+        Download CSV
       </ActionButton>
     </>
   );
@@ -854,16 +860,16 @@ export default function Dashboard({
               onClick={downloadPdf}
               icon={ICONS.pdf}
               disabled={pdfBusy}
-              title="PDF summary of this analysis"
+              title="Download a PDF summary of this report"
             >
-              Download report
+              Download PDF
             </ActionButton>
             <ActionButton
               onClick={exportCsv}
               icon={ICONS.csv}
-              title="CSV of every opportunity"
+              title="Download every opportunity as a CSV spreadsheet"
             >
-              Export opportunities
+              Download CSV
             </ActionButton>
             <ActionButton onClick={requestReset} icon={ICONS.upload} className="col-span-2">
               {uploadLabel}

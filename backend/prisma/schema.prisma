@@ -1,0 +1,78 @@
+// ReclaimBay analytics schema.
+// Behavioral events only: no report rows, customer data, amounts, or filenames.
+
+generator client {
+  provider     = "prisma-client"
+  output       = "../src/generated/prisma"
+  moduleFormat = "esm"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum ProspectStatus {
+  new
+  contacted
+  active
+  archived
+}
+
+enum EventType {
+  landing_view
+  upload_started
+  scan_completed
+  tour_completed
+  report_exported
+}
+
+enum ExportType {
+  pdf
+  csv
+  copied_summary
+}
+
+model Prospect {
+  id           String         @id @default(uuid()) @db.Uuid
+  referralCode String         @unique
+  businessName String?
+  website      String?
+  status       ProspectStatus @default(new)
+  createdAt    DateTime       @default(now())
+  updatedAt    DateTime       @updatedAt
+
+  sessions AnalyticsSession[]
+  events   ProductEvent[]
+}
+
+model AnalyticsSession {
+  id                 String   @id @default(uuid()) @db.Uuid
+  anonymousSessionId String   @unique @db.Uuid
+  prospectId         String?  @db.Uuid
+  firstSeenAt        DateTime @default(now())
+  lastSeenAt         DateTime @default(now())
+
+  prospect Prospect?      @relation(fields: [prospectId], references: [id], onDelete: SetNull)
+  events   ProductEvent[]
+
+  @@index([prospectId])
+  @@index([lastSeenAt])
+}
+
+model ProductEvent {
+  id         String      @id @default(uuid()) @db.Uuid
+  sessionId  String      @db.Uuid
+  prospectId String?     @db.Uuid
+  eventType  EventType
+  campaign   String?     @db.VarChar(64)
+  exportType ExportType?
+  isSample   Boolean     @default(false)
+  createdAt  DateTime    @default(now())
+
+  session  AnalyticsSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  prospect Prospect?        @relation(fields: [prospectId], references: [id], onDelete: SetNull)
+
+  @@index([sessionId, createdAt])
+  @@index([prospectId, eventType])
+  @@index([eventType, isSample, createdAt])
+}

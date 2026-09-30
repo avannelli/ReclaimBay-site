@@ -37,6 +37,12 @@ export default function PrivacyBadge({
       <p className="text-ink-3">
         Refreshing or closing the page clears the current report.
       </p>
+      <p className="text-ink-3">
+        ReclaimBay records limited product-usage events, such as visits,
+        completed scans, and exports, to understand how the product is used.
+        Your uploaded report, customer information, and declined-work data are
+        never sent to ReclaimBay.
+      </p>
     </Popover>
   );
 }

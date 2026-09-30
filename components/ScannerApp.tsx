@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { analyze } from "@/lib/analyze";
+import { trackEvent, trackLandingView } from "@/lib/analytics";
 import { detectColumns, normalizeRows } from "@/lib/normalize";
 import { FileParseError, parseFile } from "@/lib/parseFile";
 import { applyRememberedMappings, rememberConfirmedMappings } from "@/lib/prefs";
@@ -58,6 +59,9 @@ export default function ScannerApp() {
 
   // Set when a report is cleared, so the upload button takes focus again.
   const [focusUpload, setFocusUpload] = useState(false);
+
+  // Anonymous and best effort; see lib/analytics.ts for what is sent.
+  useEffect(() => trackLandingView(), []);
 
   const reset = () => {
     setError(null);
@@ -124,6 +128,7 @@ export default function ScannerApp() {
       if (confirmedByUser) {
         rememberConfirmedMappings(table.headers, mapping, matching.detection);
       }
+      trackEvent("scan_completed", isSample);
       return {
         name: "results",
         fileName: table.fileName,
@@ -164,6 +169,7 @@ export default function ScannerApp() {
   const handleFile = (file: File) =>
     startScan(async () => {
       setStage({ name: "parsing" });
+      trackEvent("upload_started");
       try {
         const table = await parseFile(file);
         const detection = detectColumns(table);

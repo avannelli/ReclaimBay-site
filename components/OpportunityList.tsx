@@ -416,7 +416,7 @@ export default function OpportunityList({
       {printed < filtered.length && (
         <p className="hidden border-t border-line px-6 py-3 text-xs text-ink-3 print:block">
           Showing the {printed} largest of {filtered.length.toLocaleString("en-US")}{" "}
-          opportunities. Export opportunities for the full list.
+          opportunities. Download the CSV for the full list.
         </p>
       )}
       {expandable && (

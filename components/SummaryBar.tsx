@@ -124,8 +124,8 @@ export default function SummaryBar({
           )}
         </p>
         <div className="flex shrink-0 items-center gap-1.5">
-          <BarButton icon={ICON.pdf} label="Download report" labelFrom="lg" onClick={onPdf} disabled={pdfBusy} />
-          <BarButton icon={ICON.csv} label="Export opportunities" labelFrom="lg" onClick={onCsv} />
+          <BarButton icon={ICON.pdf} label="Download PDF" labelFrom="lg" onClick={onPdf} disabled={pdfBusy} />
+          <BarButton icon={ICON.csv} label="Download CSV" labelFrom="lg" onClick={onCsv} />
           <BarButton icon={ICON.upload} label={uploadLabel} labelFrom="md" onClick={onReset} />
         </div>
       </div>
