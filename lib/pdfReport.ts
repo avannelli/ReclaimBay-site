@@ -1,11 +1,14 @@
 import type { jsPDF } from "jspdf";
 import { RECENT_DAYS } from "./analyze";
+import { BRAND, MARK } from "./brand";
 import {
   allocatePercents,
   formatAge,
-  formatCurrency,
-  formatCurrencyExact,
+  formatAverage,
   formatDate,
+  formatDateTime,
+  moneyFormat,
+  undatedSplitNote,
 } from "./format";
 import type { Analysis, Bucket, Opportunity } from "./types";
 
@@ -55,7 +58,8 @@ export interface SummaryInput {
   isSample: boolean;
   /** File-quality notes, exactly as shown on the results page. */
   notes: string[];
-  generatedAt?: Date;
+  /** When the report was analyzed, in the viewer's local time. */
+  analyzedAt: Date;
 }
 
 // Built-in PDF fonts cover Latin-1 plus a few typographic marks. Anything
@@ -66,20 +70,15 @@ const clean = (s: string) =>
     .map((ch) => (ch.charCodeAt(0) <= 0xff || EXTRA_OK.has(ch) ? ch : "?"))
     .join("");
 
-const isoDate = (d: Date) =>
-  `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-
-export const summaryPdfName = (d: Date = new Date()) =>
-  `declined-work-summary-${isoDate(d)}.pdf`;
-
 const plural = (n: number, one: string, many: string) =>
   `${n.toLocaleString("en-US")} ${n === 1 ? one : many}`;
 
-export async function downloadSummaryPdf(input: SummaryInput) {
+export async function downloadSummaryPdf(input: SummaryInput, saveAs: string) {
   const { jsPDF: JsPDF } = await import("jspdf");
   const doc = new JsPDF({ unit: "pt", format: "letter", compress: true });
+  doc.setProperties({ title: `${BRAND.name} declined-work report`, creator: BRAND.name });
   new SummaryWriter(doc, input).write();
-  doc.save(summaryPdfName(input.generatedAt));
+  doc.save(saveAs);
 }
 
 interface TextOpts {
@@ -93,12 +92,15 @@ interface TextOpts {
 class SummaryWriter {
   private y = M;
   private readonly a: Analysis;
+  /** The report's money format, matching the on-screen results. */
+  private readonly money: (n: number) => string;
 
   constructor(
     private readonly doc: jsPDF,
     private readonly input: SummaryInput,
   ) {
     this.a = input.analysis;
+    this.money = moneyFormat(input.analysis.showCents);
   }
 
   // ------------------------------------------------------------ primitives
@@ -163,6 +165,47 @@ class SummaryWriter {
     this.doc.line(x1, y, x2, y);
   }
 
+  /**
+   * The ReclaimBay mark (lib/brand.ts MARK), drawn as vectors for a navy
+   * background: white bay outline, slate bars, amber arrow. `h` is its
+   * height; the width follows the mark's 40 x 32 proportions.
+   */
+  private mark(x: number, y: number, h: number) {
+    const s = h / MARK.height;
+    const d = this.doc;
+    const at = (px: number, py: number) => [x + px * s, y + py * s] as const;
+
+    // Bay: left post and roofline, then the right post (mirrors MARK.bay).
+    d.setLineCap("round");
+    d.setLineJoin("round");
+    d.setLineWidth(MARK.stroke.bay * s);
+    d.setDrawColor(C.white);
+    d.lines([[0, -18.25 * s], [13.75 * s, -6 * s], [5 * s, 2.25 * s]], ...at(3.75, 30.5));
+    d.line(...at(36.25, 30.5), ...at(36.25, 14.5));
+
+    for (const [bx, top] of MARK.bars) {
+      this.rect(...at(bx, top), MARK.barWidth * s, (MARK.floor - top) * s, C.slate400, 0.9 * s);
+    }
+
+    // Arrow swoop and head (mirrors MARK.arrow and MARK.head).
+    d.setDrawColor(C.amber);
+    d.setLineWidth(MARK.stroke.arrow * s);
+    d.lines([[8.5 * s, -0.5 * s, 19 * s, -5.5 * s, 25.75 * s, -14.25 * s]], ...at(6.5, 21.5));
+    d.setFillColor(C.amber);
+    d.triangle(...at(36.4, 2.6), ...at(29.7, 4.1), ...at(34.95, 9.2), "F");
+    d.setLineCap("butt");
+    d.setLineJoin("miter");
+  }
+
+  /** "Reclaim" in white, "Bay" in amber; returns the wordmark's width. */
+  private wordmark(x: number, y: number, size: number) {
+    const [first, second] = BRAND.nameParts;
+    this.text(first, x, y, { size, bold: true, color: C.white });
+    const w = this.width(first, size, true);
+    this.text(second, x + w, y, { size, bold: true, color: C.amber });
+    return w + this.width(second, size, true);
+  }
+
   private dot(x: number, y: number, color: string, r = 2.4) {
     this.doc.setFillColor(color);
     this.doc.circle(x, y, r, "F");
@@ -174,8 +217,9 @@ class SummaryWriter {
     this.doc.addPage();
     this.rect(0, 0, PAGE_W, 26, C.navy);
     this.rect(0, 26, PAGE_W, 1.2, C.amber);
-    this.text("AutoRev", M, 17, { size: 8.5, bold: true, color: C.white });
-    this.text("Declined-work summary", M + this.width("AutoRev", 8.5, true) + 8, 17, {
+    this.mark(M, 6.5, 13);
+    const wm = this.wordmark(M + 22, 17, 8.5);
+    this.text("Declined-work report", M + 22 + wm + 8, 17, {
       size: 8,
       color: C.slate400,
     });
@@ -213,7 +257,7 @@ class SummaryWriter {
         x += this.width("SAMPLE REPORT", 7, true, 0.6) + 8;
       }
       this.text(
-        "AutoRev · Generated in your browser. The uploaded file was not sent or stored.",
+        `${BRAND.name} · Generated locally in your browser from the selected report.`,
         x,
         fy,
         { size: 7, color: C.ink3 },
@@ -239,6 +283,8 @@ class SummaryWriter {
         "Declined value by days since the estimate.",
         this.a.ageBuckets,
         (_, i) => AGE_COLORS[i] ?? C.slate300,
+        false,
+        this.a.undated,
       );
     }
     this.breakdown(
@@ -254,21 +300,23 @@ class SummaryWriter {
   }
 
   private header() {
-    const { isSample, fileName, generatedAt = new Date() } = this.input;
+    const { isSample, fileName, analyzedAt } = this.input;
     this.rect(0, 0, PAGE_W, 78, C.navy);
     this.rect(0, 78, PAGE_W, 2, C.amber);
 
-    // Mark: navy tile with an amber trend line, as in the site header.
-    this.rect(M, 22, 30, 30, C.navyDeep, 6);
-    this.doc.setDrawColor(C.amber);
-    this.doc.setLineWidth(1.8);
-    this.doc.lines([[6, -6], [4, 4], [8, -9]], M + 7, 42);
-    this.text("AutoRev", M + 42, 36, { size: 15, bold: true, color: C.white });
-    this.text("Declined-work summary", M + 42, 50, { size: 9, color: C.slate400 });
+    this.mark(M, 23, 27);
+    this.wordmark(M + 44, 36, 15);
+    this.text(BRAND.descriptor, M + 44, 50, {
+      size: 9,
+      color: C.slate400,
+    });
 
-    const generated = `Generated ${formatDate(generatedAt)}, ${generatedAt.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" })}`;
-    this.text(generated, M + W, 36, { size: 8.5, color: C.slate300, align: "right" });
-    this.text(this.truncate(fileName, 230, 8), M + W, 50, {
+    this.text(`Analyzed ${formatDateTime(analyzedAt)}`, M + W, 36, {
+      size: 8.5,
+      color: C.slate300,
+      align: "right",
+    });
+    this.text(this.truncate(`Source: ${fileName}`, 230, 8), M + W, 50, {
       size: 8,
       color: C.slate400,
       align: "right",
@@ -312,7 +360,7 @@ class SummaryWriter {
       color: C.amber,
       charSpace: 1.4,
     });
-    const total = formatCurrency(a.total);
+    const total = this.money(a.total);
     this.text(total, x + 24, y + 72, {
       size: this.fit(total, leftW, 40, 20),
       bold: true,
@@ -332,7 +380,7 @@ class SummaryWriter {
       tx += 14;
       this.dot(tx, ty - 3, C.emeraldBright, 2);
       tx += 7;
-      const recent = formatCurrency(a.recency.recent.value);
+      const recent = this.money(a.recency.recent.value);
       this.text(recent, tx, ty, { size: 9.5, bold: true, color: C.emeraldBright });
       tx += this.width(recent, 9.5, true) + 3;
       this.text(`declined in the last ${RECENT_DAYS} days`, tx, ty, {
@@ -354,7 +402,7 @@ class SummaryWriter {
         color: C.slate400,
         charSpace: 1,
       });
-      const lv = formatCurrency(leadValue);
+      const lv = this.money(leadValue);
       this.text(lv, px + 14, py + 46, {
         size: this.fit(lv, pw - 28, 20, 11),
         bold: true,
@@ -380,20 +428,20 @@ class SummaryWriter {
       {
         label: "Declined opportunities",
         value: a.count.toLocaleString("en-US"),
-        note: "Rows with a declined amount",
+        note: "Opportunities included in this analysis",
         accent: C.slate400,
         color: C.ink,
       },
       {
         label: "Average opportunity",
-        value: formatCurrencyExact(Math.round(a.average * 100) / 100),
+        value: formatAverage(a.average, a.showCents),
         note: "Per declined job",
         accent: C.navy,
         color: C.navy,
       },
       {
         label: "Highest-value opportunity",
-        value: formatCurrencyExact(a.highest.amount),
+        value: this.money(a.highest.amount),
         note: a.highest.service,
         accent: C.amber,
         color: C.amberHover,
@@ -402,7 +450,7 @@ class SummaryWriter {
     if (a.hasDates) {
       cards.push({
         label: `Declined in last ${RECENT_DAYS} days`,
-        value: formatCurrency(a.recency.recent.value),
+        value: this.money(a.recency.recent.value),
         note: `${recentPct}% of dated declined value`,
         accent: C.emerald,
         color: C.emerald,
@@ -447,7 +495,11 @@ class SummaryWriter {
   private recency() {
     const { recent, older } = this.a.recency;
     const [rp, op] = allocatePercents([recent.value, older.value]);
-    this.ensure(110);
+    const undatedNote =
+      this.a.undatedCount > 0
+        ? undatedSplitNote(this.a.undatedCount, this.a.undated.value, this.money)
+        : undefined;
+    this.ensure(undatedNote ? 128 : 110);
     this.sectionTitle(
       "How recently the work was declined",
       `Split at ${RECENT_DAYS} days since the work was declined.`,
@@ -471,13 +523,19 @@ class SummaryWriter {
       const lw = this.width(label, 8);
       this.dot(right ? x - lw - 7 : x + 3, y + 25, color);
       this.text(label, right ? x : x + 10, y + 28, { size: 8, color: C.ink2, align });
-      this.text(formatCurrency(b.value), x, y + 50, { size: 17, bold: true, color: C.ink, align });
+      this.text(this.money(b.value), x, y + 50, { size: 17, bold: true, color: C.ink, align });
       this.text(
         `${b.count ? pct : 0}% of value · ${plural(b.count, "opportunity", "opportunities")}`,
         x,
         y + 63,
         { size: 8, color: C.ink3, align },
       );
+    }
+    if (undatedNote) {
+      this.hline(y + 74, C.line);
+      this.text(undatedNote, M, y + 88, { size: 8, color: C.ink3 });
+      this.y = y + 106;
+      return;
     }
     this.y = y + 88;
   }
@@ -488,12 +546,16 @@ class SummaryWriter {
     buckets: Bucket[],
     color: (b: Bucket, i: number) => string,
     withDots = false,
+    /** Undated work: listed after the bars without one, plus a total row. */
+    unknown?: Bucket,
   ) {
     const rowH = 19;
+    const extra = unknown && unknown.count > 0 ? unknown : undefined;
+    const all = extra ? [...buckets, extra] : buckets;
     // Keep short sections together; long ones flow row by row.
-    this.ensure(Math.min(34 + buckets.length * rowH + 8, 260));
+    this.ensure(Math.min(34 + (all.length + (extra ? 1 : 0)) * rowH + 8, 260));
     this.sectionTitle(title, subtitle);
-    const shares = allocatePercents(buckets.map((b) => b.value));
+    const shares = allocatePercents(all.map((b) => b.value));
     const max = Math.max(...buckets.map((b) => b.value), 1);
     const labelW = 130;
     const barX = M + labelW + 8;
@@ -515,7 +577,7 @@ class SummaryWriter {
       });
       this.rect(barX, y + 3, barW, 5, C.slate100, 2.5);
       this.rect(barX, y + 3, Math.max(barW * (b.value / max), b.value > 0 ? 3 : 0), 5, c, 2.5);
-      this.text(formatCurrency(b.value), amountX, y + 8.5, {
+      this.text(this.money(b.value), amountX, y + 8.5, {
         size: 8.5,
         bold: true,
         color: C.ink,
@@ -530,6 +592,45 @@ class SummaryWriter {
       if (i < buckets.length - 1) this.hline(y + 14, C.slate100);
       this.y += rowH;
     });
+
+    if (extra) {
+      const summary = (
+        label: string,
+        b: Bucket,
+        pct: number,
+        bold: boolean,
+      ) => {
+        this.ensure(rowH);
+        const y = this.y;
+        this.hline(y - 5, C.line);
+        this.text(label, M, y + 8.5, { size: 8.5, bold, color: bold ? C.ink : C.ink2 });
+        this.text(this.money(b.value), amountX, y + 8.5, {
+          size: 8.5,
+          bold: true,
+          color: C.ink,
+          align: "right",
+        });
+        this.text(
+          `${plural(b.count, "opportunity", "opportunities")} · ${pct}% of value`,
+          M + W,
+          y + 8.5,
+          { size: 7.5, color: C.ink3, align: "right" },
+        );
+        this.y += rowH;
+      };
+      this.y += 4;
+      summary(extra.label, extra, shares[buckets.length], false);
+      summary(
+        "Total",
+        {
+          label: "Total",
+          count: all.reduce((s, b) => s + b.count, 0),
+          value: all.reduce((s, b) => s + b.value, 0),
+        },
+        shares.reduce((s, p) => s + p, 0),
+        true,
+      );
+    }
     this.y += 18;
   }
 
@@ -647,7 +748,7 @@ class SummaryWriter {
         this.text("No date", k.date, y + 18, { size: 8, color: C.ink3 });
       }
 
-      const amount = formatCurrencyExact(o.amount);
+      const amount = this.money(o.amount);
       const amountW = k.amountR - (k.date + k.dateW + 6);
       this.text(amount, k.amountR, y + 18.5, {
         size: this.fit(amount, amountW, top ? 10.5 : 9.5, 6.5),

@@ -78,6 +78,7 @@ export const FIELD_DEFS: Record<FieldKey, FieldDef> = {
     check: "date",
     strong: [
       "declined date", "decline date", "date declined", "declined on", "deferred date",
+      "deferred on", "date deferred", "rejected on", "rejected date", "date rejected",
       "estimate date", "recommended date", "recommendation date", "service date", "ro date",
       "invoice date", "created date", "created on", "date created", "open date",
       "date opened", "opened", "visit date", "appointment date", "repair order date",
@@ -106,7 +107,11 @@ export const FIELD_DEFS: Record<FieldKey, FieldDef> = {
     strong: [
       "record id", "line id", "line item id", "job id", "declined item id",
       "unique id", "row id", "recommendation id", "declined id", "declined line id",
+      "line key", "record key", "item id", "estimate line id",
     ],
+    // One repair order can hold several service lines, so RO/order numbers
+    // must never be read as a line-level unique ID.
+    exclude: ["ro", "order"],
   },
   year: { label: "Year", required: false, ui: false, strong: ["vehicle year", "model year", "year", "yr"], exclude: ["date"] },
   make: { label: "Make", required: false, ui: false, strong: ["vehicle make", "make", "manufacturer"] },
@@ -117,12 +122,12 @@ const ALL_FIELDS = Object.keys(FIELD_DEFS) as FieldKey[];
 export const MAPPER_FIELDS = ALL_FIELDS.filter((k) => FIELD_DEFS[k].ui);
 export const REQUIRED_FIELDS = MAPPER_FIELDS.filter((k) => FIELD_DEFS[k].required);
 
-const CONFIDENT_SCORE = 70;
+export const CONFIDENT_SCORE = 70;
 const SUGGEST_SCORE = 50;
 const SAMPLE_SIZE = 50;
 const MS_PER_DAY = 86_400_000;
 
-const normalizeHeader = (h: string) =>
+export const normalizeHeader = (h: string) =>
   h.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
 
 function scoreHeader(header: string, def: FieldDef): number {
@@ -266,7 +271,7 @@ export function detectColumns(table: ParsedTable): DetectionResult {
   const confident = REQUIRED_FIELDS.every(
     (f) => (scores[f] ?? 0) >= CONFIDENT_SCORE,
   );
-  return { mapping, confident };
+  return { mapping, confident, scores };
 }
 
 // ---------- normalization ----------

@@ -1,9 +1,12 @@
 "use client";
 
-import { useRef, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type DragEvent, type ReactNode } from "react";
 import { LockIcon } from "./PrivacyBadge";
+import { button, size } from "./ui";
 
 interface Props {
+  /** Focus the upload button on arrival (after clearing a report). */
+  focusOnMount?: boolean;
   onFile: (file: File) => void;
   onSample: () => void;
   busy: boolean;
@@ -38,7 +41,7 @@ const STEPS: { title: string; body: string; icon: ReactNode }[] = [
   },
   {
     title: "See the opportunity",
-    body: "Get the total value, the largest jobs, and where the money is concentrated.",
+    body: "Get the total value, the largest jobs, and where the opportunity is concentrated.",
     icon: icon("M4 20V10M10 20V4M16 20v-7M22 20H2"),
   },
 ];
@@ -53,13 +56,64 @@ const EXAMPLE_ROWS: [string, string, string, string][] = [
 
 const EXAMPLE_STATS: [string, string, string][] = [
   ["Opportunities", "36", "text-white"],
-  ["Average value", "$1,186", "text-white"],
+  ["Average value", "$1,185", "text-white"],
   ["Last 90 days", "$8,920", "text-positive-bright"],
 ];
 
-export default function UploadPanel({ onFile, onSample, busy, error }: Props) {
+/** The raw export the example starts from; matches EXAMPLE_ROWS. */
+const EXAMPLE_RAW: [string, string, string, string, string][] = [
+  ["10482", "R. OKAFOR", "TIMING BELT AND WATER PUMP", "1285.00", "09/18/26"],
+  ["10417", "M. DIAZ", "FRONT STRUTS AND MOUNTS", "1140.00", "08/20/26"],
+  ["10251", "J. PATEL", "RADIATOR REPLACEMENT", "920.00", "06/26/26"],
+];
+
+const stepLabel = (n: number, text: string) => (
+  <p className="flex items-center gap-2 text-[11px] font-semibold uppercase tracking-[0.12em] text-ink-3">
+    <span className="grid h-4 w-4 place-items-center rounded-full bg-canvas text-[10px] tracking-normal text-ink-2 ring-1 ring-inset ring-line">
+      {n}
+    </span>
+    {text}
+  </p>
+);
+
+/*
+ * While dragging, browsers expose only a MIME type, not the file name. CSVs
+ * often arrive as Excel's type or with no type at all, so anything in this
+ * set (or blank) looks valid; the name is checked for real on drop.
+ */
+const SPREADSHEET_TYPES = new Set([
+  "",
+  "text/csv",
+  "text/plain",
+  "application/csv",
+  "text/x-csv",
+  "text/comma-separated-values",
+  "application/vnd.ms-excel",
+  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+]);
+
+type DragState = "idle" | "valid" | "invalid";
+
+function dragStateOf(e: DragEvent): DragState {
+  const files = [...e.dataTransfer.items].filter((i) => i.kind === "file");
+  if (files.length === 0) return "idle";
+  return SPREADSHEET_TYPES.has(files[0].type) ? "valid" : "invalid";
+}
+
+export default function UploadPanel({
+  focusOnMount = false,
+  onFile,
+  onSample,
+  busy,
+  error,
+}: Props) {
   const inputRef = useRef<HTMLInputElement>(null);
-  const [dragging, setDragging] = useState(false);
+  const uploadRef = useRef<HTMLButtonElement>(null);
+  const [drag, setDrag] = useState<DragState>("idle");
+
+  useEffect(() => {
+    if (focusOnMount) uploadRef.current?.focus({ preventScroll: true });
+  }, [focusOnMount]);
 
   const pick = (files: FileList | null) => {
     const file = files?.[0];
@@ -69,7 +123,7 @@ export default function UploadPanel({ onFile, onSample, busy, error }: Props) {
   return (
     <div className="mx-auto max-w-5xl">
       <div className="mx-auto max-w-3xl text-center">
-        <p className="eyebrow text-ink-2">For independent auto repair shops</p>
+        <p className="eyebrow text-ink-2">For independent repair shops</p>
         <h1 className="mt-4 text-4xl font-semibold tracking-tight text-balance text-navy sm:text-5xl lg:text-[3.4rem] lg:leading-[1.06]">
           See how much{" "}
           <span className="highlight whitespace-nowrap px-[0.06em]">
@@ -79,7 +133,7 @@ export default function UploadPanel({ onFile, onSample, busy, error }: Props) {
         </h1>
         <p className="mx-auto mt-5 max-w-2xl text-lg leading-relaxed text-pretty text-ink-2">
           Upload your declined-work report and instantly see the total value,
-          highest-value opportunities, and where the money is concentrated.
+          highest-value jobs, and where the opportunity is concentrated.
         </p>
       </div>
 
@@ -87,40 +141,48 @@ export default function UploadPanel({ onFile, onSample, busy, error }: Props) {
         <div
           onDragOver={(e) => {
             e.preventDefault();
-            setDragging(true);
+            const next = busy ? "idle" : dragStateOf(e);
+            if (next !== drag) setDrag(next);
           }}
           onDragLeave={(e) => {
             if (!e.currentTarget.contains(e.relatedTarget as Node | null)) {
-              setDragging(false);
+              setDrag("idle");
             }
           }}
           onDrop={(e) => {
             e.preventDefault();
-            setDragging(false);
+            setDrag("idle");
             pick(e.dataTransfer.files);
           }}
-          className={`rounded-2xl border-2 border-dashed px-5 py-10 text-center transition-colors duration-200 sm:px-10 sm:py-12 ${
-            dragging
-              ? "border-opportunity bg-opportunity-soft/70"
-              : "border-slate-300/80 bg-canvas/60"
+          aria-busy={busy}
+          className={`rounded-2xl border-2 border-dashed px-5 py-10 text-center transition-colors duration-150 sm:px-10 sm:py-12 ${
+            drag === "valid"
+              ? "border-opportunity bg-opportunity-soft/40"
+              : drag === "invalid"
+                ? "border-danger/50 bg-danger-soft/70"
+                : "border-slate-300/80 bg-canvas/60"
           }`}
         >
+          {/* Opened by the upload button, so it stays out of the tab order. */}
           <input
             ref={inputRef}
             type="file"
             accept=".csv,.xlsx"
-            className="sr-only"
-            aria-label="Upload declined-work report"
+            className="hidden"
+            tabIndex={-1}
+            aria-hidden
             onChange={(e) => {
               pick(e.target.files);
               e.target.value = "";
             }}
           />
           <div
-            className={`mx-auto grid h-16 w-16 place-items-center rounded-2xl ring-1 ring-inset transition duration-200 ${
-              dragging
-                ? "scale-110 bg-opportunity-soft text-opportunity-ink ring-opportunity/40"
-                : "bg-navy/5 text-navy ring-navy/10"
+            className={`mx-auto grid h-16 w-16 place-items-center rounded-2xl ring-1 ring-inset transition duration-150 motion-reduce:transition-none ${
+              drag === "valid"
+                ? "scale-105 bg-opportunity-soft text-opportunity-ink ring-opportunity/50"
+                : drag === "invalid"
+                  ? "bg-danger-soft text-danger ring-danger/30"
+                  : "bg-navy/5 text-navy ring-navy/10"
             } ${busy ? "motion-safe:animate-pulse" : ""}`}
           >
             <svg
@@ -136,23 +198,33 @@ export default function UploadPanel({ onFile, onSample, busy, error }: Props) {
               <path d="M12 15V4M7.5 8.5 12 4l4.5 4.5M4 14v4a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-4" />
             </svg>
           </div>
-          <p className="mt-5 text-lg font-semibold tracking-tight text-ink sm:text-xl">
+          <p
+            aria-live="polite"
+            className="mt-5 text-lg font-semibold tracking-tight text-balance text-ink sm:text-xl"
+          >
             {busy
-              ? "Reading your file…"
-              : dragging
-                ? "Drop to scan your report"
-                : "Drop your declined-work report here"}
+              ? "Analyzing declined work…"
+              : drag === "valid"
+                ? "Drop file to scan"
+                : drag === "invalid"
+                  ? "This file type isn’t supported"
+                  : "Drop your declined-work report here"}
           </p>
           <p className="mt-1 text-sm text-ink-3">
-            or choose a file from your computer
+            {drag === "invalid"
+              ? "Upload a CSV or XLSX report."
+              : busy
+                ? "This happens in your browser and only takes a moment."
+                : "or choose a file from your computer"}
           </p>
 
           <div className="mt-7 flex flex-col items-stretch justify-center gap-3 sm:flex-row sm:items-center">
             <button
+              ref={uploadRef}
               type="button"
               disabled={busy}
               onClick={() => inputRef.current?.click()}
-              className="inline-flex h-12 items-center justify-center rounded-lg bg-opportunity px-6 text-[15px] font-semibold text-navy-deep shadow-sm shadow-opportunity/30 transition hover:-translate-y-px hover:bg-opportunity-hover hover:shadow-md focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-navy disabled:opacity-60"
+              className={`${button.primary} ${size.lg}`}
             >
               Upload declined-work report
             </button>
@@ -160,7 +232,7 @@ export default function UploadPanel({ onFile, onSample, busy, error }: Props) {
               type="button"
               disabled={busy}
               onClick={onSample}
-              className="inline-flex h-12 items-center justify-center rounded-lg border border-slate-300 bg-surface px-6 text-[15px] font-semibold text-navy transition hover:border-slate-400 hover:bg-canvas focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-navy disabled:opacity-60"
+              className={`${button.secondary} ${size.lg}`}
             >
               Try a sample report
             </button>
@@ -193,7 +265,7 @@ export default function UploadPanel({ onFile, onSample, busy, error }: Props) {
             <svg
               aria-hidden
               viewBox="0 0 16 16"
-              className="h-4 w-4 text-positive"
+              className="h-4 w-4 text-navy"
               fill="none"
               stroke="currentColor"
               strokeWidth="1.8"
@@ -207,14 +279,14 @@ export default function UploadPanel({ onFile, onSample, busy, error }: Props) {
         ))}
       </ul>
 
-      <section className="mt-20">
+      <section className="mx-auto mt-20 max-w-4xl">
         <h2 className="eyebrow text-center text-ink-2">How it works</h2>
-        {/* Two across with the last step centered beneath; one row on desktop. */}
-        <ol className="mt-6 grid grid-cols-2 gap-3 sm:gap-4 lg:grid-cols-3">
+        {/* Stacked on phones; one row from tablet width up. */}
+        <ol className="mt-6 grid gap-3 sm:grid-cols-3 sm:gap-4">
           {STEPS.map((s, i) => (
             <li
               key={s.title}
-              className="rounded-2xl border border-line bg-surface/70 p-4 last:col-span-2 last:w-[calc(50%-0.375rem)] last:justify-self-center sm:p-5 sm:last:w-[calc(50%-0.5rem)] lg:last:col-span-1 lg:last:w-auto"
+              className="rounded-2xl border border-line bg-surface/70 p-4 sm:p-5"
             >
               <div className="flex items-center gap-3">
                 <span className="grid h-10 w-10 place-items-center rounded-xl bg-canvas text-navy ring-1 ring-inset ring-line">
@@ -244,20 +316,36 @@ export default function UploadPanel({ onFile, onSample, busy, error }: Props) {
 
         <figure
           aria-label="Example results preview with illustrative numbers"
-          className="mx-auto mt-8 max-w-4xl select-none rounded-3xl border border-line bg-surface p-2.5 shadow-lift sm:p-3"
+          className="mx-auto mt-8 max-w-4xl select-none rounded-3xl border border-line bg-surface p-2.5 shadow-card sm:p-3"
         >
-          <div className="flex items-center justify-between gap-3 px-2 pb-3 pt-1 sm:px-3">
-            <div className="min-w-0">
-              <p className="eyebrow text-ink-3">Scan results</p>
-              <p className="truncate text-sm font-semibold text-ink">
-                declined-work-export.xlsx
-              </p>
+          <div className="px-2 pb-3 pt-1 sm:px-3">
+            <div className="flex items-center justify-between gap-3">
+              {stepLabel(1, "Your export")}
+              <span className="inline-flex shrink-0 items-center gap-1.5 rounded-full bg-navy/[0.05] px-2.5 py-1 text-xs font-medium text-navy ring-1 ring-inset ring-navy/10">
+                <LockIcon className="h-3.5 w-3.5" />
+                Processed locally
+              </span>
             </div>
-            <span className="inline-flex shrink-0 items-center gap-1.5 rounded-full bg-positive-soft px-2.5 py-1 text-xs font-medium text-positive-ink ring-1 ring-inset ring-positive/20">
-              <LockIcon className="h-3.5 w-3.5" />
-              Processed locally
-            </span>
+            <div className="mt-2.5 overflow-hidden rounded-lg border border-line font-mono text-[11px] leading-5 text-ink-3">
+              <p className="truncate border-b border-line bg-canvas px-3 py-1 text-ink-2">
+                declined-work-export.xlsx
+                <span className="text-ink-3"> · 36 rows</span>
+              </p>
+              {EXAMPLE_RAW.map(([ro, customer, work, total, date]) => (
+                <div
+                  key={ro}
+                  className="grid grid-cols-[minmax(0,1fr)_4.5rem] gap-x-4 border-b border-line/70 px-3 py-0.5 last:border-b-0 sm:grid-cols-[3rem_6rem_minmax(0,1fr)_4.5rem_4.5rem]"
+                >
+                  <span className="hidden sm:block">{ro}</span>
+                  <span className="hidden truncate sm:block">{customer}</span>
+                  <span className="truncate">{work}</span>
+                  <span className="text-right tabular-nums">{total}</span>
+                  <span className="hidden text-right sm:block">{date}</span>
+                </div>
+              ))}
+            </div>
           </div>
+          <div className="px-2 pb-2.5 sm:px-3">{stepLabel(2, "Your result")}</div>
           <div className="relative overflow-hidden rounded-2xl bg-navy-deep px-6 py-8 text-white sm:px-10 sm:py-10">
             <div
               aria-hidden
@@ -276,8 +364,8 @@ export default function UploadPanel({ onFile, onSample, busy, error }: Props) {
             </span>
             <div className="relative">
               <p className="eyebrow text-opportunity">Declined work identified</p>
-              <p className="mt-3 text-5xl font-semibold tracking-tight tabular-nums sm:text-6xl">
-                $42,680
+              <p className="mt-3 text-4xl font-semibold tracking-tight tabular-nums sm:text-5xl">
+                $42,660
               </p>
               <dl className="mt-8 grid gap-px overflow-hidden rounded-xl bg-white/10 ring-1 ring-inset ring-white/10 sm:grid-cols-3">
                 {EXAMPLE_STATS.map(([label, value, tone]) => (
@@ -298,7 +386,8 @@ export default function UploadPanel({ onFile, onSample, busy, error }: Props) {
               </dl>
             </div>
           </div>
-          <ol className="divide-y divide-line px-2 pt-2 sm:px-4">
+          <div className="px-2 pt-4 sm:px-3">{stepLabel(3, "The jobs behind it")}</div>
+          <ol className="divide-y divide-line px-2 pt-1 sm:px-4">
             {EXAMPLE_ROWS.map(([service, vehicle, age, amount], i) => (
               <li key={service} className="flex items-center gap-3 py-3">
                 <span className="grid h-7 w-7 shrink-0 place-items-center rounded-lg bg-opportunity-soft text-xs font-semibold text-opportunity-ink ring-1 ring-inset ring-opportunity/30">
@@ -317,17 +406,17 @@ export default function UploadPanel({ onFile, onSample, busy, error }: Props) {
         </figure>
       </section>
 
-      <section className="mx-auto mt-16 max-w-2xl text-center">
-        <span className="mx-auto grid h-10 w-10 place-items-center rounded-xl bg-positive-soft text-positive-ink ring-1 ring-inset ring-positive/20">
+      <section className="mx-auto mt-20 max-w-2xl text-center">
+        <span className="mx-auto grid h-10 w-10 place-items-center rounded-xl bg-navy/[0.05] text-navy ring-1 ring-inset ring-navy/10">
           <LockIcon className="h-5 w-5" />
         </span>
         <h2 className="mt-4 text-lg font-semibold tracking-tight text-navy">
           Your customer data stays on your computer
         </h2>
         <p className="mt-2 text-sm leading-relaxed text-ink-2">
-          Your report is read inside this browser tab and is never sent to a
-          server or saved. There&apos;s no account to create, and closing or
-          refreshing the page clears everything.
+          ReclaimBay reads your report inside this browser tab. It is never
+          sent to a server or saved. There&apos;s no account to create, and
+          closing or refreshing the page clears everything.
         </p>
       </section>
     </div>

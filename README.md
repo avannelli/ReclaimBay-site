@@ -1,6 +1,6 @@
-# AutoRev Scanner
+# ReclaimBay
 
-Validation prototype: upload a declined/deferred-work export (CSV or XLSX) from an independent auto repair shop and see how much declined work it contains, organized by value and age.
+ReclaimBay: declined-work intelligence for repair shops. Upload a declined/deferred-work export (CSV or XLSX) from an independent auto repair shop and see how much declined work it contains, organized by value and age.
 
 Files are parsed in the browser and held only in React state. Nothing is uploaded, stored, or sent anywhere.
 

@@ -29,9 +29,7 @@ function findHeaderRow(rows: RawCell[][]): number {
 function toTable(fileName: string, matrix: RawCell[][]): ParsedTable {
   const rows = matrix.filter((r) => r.some((c) => !isBlank(c)));
   if (rows.length < 2) {
-    throw new FileParseError(
-      "We couldn't find any rows of data in that file. Open it in Excel and check that the first row has column names with your declined jobs listed below it, then upload it again.",
-    );
+    throw new FileParseError("This file doesn't contain any rows to analyze.");
   }
   const headerIdx = findHeaderRow(rows);
   const width = Math.max(...rows.map((r) => r.length));
@@ -46,7 +44,9 @@ function toTable(fileName: string, matrix: RawCell[][]): ParsedTable {
     .slice(headerIdx + 1)
     .map((r) => Array.from({ length: width }, (_, i) => r[i] ?? null));
   if (dataRows.length === 0) {
-    throw new FileParseError("We found column names but no jobs listed under them. Check that the export wasn't empty and upload it again.");
+    throw new FileParseError(
+      "This file has column names but no rows to analyze. Check that the export includes your declined jobs.",
+    );
   }
   return { fileName, headers, rows: dataRows };
 }
@@ -56,7 +56,12 @@ function parseCsv(file: File): Promise<RawCell[][]> {
     Papa.parse<string[]>(file, {
       skipEmptyLines: "greedy",
       complete: (result) => resolve(result.data),
-      error: () => reject(new FileParseError("We couldn't read that CSV file. Try opening it in Excel, saving it as a new CSV (or .xlsx) file, and uploading that.")),
+      error: () =>
+        reject(
+          new FileParseError(
+            "We couldn't read this CSV file. Try exporting it again from your shop software.",
+          ),
+        ),
     });
   });
 }
@@ -69,12 +74,17 @@ export async function parseFile(file: File): Promise<ParsedTable> {
   if (!isCsv && !isXlsx) {
     throw new FileParseError(
       name.endsWith(".xls")
-        ? "Older Excel (.xls) files aren't supported. Open the file in Excel, choose File > Save As, pick \"Excel Workbook (.xlsx)\" or \"CSV\", and upload the new file."
-        : "That file type isn't supported. Please upload a .csv or .xlsx file exported from your shop system.",
+        ? "Older .xls files aren't supported. In Excel, use File > Save As to save it as .xlsx or CSV, then upload that."
+        : "This file type isn't supported. Upload a CSV or XLSX report.",
     );
   }
   if (file.size > MAX_BYTES) {
-    throw new FileParseError("That file is larger than 15 MB. Export a shorter date range (for example, the last 12 months) and try again.");
+    throw new FileParseError(
+      "This file is larger than 15 MB. Export a shorter date range (for example, the last 12 months) and try again.",
+    );
+  }
+  if (file.size === 0) {
+    throw new FileParseError("This file doesn't contain any rows to analyze.");
   }
 
   try {
@@ -84,14 +94,14 @@ export async function parseFile(file: File): Promise<ParsedTable> {
     // The library's typings declare date cells as `typeof Date`; they're Date instances.
     const sheets = (await readXlsxFile(file)).map((s) => s.data as unknown as RawCell[][]);
     const data = sheets.find((rows) => rows.some((r) => r.some((c) => !isBlank(c))));
-    if (!data) throw new FileParseError("That Excel file appears to be empty. Check that your declined work is on one of its sheets and try again.");
+    if (!data) throw new FileParseError("This spreadsheet doesn't contain any rows to analyze.");
     return toTable(file.name, data);
   } catch (err) {
     if (err instanceof FileParseError) throw err;
     throw new FileParseError(
       isXlsx
-        ? "We couldn't open that Excel file. It may be password-protected or damaged. Remove any password, re-save it as .xlsx or CSV, and try again."
-        : "We couldn't read that file. Try re-saving it as a CSV and uploading it again.",
+        ? "We couldn't read this spreadsheet. It may be damaged or password-protected. Try exporting it again from your shop software."
+        : "We couldn't read this file. Try exporting it again from your shop software.",
     );
   }
 }

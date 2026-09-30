@@ -1,5 +1,6 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
+import { BRAND } from "@/lib/brand";
 import "./globals.css";
 
 const geistSans = Geist({
@@ -12,10 +13,20 @@ const geistMono = Geist_Mono({
   subsets: ["latin"],
 });
 
+const title = `${BRAND.name} | ${BRAND.descriptor}`;
+const description =
+  "Upload your declined-work report and see the total value, the highest-value jobs, and where the opportunity is concentrated. Analyzed privately in your browser.";
+
 export const metadata: Metadata = {
-  title: "AutoRev | Declined-work analysis for repair shops",
-  description:
-    "Upload a declined or deferred work export and see how much declined work is sitting in your shop's past estimates, organized by value and age.",
+  title,
+  description,
+  applicationName: BRAND.name,
+  openGraph: { title, description, siteName: BRAND.name, type: "website" },
+  twitter: { card: "summary", title, description },
+};
+
+export const viewport: Viewport = {
+  themeColor: "#0b1f33",
 };
 
 export default function RootLayout({ children }: LayoutProps<"/">) {

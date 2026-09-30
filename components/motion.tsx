@@ -6,15 +6,13 @@ import {
   type CSSProperties,
   type ReactNode,
 } from "react";
+import { prefersReducedMotion } from "@/lib/scroll";
 
 /**
  * Small animation helpers. All of them respect the user's
  * "reduce motion" setting by jumping straight to the final state.
  */
 
-const prefersReducedMotion = () =>
-  typeof window !== "undefined" &&
-  window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 
 const easeOutQuart = (t: number) => 1 - Math.pow(1 - t, 4);
 

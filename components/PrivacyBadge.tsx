@@ -1,4 +1,11 @@
-/** Concise privacy badge shown alongside results. */
+"use client";
+
+import { Popover } from "./overlay";
+
+/**
+ * Concise privacy badge shown alongside results. Clicking it explains what
+ * "processed locally" means, including that a refresh clears the report.
+ */
 export default function PrivacyBadge({
   className = "",
   onDark = false,
@@ -8,16 +15,29 @@ export default function PrivacyBadge({
   onDark?: boolean;
 }) {
   return (
-    <span
-      className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium ring-1 ring-inset ${
+    <Popover
+      prefer={onDark ? "top" : "bottom"}
+      title="Your file stays in this browser"
+      triggerClassName={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium ring-1 ring-inset transition-colors duration-150 focus-visible:outline-2 focus-visible:outline-offset-2 ${
         onDark
-          ? "bg-white/5 text-slate-300 ring-white/10"
-          : "bg-positive-soft text-positive-ink ring-positive/20"
+          ? "bg-white/5 text-slate-300 ring-white/10 hover:bg-white/10 hover:text-white focus-visible:outline-opportunity"
+          : "bg-navy/[0.05] text-navy ring-navy/10 hover:bg-navy/[0.08] focus-visible:outline-navy"
       } ${className}`}
+      trigger={
+        <>
+          <LockIcon className="h-3.5 w-3.5 shrink-0" />
+          Private scan · Processed locally
+        </>
+      }
     >
-      <LockIcon className="h-3.5 w-3.5 shrink-0" />
-      Private scan · Processed locally
-    </span>
+      <p>
+        ReclaimBay analyzes the selected report locally on your device.
+        Customer data is not uploaded to ReclaimBay or stored on a server.
+      </p>
+      <p className="text-ink-3">
+        Refreshing or closing the page clears the current report.
+      </p>
+    </Popover>
   );
 }
 

@@ -1,7 +1,7 @@
 @import "tailwindcss";
 
 /*
- * AutoRev color system. Every accent in the UI comes from these tokens.
+ * ReclaimBay color system. Every accent in the UI comes from these tokens.
  *   Navy     = trust and structure (brand, dark surfaces)
  *   Amber    = opportunity worth attention (used sparingly)
  *   Emerald  = positive financial value
@@ -68,6 +68,36 @@
 
   --animate-fade-up: fade-up 650ms cubic-bezier(0.22, 1, 0.36, 1) both;
   --animate-settle: settle 1100ms cubic-bezier(0.22, 1, 0.36, 1) both;
+  --animate-fade-in: fade-in 220ms ease-out both;
+  --animate-dialog-in: dialog-in 260ms cubic-bezier(0.22, 1, 0.36, 1) both;
+  --animate-fade-out: fade-out 260ms ease-in both;
+
+  @keyframes fade-out {
+    to {
+      opacity: 0;
+      transform: scale(0.985);
+    }
+  }
+
+  @keyframes fade-in {
+    from {
+      opacity: 0;
+    }
+    to {
+      opacity: 1;
+    }
+  }
+
+  @keyframes dialog-in {
+    from {
+      opacity: 0;
+      transform: translateY(8px) scale(0.98);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0) scale(1);
+    }
+  }
 
   @keyframes fade-up {
     from {
@@ -125,6 +155,78 @@ body {
 @media (prefers-reduced-motion: no-preference) {
   html {
     scroll-behavior: smooth;
+  }
+}
+
+/*
+ * Upload transition: the ReclaimBay mark assembles itself. The bay fades in,
+ * the bars rise, then the arrow draws its upward swoop and lands its head.
+ * About 1.1s in all; with reduced motion the mark simply appears complete.
+ */
+@media (prefers-reduced-motion: no-preference) {
+  .rb-anim .rb-bay {
+    animation: rb-fade 320ms ease-out both;
+  }
+  .rb-anim .rb-bar {
+    transform-box: fill-box;
+    transform-origin: bottom;
+    animation: rb-rise 420ms cubic-bezier(0.22, 1, 0.36, 1) both;
+  }
+  .rb-anim .rb-lift {
+    animation: rb-lift 900ms cubic-bezier(0.22, 1, 0.36, 1) 380ms both;
+  }
+  .rb-anim .rb-arrow {
+    animation: rb-draw 620ms cubic-bezier(0.65, 0, 0.35, 1) 380ms both;
+  }
+  .rb-anim .rb-head {
+    transform-box: fill-box;
+    transform-origin: 30% 70%;
+    animation: rb-pop 280ms cubic-bezier(0.22, 1, 0.36, 1) 900ms both;
+  }
+  .rb-word {
+    animation: rb-fade 420ms ease-out 120ms both;
+  }
+}
+
+@keyframes rb-fade {
+  from {
+    opacity: 0;
+  }
+}
+
+@keyframes rb-rise {
+  from {
+    opacity: 0;
+    transform: scaleY(0.15);
+  }
+}
+
+@keyframes rb-lift {
+  from {
+    transform: translate(-1.5px, 2.5px);
+  }
+}
+
+/*
+ * The dash starts fully off the path (offset > 1, gap > path length). With
+ * the dash ending exactly at the path's start, its round cap would still
+ * paint a dot there before the swoop begins.
+ */
+@keyframes rb-draw {
+  from {
+    stroke-dasharray: 1 2;
+    stroke-dashoffset: 1.1;
+  }
+  to {
+    stroke-dasharray: 1 2;
+    stroke-dashoffset: 0;
+  }
+}
+
+@keyframes rb-pop {
+  from {
+    opacity: 0;
+    transform: scale(0.4);
   }
 }
 

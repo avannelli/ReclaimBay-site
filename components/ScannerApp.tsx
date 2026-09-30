@@ -1,119 +1,193 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { analyze } from "@/lib/analyze";
 import { detectColumns, normalizeRows } from "@/lib/normalize";
 import { FileParseError, parseFile } from "@/lib/parseFile";
-import type { Analysis, ColumnMapping, ParsedTable } from "@/lib/types";
+import { applyRememberedMappings, rememberConfirmedMappings } from "@/lib/prefs";
+import { prefersReducedMotion, scrollPageTo } from "@/lib/scroll";
+import type {
+  Analysis,
+  ColumnMapping,
+  DetectionResult,
+  ParsedTable,
+} from "@/lib/types";
+import BrandTransition, {
+  TRANSITION_HOLD_MS,
+  TRANSITION_OUT_MS,
+  TRANSITION_REDUCED_HOLD_MS,
+  TRANSITION_SHORT_HOLD_MS,
+} from "./BrandTransition";
 import ColumnMapper from "./ColumnMapper";
 import Dashboard from "./Dashboard";
+import EmptyResult from "./EmptyResult";
 import { buildSampleTable } from "@/lib/sampleData";
 import UploadPanel from "./UploadPanel";
+
+/** What the file's columns were matched to, and how. */
+interface Matching {
+  table: ParsedTable;
+  detection: DetectionResult;
+  /** Fields prefilled from mappings the user confirmed on an earlier upload. */
+  remembered: number;
+}
 
 type Stage =
   | { name: "upload" }
   | { name: "parsing" }
-  | { name: "mapping"; table: ParsedTable; suggested: ColumnMapping }
-  | { name: "results"; fileName: string; analysis: Analysis; isSample: boolean };
+  | { name: "mapping"; matching: Matching; suggested: ColumnMapping }
+  | { name: "empty"; matching: Matching; mapping: ColumnMapping }
+  | {
+      name: "results";
+      fileName: string;
+      analysis: Analysis;
+      isSample: boolean;
+      analyzedAt: Date;
+    };
 
 /**
  * Owns the whole flow. Uploaded data lives only in this component's state,
  * so it disappears on reset or page refresh; nothing is sent or stored.
+ * Only the column-header matches a user confirms are remembered locally.
  */
 export default function ScannerApp() {
   const [stage, setStage] = useState<Stage>({ name: "upload" });
   const [error, setError] = useState<string | null>(null);
+  // Guards against a second file starting while one is still being read.
+  const processing = useRef(false);
+
+  // Set when a report is cleared, so the upload button takes focus again.
+  const [focusUpload, setFocusUpload] = useState(false);
 
   const reset = () => {
     setError(null);
+    setFocusUpload(true);
     setStage({ name: "upload" });
   };
 
-  const runAnalysis = (
-    table: ParsedTable,
+  // Every new screen starts at its top: the previous screen's scroll depth
+  // means nothing once its content is replaced.
+  const firstStage = useRef(true);
+  useEffect(() => {
+    if (firstStage.current) {
+      firstStage.current = false;
+      return;
+    }
+    if (stage.name !== "parsing") scrollPageTo(0, { instant: true });
+  }, [stage.name]);
+
+  const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+  // "in" while the branded transition plays; "out" while it fades away.
+  const [transition, setTransition] = useState<"in" | "out" | null>(null);
+
+  /**
+   * Plays the branded transition around a scan. A report is revealed only
+   * after the full sequence, so a fast scan never flickers; a slow one just
+   * holds on the logo. The mapper or an error follows a shorter pause.
+   */
+  const scanWithTransition = async (compute: () => Stage | Promise<Stage>) => {
+    const reduce = prefersReducedMotion();
+    const started = performance.now();
+    setTransition("in");
+    const next = await compute();
+    const hold = reduce
+      ? TRANSITION_REDUCED_HOLD_MS
+      : next.name === "results"
+        ? TRANSITION_HOLD_MS
+        : TRANSITION_SHORT_HOLD_MS;
+    const remaining = hold - (performance.now() - started);
+    if (remaining > 0) await sleep(remaining);
+    // The next screen mounts under the logo and animates in as it fades.
+    setStage(next);
+    if (reduce) {
+      setTransition(null);
+      return;
+    }
+    setTransition("out");
+    await sleep(TRANSITION_OUT_MS);
+    setTransition(null);
+  };
+
+  /** Runs the analysis and returns the screen that should follow it. */
+  const analyzeToStage = (
+    matching: Matching,
     mapping: ColumnMapping,
-    isSample = false,
-  ) => {
+    { isSample = false, confirmedByUser = false } = {},
+  ): Stage => {
+    const { table } = matching;
     try {
       const { opportunities, quality } = normalizeRows(table, mapping);
       const analysis = analyze(opportunities, quality);
-      if (!analysis) {
-        setError(
-          "None of the rows had a dollar amount greater than $0 in the \"Declined amount\" column you selected. Check that this column holds the price of each declined job (not a date, ID, or quantity), or pick a different column.",
-        );
-        setStage({ name: "mapping", table, suggested: mapping });
-        return;
-      }
       setError(null);
-      setStage({ name: "results", fileName: table.fileName, analysis, isSample });
+      if (!analysis) return { name: "empty", matching, mapping };
+      if (confirmedByUser) {
+        rememberConfirmedMappings(table.headers, mapping, matching.detection);
+      }
+      return {
+        name: "results",
+        fileName: table.fileName,
+        analysis,
+        isSample,
+        analyzedAt: new Date(),
+      };
     } catch {
       setError(
-        "We ran into a problem analyzing that file. Try re-saving it as a CSV and uploading it again.",
+        "We couldn\u2019t analyze this file. Try exporting it again from your shop software, or save it as CSV.",
       );
-      setStage({ name: "upload" });
+      return { name: "upload" };
     }
   };
 
-  const handleSample = () => {
-    const table = buildSampleTable();
-    runAnalysis(table, detectColumns(table).mapping, true);
-  };
-
-  const handleFile = async (file: File) => {
+  /** Guards every scan so a second one can't start mid-transition. */
+  const startScan = async (compute: () => Stage | Promise<Stage>) => {
+    if (processing.current) return;
+    processing.current = true;
+    setFocusUpload(false);
     setError(null);
-    setStage({ name: "parsing" });
     try {
-      const table = await parseFile(file);
-      const { mapping, confident } = detectColumns(table);
-      if (confident) {
-        runAnalysis(table, mapping);
-      } else {
-        setStage({ name: "mapping", table, suggested: mapping });
-      }
-    } catch (err) {
-      setError(
-        err instanceof FileParseError
-          ? err.message
-          : "Something went wrong reading that file. Try re-saving it as a CSV and uploading it again.",
-      );
-      setStage({ name: "upload" });
+      await scanWithTransition(compute);
+    } finally {
+      processing.current = false;
     }
   };
+
+  const handleSample = () =>
+    startScan(() => {
+      const table = buildSampleTable();
+      const detection = detectColumns(table);
+      return analyzeToStage({ table, detection, remembered: 0 }, detection.mapping, {
+        isSample: true,
+      });
+    });
+
+  const handleFile = (file: File) =>
+    startScan(async () => {
+      setStage({ name: "parsing" });
+      try {
+        const table = await parseFile(file);
+        const detection = detectColumns(table);
+        const { mapping, applied } = applyRememberedMappings(table.headers, detection);
+        const matching = { table, detection, remembered: applied };
+        return detection.confident
+          ? analyzeToStage(matching, mapping)
+          : { name: "mapping", matching, suggested: mapping };
+      } catch (err) {
+        setError(
+          err instanceof FileParseError
+            ? err.message
+            : "We couldn\u2019t read this file. Try exporting it again from your shop software.",
+        );
+        return { name: "upload" };
+      }
+    });
 
   return (
-    <div className="flex min-h-screen flex-col">
-      <header className="border-b border-line bg-surface/90 backdrop-blur">
-        <div className="mx-auto flex h-16 max-w-300 items-center justify-between px-4 sm:px-6 lg:px-8">
-          <div className="flex items-center gap-2.5">
-            <span
-              aria-hidden
-              className="grid h-8 w-8 place-items-center rounded-lg bg-navy text-opportunity"
-            >
-              <svg
-                viewBox="0 0 20 20"
-                className="h-4 w-4"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="2"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-              >
-                <path d="M3 14.5 8 9.5l3 3 6-6.5M13 6h4v4" />
-              </svg>
-            </span>
-            <span className="text-[17px] font-semibold tracking-tight text-navy">
-              AutoRev
-            </span>
-          </div>
-          <span className="hidden text-sm text-ink-2 sm:block">
-            Declined-work analysis for repair shops
-          </span>
-        </div>
-      </header>
-
-      <main className="mx-auto w-full max-w-300 flex-1 px-4 py-8 sm:px-6 sm:py-12 lg:px-8">
+    <main className="mx-auto w-full max-w-300 flex-1 px-4 py-8 sm:px-6 sm:py-12 lg:px-8">
+        {transition && <BrandTransition leaving={transition === "out"} />}
         {(stage.name === "upload" || stage.name === "parsing") && (
           <UploadPanel
+            focusOnMount={focusUpload}
             onFile={handleFile}
             onSample={handleSample}
             busy={stage.name === "parsing"}
@@ -122,11 +196,43 @@ export default function ScannerApp() {
         )}
         {stage.name === "mapping" && (
           <ColumnMapper
-            table={stage.table}
+            table={stage.matching.table}
             initial={stage.suggested}
+            remembered={stage.matching.remembered}
             error={error}
-            onConfirm={(m) => runAnalysis(stage.table, m)}
+            onConfirm={(m) =>
+              startScan(() =>
+                analyzeToStage(stage.matching, m, { confirmedByUser: true }),
+              )
+            }
             onCancel={reset}
+          />
+        )}
+        {stage.name === "empty" && (
+          <EmptyResult
+            fileName={stage.matching.table.fileName}
+            rowCount={stage.matching.table.rows.length}
+            amountHeader={
+              stage.mapping.amount === undefined
+                ? undefined
+                : stage.matching.table.headers[stage.mapping.amount]
+            }
+            onReset={reset}
+            onRemap={() => {
+              const col = stage.mapping.amount;
+              const header =
+                col === undefined ? undefined : stage.matching.table.headers[col];
+              setError(
+                header
+                  ? `None of the rows had a positive amount in \u201c${header}\u201d. Pick the column that holds each declined job\u2019s price.`
+                  : "Pick the column that holds each declined job\u2019s price.",
+              );
+              setStage({
+                name: "mapping",
+                matching: stage.matching,
+                suggested: stage.mapping,
+              });
+            }}
           />
         )}
         {stage.name === "results" && (
@@ -134,14 +240,10 @@ export default function ScannerApp() {
             fileName={stage.fileName}
             analysis={stage.analysis}
             isSample={stage.isSample}
+            analyzedAt={stage.analyzedAt}
             onReset={reset}
           />
         )}
-      </main>
-
-      <footer className="border-t border-line py-6 text-center text-xs text-ink-2">
-        AutoRev · Files are analyzed locally in your browser.
-      </footer>
-    </div>
+    </main>
   );
 }

@@ -1,3 +1,5 @@
+import { BRAND } from "./brand";
+import { isoDate } from "./format";
 import type { Opportunity } from "./types";
 
 const HEADERS = [
@@ -25,9 +27,6 @@ function cell(value: string | number | undefined): string {
   return /[",\r\n]/.test(safe) ? `"${safe.replace(/"/g, '""')}"` : safe;
 }
 
-const isoDate = (d: Date) =>
-  `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-
 /** Builds a CSV of the opportunities, in the order given (largest first). */
 export function buildOpportunitiesCsv(ranked: Opportunity[]): string {
   const rows = ranked.map((o, i) =>
@@ -50,11 +49,25 @@ export function buildOpportunitiesCsv(ranked: Opportunity[]): string {
   return [HEADERS.join(","), ...rows].join("\r\n");
 }
 
-/** Turns an uploaded file name into a safe base for export file names. */
-export const exportBaseName = (fileName: string) =>
+/** Turns an uploaded file name into a short, safe piece of a file name. */
+const sourceSlug = (fileName: string) =>
   fileName
     .replace(/\.[^.]+$/, "")
-    .replace(/[^\w\- ]+/g, "")
-    .trim()
-    .replace(/\s+/g, "-")
-    .toLowerCase() || "report";
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .slice(0, 40)
+    .replace(/^-+|-+$/g, "");
+
+/**
+ * "reclaimbay-report-oct-declined-2026-09-30.pdf". The source name is
+ * included when something usable is left after cleaning.
+ */
+export function exportFileName(
+  kind: "report" | "opportunities",
+  ext: "pdf" | "csv",
+  source: { fileName: string; isSample: boolean; date: Date },
+) {
+  const slug = source.isSample ? "sample" : sourceSlug(source.fileName);
+  const parts = [BRAND.fileSlug, kind, slug, isoDate(source.date)].filter(Boolean);
+  return `${parts.join("-")}.${ext}`;
+}

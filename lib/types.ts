@@ -27,6 +27,8 @@ export interface DetectionResult {
   mapping: ColumnMapping;
   /** True when every required field was matched with high confidence. */
   confident: boolean;
+  /** Match strength (0-100) behind each suggested field. */
+  scores: Partial<Record<FieldKey, number>>;
 }
 
 export interface Opportunity {
@@ -80,8 +82,15 @@ export interface Analysis {
   highest: Opportunity;
   /** Every opportunity, largest first. */
   ranked: Opportunity[];
+  /**
+   * True when any included amount has non-zero cents; every money figure in
+   * the report then shows two decimals so totals visibly reconcile.
+   */
+  showCents: boolean;
   hasDates: boolean;
   undatedCount: number;
+  /** Opportunities with a missing or unusable date. */
+  undated: Bucket;
   ageBuckets: Bucket[];
   categories: Bucket[];
   recency: {

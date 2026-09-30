@@ -32,6 +32,7 @@ export function analyze(
   );
 
   const dated = opportunities.filter((o) => o.ageDays !== undefined);
+  const undated = opportunities.filter((o) => o.ageDays === undefined);
   const ageBuckets = AGE_BANDS.map((band, i) => {
     const min = i === 0 ? -1 : AGE_BANDS[i - 1].max;
     return toBucket(
@@ -58,8 +59,10 @@ export function analyze(
     average: total / opportunities.length,
     highest: byValue[0],
     ranked: byValue,
+    showCents: opportunities.some((o) => Math.round(o.amount * 100) % 100 !== 0),
     hasDates: dated.length > 0,
-    undatedCount: opportunities.length - dated.length,
+    undatedCount: undated.length,
+    undated: toBucket("Unknown / invalid date", undated),
     ageBuckets,
     categories,
     recency: {
