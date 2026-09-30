@@ -206,6 +206,14 @@ A typical flow:
 3. Record a public phone or email with its source. Move it to **ready to contact**.
 4. Later milestones pick up outreach from there.
 
+## Where prospects come from
+
+Prospects are added by hand, or by **approving a discovery candidate** (see
+[DISCOVERY.md](DISCOVERY.md)). Approval creates a prospect at status `new`
+through the same path and validators as adding one by hand, and never sets
+Qualified or Ready to contact. The qualification and status rules on this page
+still apply to it unchanged.
+
 ## For future outreach (not built)
 
 These records already give an outreach feature what it needs:

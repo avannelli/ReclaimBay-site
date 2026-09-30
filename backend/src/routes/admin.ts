@@ -15,6 +15,7 @@ import { dashboardPage, disabledPage, loginPage } from "../admin/views.js";
 import type { Config } from "../config.js";
 import type { Db } from "../db.js";
 import type { Status } from "../prospectStatus.js";
+import { discoveryRoutes } from "./adminDiscovery.js";
 import {
   ProspectError,
   addEvidence,
@@ -144,8 +145,20 @@ export async function adminRoutes(app: FastifyInstance, opts: { config: Config; 
   // ---------- funnel ----------
 
   app.get<{ Querystring: { created?: string } }>("/admin", async (req, reply) => {
-    const [summary, rows] = await Promise.all([loadSummary(db), loadProspectRows(db)]);
-    return html(reply, dashboardPage({ summary, rows, siteUrl: config.publicSiteUrl, highlightId: req.query.created }));
+    const [summary, rows, prospectStatuses, candidateStatuses] = await Promise.all([
+      loadSummary(db),
+      loadProspectRows(db),
+      db.prospect.groupBy({ by: ["status"], _count: { _all: true } }),
+      db.discoveryCandidate.groupBy({ by: ["status"], _count: { _all: true } }),
+    ]);
+    const count = (list: { status: string; _count: { _all: number } }[], status: string) =>
+      list.find((g) => g.status === status)?._count._all ?? 0;
+    const attention = {
+      candidatesToReview: count(candidateStatuses, "needs_review"),
+      readyToContact: count(prospectStatuses, "ready_to_contact"),
+      newProspects: count(prospectStatuses, "new"),
+    };
+    return html(reply, dashboardPage({ summary, rows, siteUrl: config.publicSiteUrl, attention, highlightId: req.query.created }));
   });
 
   // ---------- prospects ----------
@@ -213,7 +226,7 @@ export async function adminRoutes(app: FastifyInstance, opts: { config: Config; 
     if (!validId(req.params.id, reply)) return reply;
     const p = await db.prospect.findUnique({ where: { id: req.params.id }, include: { signals: true } });
     if (!p) return reply.code(404).type("text/plain").send("Not found");
-    return html(reply, prospectFormPage({ mode: "edit", id: p.id, name: p.businessName }, formValuesOf(p)));
+    return html(reply, prospectFormPage({ mode: "edit", id: p.id, name: p.businessName, status: p.status }, formValuesOf(p)));
   });
 
   app.post<{ Params: { id: string }; Body: Form }>("/admin/prospects/:id", writeLimit, async (req, reply) => {
@@ -224,8 +237,8 @@ export async function adminRoutes(app: FastifyInstance, opts: { config: Config; 
       return reply.redirect(`/admin/prospects/${id}?done=saved`, 303);
     } catch (err) {
       return handleError(err, reply, async (errors) => {
-        const p = await db.prospect.findUnique({ where: { id }, select: { businessName: true } });
-        return html(reply, prospectFormPage({ mode: "edit", id, name: p?.businessName ?? null }, req.body ?? {}, errors), reply.statusCode);
+        const p = await db.prospect.findUnique({ where: { id }, select: { businessName: true, status: true } });
+        return html(reply, prospectFormPage({ mode: "edit", id, name: p?.businessName ?? null, status: p?.status }, req.body ?? {}, errors), reply.statusCode);
       });
     }
   });
@@ -280,6 +293,9 @@ export async function adminRoutes(app: FastifyInstance, opts: { config: Config; 
       }
     },
   );
+
+  // Discovery shares this scope's session check, origin check, and headers.
+  await app.register(discoveryRoutes, { config, db });
 }
 
 const pick = (body: Form | undefined, keys: string[]): Values =>

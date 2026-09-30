@@ -16,6 +16,12 @@ export interface Config {
   /** Base URL used to build referral links shown in the admin. */
   publicSiteUrl: string;
   secureCookies: boolean;
+  /**
+   * Whether the synthetic "fixture" discovery provider is offered. Off in
+   * production unless ENABLE_FIXTURE_DISCOVERY=1, so fake businesses can't
+   * end up in the real database by accident.
+   */
+  enableFixtureDiscovery: boolean;
 }
 
 /** Shorter admin secrets are refused so a weak value can't be deployed by accident. */
@@ -35,6 +41,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
 
   const hops = Number.parseInt(env.TRUST_PROXY_HOPS ?? "1", 10);
 
+  const secureCookies = env.NODE_ENV === "production" || Boolean(env.RAILWAY_ENVIRONMENT);
+
   return {
     port: Number.parseInt(env.PORT ?? "8080", 10),
     host: env.HOST?.trim() || "::",
@@ -43,6 +51,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     adminSecret,
     trustProxyHops: Number.isFinite(hops) && hops >= 0 ? hops : 1,
     publicSiteUrl: (env.PUBLIC_SITE_URL?.trim() || "https://reclaimbay.com").replace(/\/+$/, ""),
-    secureCookies: env.NODE_ENV === "production" || Boolean(env.RAILWAY_ENVIRONMENT),
+    secureCookies,
+    enableFixtureDiscovery: env.ENABLE_FIXTURE_DISCOVERY === "1" || !secureCookies,
   };
 }

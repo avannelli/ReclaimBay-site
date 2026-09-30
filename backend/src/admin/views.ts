@@ -1,84 +1,57 @@
-import { referralUrl } from "../prospects.js";
+import { STYLE } from "./styles.js";
 import type { ProspectRow, Summary } from "./stats.js";
+import { emptyState, esc, extLink, fmtDate, pageHead, section } from "./ui.js";
 
-/* Server-rendered admin pages. No scripts; every dynamic value is escaped. */
+export { esc, fmtDate };
 
-export const esc = (v: unknown) =>
-  String(v ?? "").replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
+/* Server-rendered admin shell and pages. No scripts; every dynamic value is escaped. */
 
-const STYLE = `
-:root { color-scheme: light dark; --bg:#f6f7f9; --card:#fff; --ink:#0b1f33; --muted:#5b6b7b; --line:#dfe3e8; --accent:#0f766e; --warn:#b45309; }
-@media (prefers-color-scheme: dark) { :root { --bg:#0b1119; --card:#121b26; --ink:#e6edf3; --muted:#8b9aab; --line:#243140; --accent:#2dd4bf; --warn:#f59e0b; } }
-* { box-sizing:border-box; }
-body { margin:0; font:14px/1.45 system-ui,-apple-system,Segoe UI,sans-serif; background:var(--bg); color:var(--ink); }
-main { max-width:1200px; margin:0 auto; padding:24px 16px 48px; }
-header { display:flex; justify-content:space-between; align-items:center; gap:12px; margin-bottom:20px; }
-h1 { font-size:20px; margin:0; } h2 { font-size:15px; margin:28px 0 10px; }
-a { color:var(--accent); }
-.muted { color:var(--muted); } .small { font-size:12px; }
-.tiles { display:grid; grid-template-columns:repeat(auto-fit,minmax(160px,1fr)); gap:10px; }
-.tile { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:12px 14px; }
-.tile b { display:block; font-size:24px; font-variant-numeric:tabular-nums; }
-.card { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:14px; }
-.scroll { overflow-x:auto; background:var(--card); border:1px solid var(--line); border-radius:10px; }
-table { border-collapse:collapse; width:100%; min-width:900px; }
-th,td { text-align:left; padding:8px 10px; border-bottom:1px solid var(--line); vertical-align:top; }
-th { font-size:12px; color:var(--muted); font-weight:600; }
-td.n { font-variant-numeric:tabular-nums; text-align:right; } th.n { text-align:right; }
-tr:last-child td { border-bottom:0; } tr.hl td { background:color-mix(in srgb,var(--accent) 12%,transparent); }
-code { font:12px ui-monospace,Consolas,monospace; }
-.link { width:100%; min-width:260px; font:12px ui-monospace,Consolas,monospace; padding:4px 6px; border:1px solid var(--line); border-radius:6px; background:var(--bg); color:var(--ink); }
-.pill { display:inline-block; padding:1px 8px; border-radius:99px; font-size:12px; font-weight:600; background:var(--accent); color:var(--bg); }
-form.inline { display:flex; flex-wrap:wrap; gap:8px; align-items:end; }
-label { display:grid; gap:4px; font-size:12px; color:var(--muted); }
-input[type=text],input[type=password] { padding:7px 9px; border:1px solid var(--line); border-radius:6px; background:var(--bg); color:var(--ink); font:inherit; min-width:220px; }
-button { padding:7px 14px; border:0; border-radius:6px; background:var(--ink); color:var(--bg); font:inherit; font-weight:600; cursor:pointer; }
-a.btn { display:inline-block; padding:7px 14px; border-radius:6px; background:var(--ink); color:var(--bg); font-weight:600; text-decoration:none; }
-a.st { text-decoration:none; color:var(--ink); } a.st.on { background:var(--ink); color:var(--bg); }
-button.ghost { background:transparent; color:var(--ink); border:1px solid var(--line); }
-.err { color:var(--warn); margin:8px 0 0; }
-.login { max-width:360px; margin:12vh auto 0; }
-nav.top { display:flex; align-items:center; gap:16px; flex-wrap:wrap; }
-nav.top a { text-decoration:none; font-weight:600; color:var(--muted); } nav.top a.on { color:var(--ink); }
-.row { display:flex; flex-wrap:wrap; gap:12px; align-items:center; }
-.grid2 { display:grid; grid-template-columns:repeat(auto-fit,minmax(320px,1fr)); gap:14px; align-items:start; }
-.stack > * + * { margin-top:14px; }
-dl.kv { display:grid; grid-template-columns:max-content 1fr; gap:6px 14px; margin:0; } dl.kv dt { color:var(--muted); font-size:12px; padding-top:2px; } dl.kv dd { margin:0; overflow-wrap:anywhere; }
-.band-high { background:var(--accent); } .band-medium { background:#2563eb; } .band-low { background:var(--muted); }
-.q-meets_criteria { border-color:var(--accent); color:var(--accent); } .q-disqualified { border-color:var(--warn); color:var(--warn); } .q-unverified { border-style:dashed; color:var(--muted); }
-.st { display:inline-block; padding:1px 8px; border-radius:99px; font-size:12px; font-weight:600; border:1px solid var(--line); white-space:nowrap; }
-.st-do_not_contact { border-color:var(--warn); color:var(--warn); }
-.ok { color:var(--accent); margin:0 0 12px; font-weight:600; }
-.errs { border:1px solid var(--warn); border-radius:10px; padding:10px 14px; margin:0 0 14px; color:var(--warn); } .errs ul { margin:4px 0 0; padding-left:18px; }
-select,textarea { padding:7px 9px; border:1px solid var(--line); border-radius:6px; background:var(--bg); color:var(--ink); font:inherit; }
-textarea { width:100%; min-height:70px; resize:vertical; }
-fieldset { border:1px solid var(--line); border-radius:10px; padding:12px 14px; margin:0; } legend { font-weight:600; padding:0 4px; }
-.fields { display:grid; grid-template-columns:repeat(auto-fit,minmax(220px,1fr)); gap:10px; }
-.fields input[type=text] { min-width:0; width:100%; }
-.signal { border-top:1px solid var(--line); padding:10px 0; } .signal:first-of-type { border-top:0; }
-.choices { display:flex; flex-wrap:wrap; gap:14px; margin:6px 0; } .choices label { display:flex; gap:6px; align-items:center; font-size:14px; color:var(--ink); }
-details summary { cursor:pointer; color:var(--muted); font-size:12px; }
-blockquote { margin:0; padding-left:10px; border-left:3px solid var(--line); }
-.inline-form { display:inline; }
-button.link { background:none; color:var(--warn); padding:0; font-weight:600; font-size:12px; }
-`;
-
-export function page(title: string, body: string): string {
-  return `<!doctype html>
+const head = (title: string) => `<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<meta name="robots" content="noindex,nofollow"><title>${esc(title)}</title><style>${STYLE}</style></head>
-<body><main>${body}</main></body></html>`;
+<meta name="robots" content="noindex,nofollow"><title>${esc(title)}</title><style>${STYLE}</style></head>`;
+
+/** Unauthenticated pages (login, disabled): a plain centered card. */
+export function page(title: string, body: string): string {
+  return `${head(title)}<body class="login">${body}</body></html>`;
+}
+
+export type AdminSection = "funnel" | "prospects" | "discovery";
+
+const NAV: [AdminSection, string, string][] = [
+  ["funnel", "/admin", "Funnel"],
+  ["prospects", "/admin/prospects", "Prospects"],
+  ["discovery", "/admin/discovery", "Discovery"],
+];
+
+/** The shared shell for every signed-in page: one header, one main landmark. */
+export function appPage(title: string, active: AdminSection, body: string): string {
+  const links = NAV.map(
+    ([key, href, label]) => `<a href="${href}"${key === active ? ' aria-current="page"' : ""}>${label}</a>`,
+  ).join("");
+  return `${head(title)}<body>
+<a class="skip" href="#main">Skip to content</a>
+<header class="appbar"><div class="appbar-in">
+  <a class="brand" href="/admin" aria-label="ReclaimBay admin home">RECLAIM<b>BAY</b></a>
+  <nav class="nav" aria-label="Admin sections">${links}</nav>
+  <form method="post" action="/admin/logout"><button class="btn-quiet" type="submit">Sign out</button></form>
+</div></header>
+<main id="main" class="wrap">${body}</main>
+</body></html>`;
 }
 
 export function loginPage(error?: string): string {
   return page(
-    "ReclaimBay admin",
-    `<div class="login card">
-  <h1>ReclaimBay admin</h1>
-  <form method="post" action="/admin/login" style="display:grid;gap:10px;margin-top:14px">
-    <label>Admin secret<input type="password" name="secret" autocomplete="current-password" required autofocus></label>
-    <button type="submit">Sign in</button>
-    ${error ? `<p class="err">${esc(error)}</p>` : ""}
+    "Sign in · ReclaimBay admin",
+    `<div class="login-card">
+  <div class="brand-line">RECLAIM<b>BAY</b></div>
+  <h1>Admin sign in</h1>
+  <form method="post" action="/admin/login">
+    <div class="field">
+      <label for="f-secret">Admin secret</label>
+      <input id="f-secret" type="password" name="secret" autocomplete="current-password" required autofocus${error ? ' aria-invalid="true" aria-describedby="e-secret"' : ""}>
+      ${error ? `<div class="ferr" id="e-secret" role="alert">${esc(error)}</div>` : ""}
+    </div>
+    <button type="submit" class="btn-primary-lg">Sign in</button>
   </form>
 </div>`,
   );
@@ -86,94 +59,96 @@ export function loginPage(error?: string): string {
 
 export function disabledPage(): string {
   return page(
-    "Admin disabled",
-    `<div class="login card"><h1>Admin disabled</h1><p class="muted">ADMIN_SECRET is not configured (or is shorter than the minimum length) on the server.</p></div>`,
+    "Admin disabled · ReclaimBay",
+    `<div class="login-card"><div class="brand-line">RECLAIM<b>BAY</b></div><h1>Admin disabled</h1>
+<p class="lede">ADMIN_SECRET is not configured (or is shorter than the minimum length) on the server.</p></div>`,
   );
 }
 
-export type AdminSection = "funnel" | "prospects";
-
-/** Shared header for signed-in pages. */
-export function adminHeader(active: AdminSection): string {
-  const link = (href: string, label: string, on: boolean) =>
-    `<a href="${href}"${on ? ` class="on" aria-current="page"` : ""}>${label}</a>`;
-  return `<header><nav class="top"><h1>ReclaimBay</h1>${link("/admin", "Funnel", active === "funnel")}${link("/admin/prospects", "Prospects", active === "prospects")}</nav>
-  <form method="post" action="/admin/logout"><button class="ghost" type="submit">Sign out</button></form></header>`;
-}
-
-export const fmtDate = (d: Date | null) =>
-  d ? new Date(d).toISOString().replace("T", " ").slice(0, 16) + " UTC" : "—";
 const fmtPct = (r: number | null) => (r === null ? "—" : `${(r * 100).toFixed(1)}%`);
-const num = (n: number) => (n > 0 ? String(n) : `<span class="muted">0</span>`);
+
+export interface Attention {
+  candidatesToReview: number;
+  readyToContact: number;
+  newProspects: number;
+}
 
 interface DashboardOptions {
   summary: Summary;
   rows: ProspectRow[];
   siteUrl: string;
+  attention?: Attention;
   highlightId?: string;
 }
 
-function prospectCell(r: ProspectRow): string {
-  if (!r.id) return `<i class="muted">No referral (direct)</i>`;
-  const name = `<a href="/admin/prospects/${esc(r.id)}">${esc(r.businessName ?? "Unnamed prospect")}</a>`;
-  const site = r.website
-    ? `<div class="small"><a href="${esc(r.website)}" rel="noreferrer noopener" target="_blank">${esc(r.website.replace(/^https?:\/\//, ""))}</a></div>`
-    : "";
-  return `${name}${site}<div class="small muted">${esc(r.status)}</div>`;
+function attentionStrip(a: Attention): string {
+  const item = (n: number, label: string, href: string) =>
+    `<a class="attn-item${n === 0 ? " zero" : ""}" href="${href}"><b>${n}</b><span>${esc(label)}</span></a>`;
+  const total = a.candidatesToReview + a.readyToContact + a.newProspects;
+  return section(
+    "attention",
+    "Needs attention",
+    `<div class="attn-list">
+  ${item(a.candidatesToReview, a.candidatesToReview === 1 ? "candidate needs review" : "candidates need review", "/admin/discovery?status=needs_review")}
+  ${item(a.newProspects, a.newProspects === 1 ? "new prospect to research" : "new prospects to research", "/admin/prospects?status=new")}
+  ${item(a.readyToContact, "ready to contact", "/admin/prospects?status=ready_to_contact")}
+</div>${total === 0 ? `<p class="small muted" style="margin-top:8px">Nothing is waiting on you right now.</p>` : ""}`,
+  );
 }
 
-function referralCell(r: ProspectRow, siteUrl: string): string {
-  if (!r.referralCode) return "—";
-  const link = referralUrl(siteUrl, r.referralCode);
-  return `<code>${esc(r.referralCode)}</code><div><input class="link" readonly value="${esc(link)}" aria-label="Referral link"></div>`;
-}
-
-function tableRow(r: ProspectRow, siteUrl: string, highlightId?: string): string {
-  const visitors = r.visitors
-    ? `<div class="small muted">${r.visitors} visitor${r.visitors === 1 ? "" : "s"}</div>`
-    : "";
-  const exportsCell =
-    r.exports > 0 ? `${r.exports}<div class="small muted">${esc(r.exportTypes.join(", "))}</div>` : num(0);
-  const intent = r.highIntent ? `<span class="pill">High</span>` : `<span class="muted">—</span>`;
-  const hl = r.id && r.id === highlightId ? ` class="hl"` : "";
-  return `<tr${hl}>
-  <td>${prospectCell(r)}</td><td>${referralCell(r, siteUrl)}</td>
-  <td class="n">${num(r.visits)}${visitors}</td>
-  <td class="n">${num(r.uploads)}</td><td class="n">${num(r.scans)}</td><td class="n">${num(r.tours)}</td>
-  <td class="n">${exportsCell}</td><td class="n">${num(r.sampleEvents)}</td>
-  <td>${fmtDate(r.lastActivity)}</td><td>${intent}</td>
+function activityRow(r: ProspectRow, highlightId?: string): string {
+  const real = r.uploads + r.scans + r.tours + r.exports;
+  const any = r.visits + real + r.sampleEvents > 0;
+  const sampleOnly = real === 0 && r.sampleEvents > 0;
+  const name = r.id
+    ? `<a class="name" href="/admin/prospects/${esc(r.id)}">${esc(r.businessName ?? "Unnamed prospect")}</a>${r.website ? `<div class="sub">${extLink(r.website)}</div>` : ""}`
+    : `<span class="name"><i>Direct visits</i></span><div class="sub">No referral link</div>`;
+  const cls = [r.id && r.id === highlightId ? "hl" : "", any ? "" : "zero"].filter(Boolean).join(" ");
+  const n = (v: number) => (v > 0 ? String(v) : `<span class="muted">0</span>`);
+  return `<tr${cls ? ` class="${cls}"` : ""}>
+  <td>${name}${sampleOnly ? `<div class="sub"><span class="tag">Sample activity only</span></div>` : ""}</td>
+  <td class="hide-md" data-label="Referral">${r.referralCode ? `<code>${esc(r.referralCode)}</code>` : '<span class="muted">—</span>'}</td>
+  <td class="num" data-label="Visits">${n(r.visits)}${r.visitors ? `<div class="sub">${r.visitors} visitor${r.visitors === 1 ? "" : "s"}</div>` : ""}</td>
+  <td class="num hide-sm" data-label="Uploads">${n(r.uploads)}</td>
+  <td class="num" data-label="Real scans">${n(r.scans)}${r.sampleEvents ? `<div class="sub">+${r.sampleEvents} sample</div>` : ""}</td>
+  <td class="num hide-sm" data-label="Exports">${n(r.exports)}${r.exports > 0 ? `<div class="sub">${esc(r.exportTypes.join(", "))}</div>` : ""}</td>
+  <td class="hide-md small" data-label="Last activity">${fmtDate(r.lastActivity)}</td>
+  <td data-label="Intent">${r.highIntent ? '<span class="pill">High</span>' : '<span class="muted">—</span>'}</td>
 </tr>`;
 }
 
-export function dashboardPage({ summary: s, rows, siteUrl, highlightId }: DashboardOptions): string {
+export function dashboardPage({ summary: s, rows, attention, highlightId }: DashboardOptions): string {
   const tiles: [string, string, string][] = [
-    ["Attributed prospects", String(s.attributedProspects), "prospects with at least one visit"],
+    ["Attributed prospects", String(s.attributedProspects), "with at least one visit"],
     ["Unique visitors", String(s.uniqueVisitors), "anonymous browser sessions"],
     ["Uploads started", String(s.uploadSessions), `${s.uploadEvents} upload events`],
-    ["Real scans completed", String(s.realScanSessions), `${s.realScanEvents} scans, ${s.sampleScanEvents} sample scans excluded`],
+    ["Real scans completed", String(s.realScanSessions), `${s.realScanEvents} ${s.realScanEvents === 1 ? "scan" : "scans"} · ${s.sampleScanEvents} sample excluded`],
     ["Exports", String(s.realExportSessions), `${s.realExportEvents} real exports`],
     ["Scan conversion", fmtPct(s.scanConversionRate), "visitors with a real scan"],
   ];
-  const tileHtml = tiles
-    .map(
-      ([label, value, hint]) =>
-        `<div class="tile"><span class="small muted">${esc(label)}</span><b>${esc(value)}</b><span class="small muted">${esc(hint)}</span></div>`,
-    )
+  const kpis = tiles
+    .map(([label, value, hint]) => `<div class="kpi"><div class="k-label">${esc(label)}</div><div class="k-value">${esc(value)}</div><div class="k-hint">${esc(hint)}</div></div>`)
     .join("");
-  const body = rows.map((r) => tableRow(r, siteUrl, highlightId)).join("\n");
 
-  return page(
-    "ReclaimBay admin",
-    `${adminHeader("funnel")}
-<p class="small muted" style="margin-top:-12px">Visitor, upload, scan and export tiles count unique browser sessions.</p>
-<div class="tiles">${tileHtml}</div>
-
-<h2>Prospects</h2>
-<p class="small muted" style="margin-top:-4px">Funnel activity per referral link. <a href="/admin/prospects">Manage prospects</a> or <a href="/admin/prospects/new">add one</a>.</p>
-<div class="scroll"><table>
-<thead><tr><th>Prospect</th><th>Referral</th><th class="n">Visit</th><th class="n">Upload</th><th class="n">Scan</th><th class="n">Tour</th><th class="n">Export</th><th class="n">Sample</th><th>Last activity</th><th>Intent</th></tr></thead>
-<tbody>${body || `<tr><td colspan="10" class="muted">No prospects yet.</td></tr>`}</tbody>
+  const hasActivity = rows.some((r) => r.visits + r.uploads + r.scans + r.tours + r.exports + r.sampleEvents > 0 || r.lastActivity);
+  const table = hasActivity
+    ? `<div class="scroll"><table class="tbl cards">
+<caption class="sr-only">Prospect activity from referral links</caption>
+<thead><tr><th scope="col">Prospect</th><th scope="col" class="hide-md">Referral</th><th scope="col" class="num">Visits</th><th scope="col" class="num hide-sm">Uploads</th><th scope="col" class="num">Real scans</th><th scope="col" class="num hide-sm">Exports</th><th scope="col" class="hide-md">Last activity</th><th scope="col">Intent</th></tr></thead>
+<tbody>${rows.map((r) => activityRow(r, highlightId)).join("\n")}</tbody>
 </table></div>
-<p class="small muted">Upload, Scan, Tour and Export count real (non-sample) events only. Sample counts all sample-report activity. High intent = a real scan and a real export.</p>`,
+<p class="small muted" style="margin-top:8px">Uploads, real scans, and exports count real activity only; sample-report activity is shown separately. High intent means a real scan and a real export.</p>`
+    : `<div class="card">${emptyState("No prospect activity yet.", "Activity appears here once someone opens a prospect's referral link.", `<a class="btn btn-secondary" href="/admin/prospects">View prospects</a>`)}</div>`;
+
+  return appPage(
+    "Funnel · ReclaimBay admin",
+    "funnel",
+    `${pageHead({
+      title: "Funnel",
+      lede: "Product usage and prospect activity from referral links. Sample-report activity is kept out of the real numbers.",
+    })}
+<section aria-label="Key metrics"><div class="kpis">${kpis}</div></section>
+${attention ? attentionStrip(attention) : ""}
+${section("activity", "Prospect activity", table)}`,
   );
 }

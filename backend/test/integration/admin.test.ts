@@ -105,15 +105,15 @@ describe("admin prospect workflow (HTTP)", { skip: skipReason }, () => {
     assert.match(res.body, /Score breakdown/);
     assert.match(res.body, /Opportunity score/);
     assert.match(res.body, />70<\/span><span class="muted">\/100/);
-    assert.match(res.body, /class="st q-meets_criteria">Meets criteria/);
+    assert.match(res.body, /class="st q-meets_criteria q-big">Meets criteria/);
     assert.match(res.body, /Independent shop/);
-    assert.match(res.body, /found at <a href="https:\/\/smithauto\.example\.com\/contact"/);
+    assert.match(res.body, /found at <a class="url" href="https:\/\/smithauto\.example\.com\/contact"/);
   });
 
   test("a disqualified prospect keeps its score, and the page shows both separately", async () => {
     const id = await createViaHttp(readyForm({ businessName: "Midas Downtown", signal_independent_shop: "no", signal_multiple_bays_or_staff: "yes" }));
     const detail = (await get(`/admin/prospects/${id}`)).body;
-    assert.match(detail, /class="st q-disqualified">Disqualified/);
+    assert.match(detail, /class="st q-disqualified q-big">Disqualified/);
     assert.match(detail, /Independent shop observed as “no”/);
     assert.match(detail, />60<\/span><span class="muted">\/100<\/span> <span class="pill band-high">High/);
     const list = (await get("/admin/prospects?qualification=disqualified")).body;

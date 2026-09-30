@@ -2,7 +2,8 @@
 
 A small Fastify + Prisma (PostgreSQL) service for anonymous product analytics,
 referral attribution, a private admin funnel, and manual prospect research
-with transparent scoring (see [PROSPECTS.md](PROSPECTS.md)). The public site stays a
+with transparent scoring (see [PROSPECTS.md](PROSPECTS.md)), and an evidence-backed
+discovery and research workflow that feeds it (see [DISCOVERY.md](DISCOVERY.md)). The public site stays a
 static export on Cloudflare Pages. This service runs separately on Railway.
 
 ## Privacy guarantee
@@ -113,6 +114,7 @@ local site through.
 | `TRUST_PROXY_HOPS` | no       | Reverse proxies in front of the app (default `1`, right for Railway). Use `0` when exposed directly |
 | `HOST`             | no       | Bind address (default `::`)                                             |
 | `LOG_LEVEL`        | no       | Fastify log level (default `info`)                                      |
+| `ENABLE_FIXTURE_DISCOVERY` | no | `1` offers the synthetic fixture discovery provider. On by default outside production, off in production. Leave it off on the real database |
 
 Generate an admin secret:
 
@@ -144,6 +146,12 @@ Frontend (Cloudflare Pages build variable, inlined at build time):
 | POST   | `/admin/prospects/:id/status` | Status change, checked against the lifecycle rules |
 | POST   | `/admin/prospects/:id/notes` | Adds a note                                        |
 | POST   | `/admin/prospects/:id/evidence` | Adds evidence; `…/evidence/:evidenceId/delete` removes it |
+
+Discovery (`/admin/discovery…`, see [DISCOVERY.md](DISCOVERY.md)) adds: `GET /admin/discovery`,
+`POST /admin/discovery/runs`, `GET|POST /admin/discovery/candidates(/new)`,
+`GET|POST /admin/discovery/candidates/:id(/edit)`, and POSTs to `…/:id/status`, `…/notes`,
+`…/evidence`, `…/evidence/:evidenceId/delete`, and `…/:id/approve` (the only route that
+creates a prospect from a candidate).
 
 Every `/admin` route except login and logout requires a session, and every
 admin POST must be same-origin. Admin write routes allow 60 requests per minute.

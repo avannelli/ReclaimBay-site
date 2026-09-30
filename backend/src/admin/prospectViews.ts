@@ -1,53 +1,68 @@
 import type { getProspectDetail, listProspects } from "../prospects.js";
 import { FIELD_LIMITS, SORTS, referralUrl, signalFieldName } from "../prospects.js";
 import {
+  REASON_REQUIRED,
   STATUSES,
   STATUS_LABELS,
   STATUS_MEANINGS,
   TRANSITIONS,
-  REASON_REQUIRED,
   type Status,
 } from "../prospectStatus.js";
 import {
-  BAND_LABELS,
   BAND_THRESHOLDS,
   MAX_SCORE,
   QUALIFICATION_LABELS,
   REQUIRED_CRITERIA,
   SCORING_VERSION,
   SIGNALS,
-  type Qualification,
-  type ScoreBand,
+  resolveSignals,
+  type ScoreResult,
   type SignalDefinition,
   type SignalKey,
 } from "../scoring.js";
-import { adminHeader, esc, fmtDate, page } from "./views.js";
+import { appPage } from "./views.js";
+import {
+  bandBadge,
+  crumbs,
+  emptyState,
+  errorSummary,
+  esc,
+  extLink,
+  field,
+  fieldErrors,
+  fieldset,
+  fmtDate,
+  fmtDay,
+  notice,
+  obsBadge,
+  options,
+  pageHead,
+  qualificationBadge,
+  section,
+  signalLabel,
+  statusBadge,
+  stepper,
+  type FieldErrors,
+} from "./ui.js";
 
 /* Admin pages for prospects. Server-rendered, no scripts, all values escaped. */
 
 type ListResult = Awaited<ReturnType<typeof listProspects>>;
 type Detail = NonNullable<Awaited<ReturnType<typeof getProspectDetail>>>;
-type Values = Record<string, string | undefined>;
+export type Values = Record<string, string | undefined>;
 
 const SIGNAL_DEFS = SIGNALS as readonly SignalDefinition[];
-const signalLabel = (key: string) => SIGNAL_DEFS.find((s) => s.key === key)?.label ?? key;
+export const criteriaNames = REQUIRED_CRITERIA.map(signalLabel).join(" and ");
 
-const statusPill = (s: Status) => `<span class="st st-${s}">${esc(STATUS_LABELS[s])}</span>`;
-const bandPill = (b: ScoreBand) => `<span class="pill band-${b}">${esc(BAND_LABELS[b])}</span>`;
-const qualificationPill = (q: Qualification) => `<span class="st q-${q}">${esc(QUALIFICATION_LABELS[q])}</span>`;
-const criteriaNames = REQUIRED_CRITERIA.map(signalLabel).join(" and ");
-
-function errorBox(errors?: string[]): string {
-  if (!errors?.length) return "";
-  return `<div class="errs" role="alert"><b>Not saved</b><ul>${errors.map((e) => `<li>${esc(e)}</li>`).join("")}</ul></div>`;
+/** The plain-language reason behind a qualification result. Shared with candidates. */
+export function qualificationDetail(result: ScoreResult): string {
+  const names = (keys: readonly string[]) => esc(keys.map(signalLabel).join(" and "));
+  if (result.qualification === "disqualified") {
+    return `${names(result.disqualifiedBy)} observed as “no”. The opportunity score is still shown for reference.`;
+  }
+  if (result.qualification === "unverified") return `Still unknown: ${names(result.unverifiedCriteria)}.`;
+  return `${esc(criteriaNames)} both observed as “yes”.`;
 }
-
-/** Only http(s) URLs are ever stored, so they are safe as links. */
-const extLink = (url: string, label = url.replace(/^https?:\/\//, "").replace(/\/$/, "")) =>
-  `<a href="${esc(url)}" rel="noreferrer noopener" target="_blank">${esc(label)}</a>`;
-
-const options = (items: [string, string][], selected: string | undefined) =>
-  items.map(([v, l]) => `<option value="${esc(v)}"${v === (selected ?? "") ? " selected" : ""}>${esc(l)}</option>`).join("");
 
 // ---------- list ----------
 
@@ -56,141 +71,221 @@ export function prospectListPage(opts: {
   filters: Values;
   statusCounts: Partial<Record<Status, number>>;
 }): string {
-  const { list, filters, statusCounts } = opts;
-  const statusTabs = STATUSES.map((s) => {
-    const n = statusCounts[s] ?? 0;
-    const on = filters.status === s;
-    return `<a class="st${on ? " on" : ""}" href="/admin/prospects?status=${s}"${on ? ' aria-current="true"' : ""}>${esc(STATUS_LABELS[s])} · ${n}</a>`;
-  }).join(" ");
+  const { list, filters: f, statusCounts } = opts;
+  const total = Object.values(statusCounts).reduce((n, v) => n + (v ?? 0), 0);
+  const anyFilter = Boolean(f.q || f.status || f.qualification || f.band || f.state || f.city);
+
+  const chips = [
+    `<a class="chip" href="/admin/prospects"${!f.status ? ' aria-current="true"' : ""}>All <span class="n">${total}</span></a>`,
+    ...STATUSES.map((s) => {
+      const on = f.status === s;
+      return `<a class="chip" href="/admin/prospects?status=${s}"${on ? ' aria-current="true"' : ""}>${esc(STATUS_LABELS[s])} <span class="n">${statusCounts[s] ?? 0}</span></a>`;
+    }),
+  ].join("");
 
   const rows = list.rows
     .map(({ prospect: p, result, stale }) => {
       const loc = [p.city, p.state].filter(Boolean).join(", ");
-      const contact = [p.phone && "phone", p.email && "email"].filter(Boolean).join(", ");
+      const contact = [p.phone && '<span class="tag">Phone</span>', p.email && '<span class="tag">Email</span>'].filter(Boolean).join(" ");
       return `<tr>
-  <td><a href="/admin/prospects/${esc(p.id)}"><b>${esc(p.businessName ?? "Unnamed prospect")}</b></a>${p.website ? `<div class="small">${extLink(p.website)}</div>` : ""}</td>
-  <td>${loc ? esc(loc) : '<span class="muted">—</span>'}${p.postalCode ? `<div class="small muted">${esc(p.postalCode)}</div>` : ""}</td>
-  <td>${statusPill(p.status)}</td>
-  <td>${qualificationPill(result.qualification)}</td>
-  <td class="n"><b>${result.score}</b><span class="muted">/${MAX_SCORE}</span>${stale ? `<div class="small" style="color:var(--warn)">cache stale</div>` : ""}</td>
-  <td>${bandPill(result.band)}<div class="small muted">${result.known}/${result.total} signals known</div></td>
-  <td>${contact ? esc(contact) : '<span class="muted">—</span>'}</td>
-  <td class="small">${fmtDate(p.updatedAt)}</td>
+  <td><a class="name" href="/admin/prospects/${esc(p.id)}">${esc(p.businessName ?? "Unnamed prospect")}</a>${p.website ? `<div class="sub">${extLink(p.website)}</div>` : ""}</td>
+  <td class="hide-md" data-label="Location">${loc ? esc(loc) : '<span class="muted">—</span>'}${p.postalCode ? `<div class="sub">${esc(p.postalCode)}</div>` : ""}</td>
+  <td data-label="Status">${statusBadge(p.status)}</td>
+  <td data-label="Qualification">${qualificationBadge(result.qualification)}</td>
+  <td class="num" data-label="Opportunity score"><span class="score-cell"><b>${result.score}</b><span class="of">/${MAX_SCORE}</span></span>${stale ? `<div class="sub" style="color:var(--warn)">cache stale</div>` : ""}</td>
+  <td class="hide-md" data-label="Band">${bandBadge(result.band)}<div class="sub">${result.known}/${result.total} signals known</div></td>
+  <td class="hide-md" data-label="Public contact">${contact || '<span class="muted" title="No public business contact recorded">—</span>'}</td>
+  <td class="hide-lg small muted" data-label="Updated">${fmtDay(p.updatedAt)}</td>
 </tr>`;
     })
     .join("\n");
 
-  const f = filters;
-  const shown = list.rows.length < list.total ? `Showing the first ${list.rows.length} of ${list.total}.` : `${list.total} prospect${list.total === 1 ? "" : "s"}.`;
-  return page(
+  const empty =
+    total === 0
+      ? emptyState("No prospects yet.", "Add your first prospect to begin building the research pipeline.", `<a class="btn" href="/admin/prospects/new">+ Add prospect</a>`)
+      : emptyState("No prospects match these filters.", "Try clearing a filter or changing your search.", `<a class="btn btn-secondary" href="/admin/prospects">Clear filters</a>`);
+
+  const shown = list.rows.length < list.total ? `Showing the first ${list.rows.length} of ${list.total}` : `${list.total} prospect${list.total === 1 ? "" : "s"}`;
+
+  return appPage(
     "Prospects · ReclaimBay admin",
-    `${adminHeader("prospects")}
-<div class="row" style="justify-content:space-between"><h2 style="margin:0">Prospects</h2><a class="btn" href="/admin/prospects/new">Add prospect</a></div>
-<p class="small" style="margin:10px 0">${statusTabs} <a href="/admin/prospects" class="small">All</a></p>
-<form class="card inline" method="get" action="/admin/prospects">
-  <label>Search<input type="text" name="q" value="${esc(f.q)}" placeholder="Name, website, city, email, ref" maxlength="100"></label>
-  <label>Status<select name="status">${options([["", "Any"], ...STATUSES.map((s): [string, string] => [s, STATUS_LABELS[s]])], f.status)}</select></label>
-  <label>Qualification<select name="qualification">${options([["", "Any"], ...Object.entries(QUALIFICATION_LABELS)], f.qualification)}</select></label>
-  <label>Score band<select name="band">${options([["", "Any"], ["high", "High"], ["medium", "Medium"], ["low", "Low"]], f.band)}</select></label>
-  <label>State<input type="text" name="state" value="${esc(f.state)}" maxlength="50" style="min-width:80px;width:90px"></label>
-  <label>City<input type="text" name="city" value="${esc(f.city)}" maxlength="100" style="min-width:140px"></label>
-  <label>Sort<select name="sort">${options(Object.entries(SORTS), list.sort)}</select></label>
-  <button type="submit">Apply</button> <a href="/admin/prospects" class="small">Reset</a>
+    "prospects",
+    `${pageHead({
+      title: "Prospects",
+      lede: "The businesses in your pipeline, tracked from first research to customer.",
+      actions: `<a class="btn" href="/admin/prospects/new">+ Add prospect</a>`,
+    })}
+<nav class="chips" aria-label="Filter by status">${chips}</nav>
+<form class="card filters" method="get" action="/admin/prospects" role="search" aria-label="Search and filter prospects">
+  <div><label class="sr-only" for="f-q">Search prospects</label>
+  <input class="search" id="f-q" type="search" name="q" value="${esc(f.q)}" placeholder="Search name, website, city, phone, or referral code" maxlength="100"></div>
+  <div class="filter-row">
+    <div><label class="lbl" for="f-status">Status</label><select id="f-status" name="status">${options([["", "Any"], ...STATUSES.map((s): [string, string] => [s, STATUS_LABELS[s]])], f.status)}</select></div>
+    <div><label class="lbl" for="f-qual">Qualification</label><select id="f-qual" name="qualification">${options([["", "Any"], ...Object.entries(QUALIFICATION_LABELS)], f.qualification)}</select></div>
+    <div><label class="lbl" for="f-band">Score band</label><select id="f-band" name="band">${options([["", "Any"], ["high", "High"], ["medium", "Medium"], ["low", "Low"]], f.band)}</select></div>
+    <div><label class="lbl" for="f-state">State</label><input id="f-state" type="text" name="state" value="${esc(f.state)}" maxlength="50"></div>
+    <div><label class="lbl" for="f-city">City</label><input id="f-city" type="text" name="city" value="${esc(f.city)}" maxlength="100"></div>
+    <div><label class="lbl" for="f-sort">Sort by</label><select id="f-sort" name="sort">${options(Object.entries(SORTS), list.sort)}</select></div>
+    <div class="filter-actions"><button type="submit">Apply filters</button><a class="btn btn-secondary" href="/admin/prospects">Reset</a></div>
+  </div>
 </form>
-<p class="small muted">${esc(shown)} Qualification comes only from the required criteria (${esc(criteriaNames)}): Disqualified if either is “no”, Meets criteria if both are “yes”. The opportunity score ranks prospects separately; its band is High ≥ ${BAND_THRESHOLDS.high}, Medium ≥ ${BAND_THRESHOLDS.medium}. Scoring ${esc(SCORING_VERSION)}.</p>
-<div class="scroll"><table>
-<thead><tr><th>Prospect</th><th>Location</th><th>Status</th><th>Qualification</th><th class="n">Opportunity score</th><th>Band</th><th>Public contact</th><th>Updated</th></tr></thead>
-<tbody>${rows || `<tr><td colspan="8" class="muted">No prospects match.</td></tr>`}</tbody>
-</table></div>`,
+<div class="result-line"><span><b>${esc(shown)}</b>${anyFilter ? " match" : ""}</span>
+  <span><b>Qualification</b> uses only the required criteria (${esc(criteriaNames)}). <b>Opportunity score</b> is a research ranking, not a verdict: High ≥ ${BAND_THRESHOLDS.high}, Medium ≥ ${BAND_THRESHOLDS.medium}.</span></div>
+${
+  list.rows.length
+    ? `<div class="scroll"><table class="tbl cards">
+<caption class="sr-only">Prospects</caption>
+<thead><tr><th scope="col">Prospect</th><th scope="col" class="hide-md">Location</th><th scope="col">Status</th><th scope="col">Qualification<br><span class="muted" style="text-transform:none;letter-spacing:0;font-weight:500">required criteria</span></th><th scope="col" class="num">Opportunity score<br><span class="muted" style="text-transform:none;letter-spacing:0;font-weight:500">research ranking</span></th><th scope="col" class="hide-md">Band</th><th scope="col" class="hide-md">Public contact</th><th scope="col" class="hide-lg">Updated</th></tr></thead>
+<tbody>${rows}</tbody>
+</table></div>`
+    : `<div class="card">${empty}</div>`
+}`,
   );
 }
 
-// ---------- create / edit form ----------
+// ---------- form sections (shared with discovery candidates) ----------
 
-function input(name: string, label: string, values: Values, attrs = "") {
-  return `<label>${esc(label)}<input type="text" name="${name}" value="${esc(values[name])}" ${attrs}></label>`;
+/** Steps 1-3: business, location, and public contact. */
+export function businessSections(values: Values, fe?: FieldErrors): string {
+  const L = FIELD_LIMITS;
+  const f = (name: string, label: string, extra: Partial<Parameters<typeof field>[0]> = {}) =>
+    field({ name, label, values, errors: fe, ...extra });
+  return [
+    fieldset(1, "Business", `<div class="fields">
+    ${f("businessName", "Business name", { attrs: `maxlength="${L.businessName}" autocomplete="off"` })}
+    ${f("website", "Website", { attrs: `maxlength="${L.website}"`, placeholder: "smithauto.com", hint: "The shop's own site, not a directory or social page." })}
+  </div>`),
+    fieldset(2, "Location", `<div class="fields">
+    ${f("city", "City", { attrs: `maxlength="${L.city}"` })}
+    ${f("state", "State / region", { attrs: `maxlength="${L.state}"`, placeholder: "IL" })}
+    ${f("postalCode", "Postal code", { attrs: `maxlength="${L.postalCode}"` })}
+    ${f("country", "Country", { values: { country: "US", ...values }, attrs: `maxlength="2"`, hint: "2-letter code" })}
+  </div>`),
+    fieldset(
+      3,
+      "Public business contact",
+      `<div class="fields">
+    ${f("phone", "Business phone", { attrs: `maxlength="${L.phone}"` })}
+    ${f("phoneSourceUrl", "Where the phone is listed", { attrs: `maxlength="${L.sourceUrl}"`, placeholder: "https://…/contact", hint: "Public page URL. Required with a phone." })}
+    ${f("email", "Business email", { attrs: `maxlength="${L.email}"` })}
+    ${f("emailSourceUrl", "Where the email is listed", { attrs: `maxlength="${L.sourceUrl}"`, placeholder: "https://…/contact", hint: "Public page URL. Required with an email." })}
+  </div>`,
+      "Only record contact information publicly published by the business itself.",
+    ),
+  ].join("\n  ");
 }
 
-function signalFieldset(def: SignalDefinition, values: Values): string {
-  const name = signalFieldName(def.key as SignalKey);
-  const current = values[name] === "yes" || values[name] === "no" ? values[name] : "unknown";
+function signalRow(def: SignalDefinition, values: Values, fe?: FieldErrors): string {
+  const key = def.key as SignalKey;
+  const name = signalFieldName(key);
+  const current = values[name] === "yes" || values[name] === "no" ? values[name]! : "unknown";
   const derived = def.kind === "derived";
+  const errs = fe?.byField.get(name) ?? [];
+
+  // What the server will actually compute for this signal, from the same scoring code.
+  const recorded: Partial<Record<string, "yes" | "no">> = {};
+  for (const k of SIGNAL_DEFS) {
+    const v = values[signalFieldName(k.key as SignalKey)];
+    if (v === "yes" || v === "no") recorded[k.key] = v;
+  }
+  // A hint about the typed values only makes sense when those values are valid.
+  const fieldsInvalid = ["website", "phone", "phoneSourceUrl", "email", "emailSourceUrl"].some((n) => fe?.byField.has(n));
+  const effective = fieldsInvalid ? "unknown" : resolveSignals({
+    signals: recorded,
+    website: values.website,
+    phone: values.phone,
+    phoneSourceUrl: values.phoneSourceUrl,
+    email: values.email,
+    emailSourceUrl: values.emailSourceUrl,
+  })[key];
+
   const choice = (v: "yes" | "no" | "unknown", label: string, disabled = false) =>
-    `<label><input type="radio" name="${name}" value="${v}"${current === v ? " checked" : ""}${disabled ? " disabled" : ""}> ${label}</label>`;
-  const tags = [
-    `${def.weight} pts`,
-    def.requiredCriterion ? "required criterion: no disqualifies" : "",
-    derived ? "yes is automatic" : "",
-    def.requiresWebsite ? "needs a website" : "",
+    `<label class="seg seg-${v}"><input type="radio" name="${name}" value="${v}"${current === v ? " checked" : ""}${disabled ? " disabled" : ""}><span>${label}</span></label>`;
+  const notes = [
+    derived ? `<span class="small muted">${effective === "yes" ? "Currently <b>Yes</b> automatically, from the fields above." : "“Yes” is set automatically from the fields above; choose No only after searching and finding none."}</span>` : "",
+    def.requiresWebsite ? `<span class="small muted">Needs a website.</span>` : "",
+    def.requiredCriterion ? `<span class="small muted">A “No” here disqualifies the business.</span>` : "",
   ].filter(Boolean);
-  return `<div class="signal">
-  <b>${esc(def.label)}</b> <span class="small muted">${esc(tags.join(" · "))}</span>
-  <div class="small">${esc(def.question)}</div>
-  <div class="choices">${choice("yes", "Yes", derived)}${choice("no", "No")}${choice("unknown", "Unknown")}</div>
-  <details><summary>Rules</summary><dl class="kv small" style="margin-top:6px">
-    <dt>Yes</dt><dd>${esc(def.yes)}</dd><dt>No</dt><dd>${esc(def.no)}</dd><dt>Unknown</dt><dd>${esc(def.unknown)}</dd><dt>Why ${def.weight}</dt><dd>${esc(def.rationale)}</dd>
-  </dl></details>
+
+  return `<div class="sig${def.requiredCriterion ? " req" : ""}" role="group" aria-labelledby="sig-${key}"${errs.length ? ` id="f-${name}"` : ` id="f-${name}"`}>
+  <div class="sig-h">
+    <div><span class="sig-name" id="sig-${key}">${esc(def.label)}</span> ${def.requiredCriterion ? '<span class="kind req">Required criterion</span>' : '<span class="kind">Opportunity signal</span>'}</div>
+    <span class="sig-pts" title="Points added when Yes">+${def.weight}</span>
+  </div>
+  <div class="sig-q">${esc(def.question)}</div>
+  <div class="seg-group">${choice("yes", "Yes", derived)}${choice("no", "No")}${choice("unknown", "Unknown")}</div>
+  ${errs.map((e) => `<div class="ferr">${esc(e)}</div>`).join("")}
+  <div class="sig-foot">${notes.join(" ")}
+    <details class="rules"><summary>View rules</summary><dl class="kv small">
+      <dt>Yes</dt><dd>${esc(def.yes)}</dd><dt>No</dt><dd>${esc(def.no)}</dd><dt>Unknown</dt><dd>${esc(def.unknown)}</dd><dt>Why ${def.weight} points</dt><dd>${esc(def.rationale)}</dd>
+    </dl></details>
+  </div>
 </div>`;
 }
 
-export function prospectFormPage(opts: { mode: "new" } | { mode: "edit"; id: string; name: string | null }, values: Values, errors?: string[]): string {
+/** Steps 4-5: the required criteria, then the opportunity signals. */
+export function signalSections(values: Values, fe?: FieldErrors): string {
+  const required = SIGNAL_DEFS.filter((d) => d.requiredCriterion);
+  const other = SIGNAL_DEFS.filter((d) => !d.requiredCriterion);
+  return [
+    fieldset(
+      4,
+      "Required qualification criteria",
+      required.map((d) => signalRow(d, values, fe)).join(""),
+      `These two decide <b>Qualification</b>: Meets criteria needs both “Yes”; either “No” disqualifies. Leave Unknown until a public source shows it.`,
+    ),
+    fieldset(
+      5,
+      "Opportunity signals",
+      other.map((d) => signalRow(d, values, fe)).join(""),
+      `These add to the <b>Opportunity score</b> (a research ranking). They never change Qualification. Unknown adds nothing and is never held against the business.`,
+    ),
+  ].join("\n  ");
+}
+
+const GATE_NOTES: Partial<Record<Status, string>> = {
+  qualified:
+    "This prospect is <b>Qualified</b>. A save is refused if it would leave no business name or make Qualification anything but Meets criteria. To change those details, first move it to an earlier status.",
+  ready_to_contact:
+    "This prospect is <b>Ready to contact</b>. A save is refused if it would leave no business name, make Qualification anything but Meets criteria, or remove the public phone or email together with its source URL. To change those details, first move it to an earlier status.",
+};
+
+export function prospectFormPage(
+  opts: { mode: "new" } | { mode: "edit"; id: string; name: string | null; status?: Status },
+  values: Values,
+  errors?: string[],
+): string {
   const editing = opts.mode === "edit";
   const action = editing ? `/admin/prospects/${esc(opts.id)}` : "/admin/prospects";
   const title = editing ? `Edit ${opts.name ?? "prospect"}` : "Add prospect";
-  const L = FIELD_LIMITS;
-  return page(
+  const fe = fieldErrors(errors);
+  const gate = editing && opts.status ? GATE_NOTES[opts.status] : undefined;
+  return appPage(
     `${title} · ReclaimBay admin`,
-    `${adminHeader("prospects")}
-<p class="small"><a href="${editing ? action : "/admin/prospects"}">← ${editing ? "Back to prospect" : "Prospects"}</a></p>
-<h2>${esc(title)}</h2>
-${errorBox(errors)}
-<form method="post" action="${action}" class="stack">
-  <fieldset><legend>Business</legend><div class="fields">
-    ${input("businessName", "Business name", values, `maxlength="${L.businessName}"`)}
-    ${input("website", "Website", values, `maxlength="${L.website}" placeholder="smithauto.com"`)}
-  </div></fieldset>
-  <fieldset><legend>Location</legend><div class="fields">
-    ${input("city", "City", values, `maxlength="${L.city}"`)}
-    ${input("state", "State / region", values, `maxlength="${L.state}" placeholder="IL"`)}
-    ${input("postalCode", "Postal code", values, `maxlength="${L.postalCode}"`)}
-    ${input("country", "Country (2-letter)", { country: "US", ...values }, `maxlength="2"`)}
-  </div></fieldset>
-  <fieldset><legend>Public business contact</legend>
-    <p class="small muted" style="margin-top:0">Only contact details the business itself publishes, each with the page where it is listed. Never an owner's personal phone, personal email, home address, or social profile.</p>
-    <div class="fields">
-      ${input("phone", "Business phone", values, `maxlength="${L.phone}"`)}
-      ${input("phoneSourceUrl", "Where the phone is listed (URL)", values, `maxlength="${L.sourceUrl}"`)}
-      ${input("email", "Business email", values, `maxlength="${L.email}"`)}
-      ${input("emailSourceUrl", "Where the email is listed (URL)", values, `maxlength="${L.sourceUrl}"`)}
-    </div>
-  </fieldset>
-  <fieldset><legend>Signals</legend>
-    <p class="small muted" style="margin-top:0">Record only what a public source shows, following each signal's rules. When unsure, leave it Unknown: unknown adds no points and is never counted against the shop.</p>
-    ${SIGNAL_DEFS.map((d) => signalFieldset(d, values)).join("")}
-  </fieldset>
-  <div class="row"><button type="submit">${editing ? "Save changes" : "Create prospect"}</button><a href="${editing ? action : "/admin/prospects"}">Cancel</a></div>
+    "prospects",
+    `${crumbs([{ label: "Prospects", href: "/admin/prospects" }, ...(editing ? [{ label: opts.name ?? "Prospect", href: action }, { label: "Edit" }] : [{ label: "Add prospect" }])])}
+${pageHead({ title, lede: editing ? "Same steps as adding a prospect. Every rule is checked when you save." : "Record what public sources show. Qualification and the opportunity score are worked out from what you enter." })}
+${errorSummary(errors, fe)}
+${gate ? `<div class="callout warn" style="margin-bottom:14px">${gate}</div>` : ""}
+<form method="post" action="${action}" class="stack" novalidate>
+  ${businessSections(values, fe)}
+  ${signalSections(values, fe)}
+  ${fieldset(6, "Review and save", `<p class="fs-note" style="margin:0 0 12px">${editing ? "Saving recalculates the score and re-checks the status requirements." : "The prospect starts as <b>New</b>. You can move it through the pipeline after creating it."}</p>
+  <div class="form-foot"><button type="submit" class="btn-primary-lg">${editing ? "Save changes" : "Create prospect"}</button><a class="btn btn-secondary btn-primary-lg" href="${editing ? action : "/admin/prospects"}">Cancel</a></div>`)}
 </form>`,
   );
 }
 
 // ---------- detail ----------
 
-function qualificationDetail(result: Detail["result"]): string {
-  const names = (keys: readonly string[]) => esc(keys.map(signalLabel).join(" and "));
-  if (result.qualification === "disqualified") {
-    return `${names(result.disqualifiedBy)} observed as “no”. The score below is still shown for reference.`;
-  }
-  if (result.qualification === "unverified") return `Still unknown: ${names(result.unverifiedCriteria)}.`;
-  return `${esc(criteriaNames)} both observed as “yes”.`;
-}
-
-const EVENT_LABELS: Record<string, string> = {
-  landing_view: "Visits",
-  upload_started: "Uploads",
-  scan_completed: "Real scans",
-  tour_completed: "Tours",
-  report_exported: "Exports",
-};
+const PIPELINE: Status[] = ["new", "qualified", "ready_to_contact", "contacted", "engaged", "customer"];
+const EVENT_LABELS: [string, string][] = [
+  ["landing_view", "Visits"],
+  ["upload_started", "Uploads"],
+  ["scan_completed", "Real scans"],
+  ["report_exported", "Exports"],
+  ["tour_completed", "Tours"],
+];
 
 export function prospectDetailPage(opts: {
   detail: Detail;
@@ -199,135 +294,174 @@ export function prospectDetailPage(opts: {
   errors?: string[];
   values?: Values;
 }): string {
-  const { detail, siteUrl, notice, errors, values = {} } = opts;
+  const { detail, siteUrl, values = {} } = opts;
   const { prospect: p, result, stale, activity } = detail;
   const id = esc(p.id);
-  const evidenceBySignal = new Map<string, number>();
-  for (const e of p.evidence) evidenceBySignal.set(e.signalKey, (evidenceBySignal.get(e.signalKey) ?? 0) + 1);
+  const fe = fieldErrors(opts.errors);
+  const none = '<span class="muted">—</span>';
+
+  const evidenceCount = new Map<string, number>();
+  for (const e of p.evidence) evidenceCount.set(e.signalKey, (evidenceCount.get(e.signalKey) ?? 0) + 1);
   const observedAt = new Map(p.signals.map((s) => [s.key, s.observedAt]));
 
-  const kv = (label: string, value: string) => `<dt>${esc(label)}</dt><dd>${value}</dd>`;
-  const none = '<span class="muted">—</span>';
   const contact = (value: string | null, source: string | null) =>
-    value ? `${esc(value)}${source ? `<div class="small">found at ${extLink(source)}</div>` : ""}` : none;
+    value
+      ? `${esc(value)} <span class="tag">Public business contact</span>${source ? `<div class="src">found at ${extLink(source)}</div>` : ""}`
+      : none;
+  const location = [p.city, p.state, p.postalCode].filter(Boolean).join(", ");
 
   const breakdown = result.breakdown
     .map((s) => {
       const def = SIGNAL_DEFS.find((d) => d.key === s.key)!;
       const when = observedAt.get(s.key);
-      const ev = evidenceBySignal.get(s.key) ?? 0;
+      const ev = evidenceCount.get(s.key) ?? 0;
       return `<tr>
-  <td><b>${esc(s.label)}</b>${def.requiredCriterion ? '<div class="small muted">required criterion</div>' : ""}${s.derived ? '<div class="small muted">derived</div>' : ""}</td>
-  <td>${s.state === "unknown" ? '<span class="muted">Unknown</span>' : s.state === "yes" ? "Yes" : "No"}${when && !s.derived ? `<div class="small muted">${fmtDate(when)}</div>` : ""}</td>
-  <td class="n">${s.points}<span class="muted">/${s.weight}</span></td>
-  <td class="small">${esc(s.reason)}</td>
-  <td class="n small">${ev || '<span class="muted">0</span>'}</td>
+  <td><b>${esc(s.label)}</b><div class="sub">${def.requiredCriterion ? '<span class="kind req">Required criterion</span>' : s.derived ? '<span class="kind">Derived</span>' : '<span class="kind">Opportunity signal</span>'}</div></td>
+  <td data-label="Observed">${obsBadge(s.state)}${when && !s.derived ? `<div class="sub">${fmtDay(when)}</div>` : ""}</td>
+  <td class="num" data-label="Points"><span class="score-cell"><b>${s.points}</b><span class="of">/${s.weight}</span></span></td>
+  <td class="small" data-label="Why">${esc(s.reason)}</td>
+  <td class="num" data-label="Evidence">${ev ? `<a href="#evidence">${ev}</a>` : '<span class="muted">0</span>'}</td>
 </tr>`;
     })
     .join("");
 
   const allowed = TRANSITIONS[p.status];
-  const statusForm =
+  const statusErrs = fe.byField.get("status") ?? [];
+  const statusBlock =
     allowed.length === 0
-      ? `<p class="small">This prospect must never be contacted. The status is permanent and can't be changed here.</p>`
-      : `<form method="post" action="/admin/prospects/${id}/status" class="inline">
-  <label>Move to<select name="status">${options(allowed.map((s): [string, string] => [s, STATUS_LABELS[s]]), values.status)}</select></label>
-  <label style="flex:1;min-width:220px">Reason <span class="small">(required for ${REASON_REQUIRED.map((s) => STATUS_LABELS[s]).join(", ")})</span><input type="text" name="reason" value="${esc(values.reason)}" maxlength="${FIELD_LIMITS.reason}"></label>
+      ? `<p>This prospect must never be contacted. The status is permanent and can't be changed here.</p>`
+      : `${stepper(PIPELINE, STATUS_LABELS, p.status)}
+<form method="post" action="/admin/prospects/${id}/status" class="row" style="align-items:flex-end" novalidate>
+  <div style="min-width:180px"><label class="lbl" for="f-status">Move to</label><select id="f-status" name="status"${statusErrs.length ? ' aria-invalid="true"' : ""}>${options(allowed.map((s): [string, string] => [s, STATUS_LABELS[s]]), values.status)}</select></div>
+  <div style="flex:1;min-width:240px"><label class="lbl" for="f-reason">Reason <span class="muted" style="font-weight:400">(required for ${REASON_REQUIRED.map((s) => STATUS_LABELS[s]).join(" and ")})</span></label><input id="f-reason" type="text" name="reason" value="${esc(values.reason)}" maxlength="${FIELD_LIMITS.reason}"></div>
   <button type="submit">Change status</button>
 </form>
-<p class="small muted">Qualified needs a business name and Qualification “Meets criteria” (both required criteria “yes”); the score doesn't matter. Ready to contact also needs a public phone or email with its source. Do not contact is permanent.</p>`;
+${statusErrs.map((e) => `<div class="ferr">${esc(e)}</div>`).join("")}
+<p class="small muted" style="margin-top:10px">Only valid next steps are listed. Qualified needs a business name and Qualification “Meets criteria” (the opportunity score doesn't matter). Ready to contact also needs a public phone or email with its source. Do not contact is permanent.</p>`;
 
   const counts = (type: string, sample: boolean) =>
     activity.counts.filter((c) => c.eventType === type && c.isSample === sample).reduce((n, c) => n + c.count, 0);
   const sampleTotal = activity.counts.filter((c) => c.isSample).reduce((n, c) => n + c.count, 0);
 
-  return page(
-    `${p.businessName ?? "Prospect"} · ReclaimBay admin`,
-    `${adminHeader("prospects")}
-<p class="small"><a href="/admin/prospects">← Prospects</a></p>
-${notice ? `<p class="ok" role="status">${esc(notice)}</p>` : ""}
-${errorBox(errors)}
-<div class="row" style="justify-content:space-between">
-  <div><h2 style="margin:0 0 6px;font-size:20px">${esc(p.businessName ?? "Unnamed prospect")}</h2>
-    <div class="row">${statusPill(p.status)} <span class="small muted">since ${fmtDate(p.statusChangedAt)}</span></div></div>
-  <a class="btn" href="/admin/prospects/${id}/edit">Edit</a>
-</div>
-<div class="grid2" style="margin-top:14px">
-  <div class="card"><div class="small muted">Qualification · required criteria</div>
-    <div style="margin:6px 0">${qualificationPill(result.qualification)}</div>
-    <div class="small">${qualificationDetail(result)}</div></div>
-  <div class="card"><div class="small muted">Opportunity score · ranking only, not a verdict</div>
-    <div style="margin:2px 0"><span style="font-size:28px;font-weight:700">${result.score}</span><span class="muted">/${MAX_SCORE}</span> ${bandPill(result.band)}</div>
-    <div class="small">${result.known} of ${result.total} signals known.</div></div>
-</div>
-${stale ? `<p class="errs small">Cached score (${p.score}, ${esc(p.scoreVersion ?? "never scored")}) differs from the current scoring ${esc(SCORING_VERSION)}. Saving the prospect or running <code>npm run prospects:rescore</code> updates it.</p>` : ""}
+  const evidence = p.evidence.length
+    ? p.evidence
+        .map(
+          (e) => `<article class="ev">
+  <div class="row spread"><span><span class="kind">Signal</span> <b>${esc(signalLabel(e.signalKey))}</b></span>
+    <form method="post" action="/admin/prospects/${id}/evidence/${esc(e.id)}/delete" class="inline-form"><button class="link" type="submit" aria-label="Remove evidence for ${esc(signalLabel(e.signalKey))}">Remove</button></form></div>
+  <blockquote>${esc(e.excerpt)}</blockquote>
+  <div class="meta"><span>Source: ${extLink(e.sourceUrl)}</span><span>${fmtDate(e.createdAt)}</span></div>
+</article>`,
+        )
+        .join("")
+    : `<div class="card">${emptyState("No evidence recorded yet.", "Add a short public excerpt and its source URL for each signal you record.")}</div>`;
 
-<div class="grid2" style="margin-top:16px">
-  <div class="card"><dl class="kv">
-    ${kv("Website", p.website ? extLink(p.website) : none)}
-    ${kv("Location", esc([p.city, p.state, p.postalCode].filter(Boolean).join(", ") || "—") + ` <span class="small muted">${esc(p.country)}</span>`)}
-    ${kv("Phone", contact(p.phone, p.phoneSourceUrl))}
-    ${kv("Email", contact(p.email, p.emailSourceUrl))}
-    ${kv("Referral", `<code>${esc(p.referralCode)}</code><div><input class="link" readonly value="${esc(referralUrl(siteUrl, p.referralCode))}" aria-label="Referral link"></div>`)}
-    ${kv("Added", fmtDate(p.createdAt))}
-    ${kv("Updated", fmtDate(p.updatedAt))}
-  </dl></div>
-  <div class="card"><b>Referral activity</b>
-    <dl class="kv" style="margin-top:8px">
-      ${kv("Visitors", String(activity.sessions))}
-      ${Object.entries(EVENT_LABELS).map(([t, l]) => kv(l, String(counts(t, false)))).join("")}
-      ${kv("Sample activity", String(sampleTotal))}
-      ${kv("Last activity", fmtDate(activity.lastActivity))}
-    </dl>
+  const ef = (name: string, label: string, attrs: string, hint?: string) =>
+    field({ name, label, values, errors: fe, attrs, hint });
+
+  return appPage(
+    `${p.businessName ?? "Prospect"} · ReclaimBay admin`,
+    "prospects",
+    `${crumbs([{ label: "Prospects", href: "/admin/prospects" }, { label: p.businessName ?? "Unnamed prospect" }])}
+${notice(opts.notice)}${errorSummary(opts.errors, fe, "Not done")}
+${pageHead({
+  title: p.businessName ?? "Unnamed prospect",
+  badges: `${statusBadge(p.status)}${location ? `<span class="muted">${esc(location)}</span>` : ""}<span class="muted small">Status since ${fmtDay(p.statusChangedAt)}</span>`,
+  actions: `<a class="btn" href="/admin/prospects/${id}/edit">Edit</a>${allowed.length ? `<a class="btn btn-secondary" href="#status">Change status</a>` : ""}`,
+})}
+${stale ? `<div class="callout warn" style="margin-bottom:14px">The saved score (${p.score}, ${esc(p.scoreVersion ?? "never scored")}) differs from the current scoring ${esc(SCORING_VERSION)}. Saving the prospect or running <code>npm run prospects:rescore</code> updates it. The numbers on this page are always current.</div>` : ""}
+
+<div class="grid-2">
+  <div class="card verdict v-${result.qualification}">
+    <div class="v-label">Qualification</div>
+    <div class="v-sub">Required criteria: ${esc(criteriaNames)}</div>
+    <div class="v-big">${qualificationBadge(result.qualification, "q-big")}</div>
+    <div class="small">${qualificationDetail(result)}</div>
+  </div>
+  <div class="card verdict v-score">
+    <div class="v-label">Opportunity score</div>
+    <div class="v-sub">Opportunity score · ranking only, not a verdict</div>
+    <div class="v-big"><span><span class="big">${result.score}</span><span class="muted">/${MAX_SCORE}</span> ${bandBadge(result.band)}</span></div>
+    <div class="small">${result.known} of ${result.total} signals known. A high score does not mean the business is qualified.</div>
   </div>
 </div>
 
-<h2>Score breakdown</h2>
-<p class="small muted" style="margin-top:-4px">${result.known} of ${result.total} signals known. Points come only from “yes”; unknown adds nothing and is never counted against the shop.</p>
-<div class="scroll"><table>
-<thead><tr><th>Signal</th><th>Observed</th><th class="n">Points</th><th>Why</th><th class="n">Evidence</th></tr></thead>
+${section(
+  "business",
+  "Business information",
+  `<div class="grid-2">
+  <div class="card"><dl class="kv">
+    <dt>Website</dt><dd>${p.website ? extLink(p.website) : none}</dd>
+    <dt>Location</dt><dd>${location ? esc(location) : none}</dd>
+    <dt>Country</dt><dd>${esc(p.country)}</dd>
+    <dt>Phone</dt><dd>${contact(p.phone, p.phoneSourceUrl)}</dd>
+    <dt>Email</dt><dd>${contact(p.email, p.emailSourceUrl)}</dd>
+  </dl></div>
+  <div class="card"><dl class="kv">
+    <dt>Referral code</dt><dd><code>${esc(p.referralCode)}</code></dd>
+    <dt>Referral link</dt><dd><input type="text" readonly aria-label="Referral link" value="${esc(referralUrl(siteUrl, p.referralCode))}"></dd>
+    <dt>Added</dt><dd>${fmtDate(p.createdAt)}</dd>
+    <dt>Updated</dt><dd>${fmtDate(p.updatedAt)}</dd>
+  </dl></div>
+</div>`,
+)}
+
+${section(
+  "activity",
+  "Referral and product activity",
+  `<div class="card"><dl class="metrics">
+  <div><dt>Visitors</dt><dd>${activity.sessions}</dd></div>
+  ${EVENT_LABELS.map(([t, l]) => `<div><dt>${esc(l)}</dt><dd>${counts(t, false)}</dd></div>`).join("")}
+  <div class="m-sample"><dt>Sample activity</dt><dd>${sampleTotal}</dd></div>
+</dl><p class="small muted" style="margin-top:10px">Last activity: ${fmtDate(activity.lastActivity)}. Real counts exclude the built-in sample report.</p></div>`,
+)}
+
+${section(
+  "score",
+  "Score breakdown",
+  `<p class="small muted" style="margin:-4px 0 10px">${result.known} of ${result.total} signals known. Points come only from “Yes”. Unknown adds nothing and is never counted against the business.</p>
+<div class="scroll"><table class="tbl cards">
+<caption class="sr-only">How the opportunity score was calculated</caption>
+<thead><tr><th scope="col">Signal</th><th scope="col">Observed</th><th scope="col" class="num">Points</th><th scope="col">Why</th><th scope="col" class="num">Evidence</th></tr></thead>
 <tbody>${breakdown}</tbody>
-<tfoot><tr><td colspan="2"><b>Total</b></td><td class="n"><b>${result.score}</b><span class="muted">/${MAX_SCORE}</span></td><td colspan="2" class="small muted">Scoring ${esc(result.version)}</td></tr></tfoot>
-</table></div>
+<tfoot><tr><td colspan="2">Total</td><td class="num"><span class="score-cell"><b>${result.score}</b><span class="of">/${MAX_SCORE}</span></span></td><td colspan="2" class="small muted" style="font-weight:400">Scoring ${esc(result.version)}</td></tr></tfoot>
+</table></div>`,
+)}
 
-<h2>Status</h2>
-<div class="card">
-  <p style="margin-top:0">${statusPill(p.status)} <span class="small">${esc(STATUS_MEANINGS[p.status])}</span></p>
-  ${statusForm}
-  <details style="margin-top:8px"><summary>History (${p.statusChanges.length})</summary>
-    <ul class="small">${p.statusChanges.map((c) => `<li>${fmtDate(c.createdAt)}: ${c.fromStatus ? `${esc(STATUS_LABELS[c.fromStatus])} → ` : ""}<b>${esc(STATUS_LABELS[c.toStatus])}</b>${c.reason ? ` · ${esc(c.reason)}` : ""}</li>`).join("")}</ul>
-  </details>
-</div>
+${section(
+  "status",
+  "Status",
+  `<div class="card"><p style="margin:0 0 10px">${statusBadge(p.status)} <span class="small muted">${esc(STATUS_MEANINGS[p.status])}</span></p>
+${statusBlock}
+<h3 class="card-h" style="margin-top:16px">History</h3>
+<ul class="timeline">${p.statusChanges.map((c) => `<li><span class="when">${fmtDate(c.createdAt)}</span>${c.fromStatus ? `${esc(STATUS_LABELS[c.fromStatus])} → ` : ""}<b>${esc(STATUS_LABELS[c.toStatus])}</b>${c.reason ? ` · ${esc(c.reason)}` : ""}</li>`).join("")}</ul></div>`,
+)}
 
-<h2>Evidence</h2>
-<div class="card stack">
-  <form method="post" action="/admin/prospects/${id}/evidence" class="stack">
-    <div class="fields">
-      <label>Supports signal<select name="signalKey">${options([["", "Choose…"], ...SIGNAL_DEFS.map((d): [string, string] => [d.key, d.label])], values.signalKey)}</select></label>
-      <label>Public source URL<input type="text" name="sourceUrl" value="${esc(values.sourceUrl)}" maxlength="${FIELD_LIMITS.sourceUrl}"></label>
-    </div>
-    <label>Short excerpt (max ${FIELD_LIMITS.excerpt} characters: a quote, not a copied page)<textarea name="excerpt" maxlength="${FIELD_LIMITS.excerpt}">${esc(values.excerpt)}</textarea></label>
-    <div><button type="submit">Add evidence</button></div>
-  </form>
-  ${
-    p.evidence.length
-      ? `<table><thead><tr><th>Signal</th><th>Excerpt</th><th>Source</th><th>Added</th><th></th></tr></thead><tbody>${p.evidence
-          .map(
-            (e) => `<tr><td class="small"><b>${esc(signalLabel(e.signalKey))}</b></td><td><blockquote class="small">${esc(e.excerpt)}</blockquote></td><td class="small">${extLink(e.sourceUrl)}</td><td class="small">${fmtDate(e.createdAt)}</td>
-<td><form method="post" action="/admin/prospects/${id}/evidence/${esc(e.id)}/delete" class="inline-form"><button class="link" type="submit">Remove</button></form></td></tr>`,
-          )
-          .join("")}</tbody></table>`
-      : `<p class="small muted">No evidence yet.</p>`
-  }
-</div>
+${section(
+  "evidence",
+  "Evidence",
+  `${evidence}
+<form method="post" action="/admin/prospects/${id}/evidence" class="card stack" style="margin-top:14px" novalidate>
+  <div class="card-h" style="margin:0">Add evidence</div>
+  <div class="fields">
+    <div class="field"><label for="f-signalKey">Supports signal</label><select id="f-signalKey" name="signalKey"${fe.byField.has("signalKey") ? ' aria-invalid="true"' : ""}>${options([["", "Choose…"], ...SIGNAL_DEFS.map((d): [string, string] => [d.key, d.label])], values.signalKey)}</select>${(fe.byField.get("signalKey") ?? []).map((e) => `<div class="ferr">${esc(e)}</div>`).join("")}</div>
+    ${ef("sourceUrl", "Public source URL", `maxlength="${FIELD_LIMITS.sourceUrl}"`)}
+  </div>
+  <div class="field"><label for="f-excerpt">Short excerpt</label><textarea id="f-excerpt" name="excerpt" maxlength="${FIELD_LIMITS.excerpt}"${fe.byField.has("excerpt") ? ' aria-invalid="true"' : ""}>${esc(values.excerpt)}</textarea><div class="hint">Up to ${FIELD_LIMITS.excerpt} characters: a short quote, not a copied page.</div>${(fe.byField.get("excerpt") ?? []).map((e) => `<div class="ferr">${esc(e)}</div>`).join("")}</div>
+  <div><button type="submit">Add evidence</button></div>
+</form>`,
+)}
 
-<h2>Notes</h2>
-<div class="card stack">
-  <form method="post" action="/admin/prospects/${id}/notes" class="stack">
-    <label>Add a note <span class="small">(business facts only; no personal details)</span><textarea name="body" maxlength="${FIELD_LIMITS.note}">${esc(values.body)}</textarea></label>
+${section(
+  "notes",
+  "Research notes",
+  `<div class="card">
+  <form method="post" action="/admin/prospects/${id}/notes" class="stack" novalidate>
+    <div class="field"><label for="f-body">Add a note</label><textarea id="f-body" name="body" maxlength="${FIELD_LIMITS.note}"${fe.byField.has("body") ? ' aria-invalid="true"' : ""}>${esc(values.body)}</textarea><div class="hint">Business facts only. Notes can't be edited or removed.</div>${(fe.byField.get("body") ?? []).map((e) => `<div class="ferr">${esc(e)}</div>`).join("")}</div>
     <div><button type="submit">Add note</button></div>
   </form>
-  ${p.notes.map((n) => `<div><div class="small muted">${fmtDate(n.createdAt)}</div><div style="white-space:pre-wrap">${esc(n.body)}</div></div>`).join("") || `<p class="small muted">No notes yet.</p>`}
+  <div style="margin-top:14px">${p.notes.map((n) => `<div class="note"><div class="when">${fmtDate(n.createdAt)}</div><div class="body">${esc(n.body)}</div></div>`).join("") || emptyState("No research notes yet.")}</div>
 </div>`,
+)}`,
   );
 }

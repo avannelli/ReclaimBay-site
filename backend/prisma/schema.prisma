@@ -47,6 +47,24 @@ enum ExportType {
 
 // A prospective shop. Only public business information: never owner
 // personal details, and never anything from a customer's report.
+// Milestone 3: where a discovered business is in review. Only a human
+// approval (-> approved) creates a Prospect; see src/discovery/candidateStatus.ts.
+enum CandidateStatus {
+  discovered
+  researching
+  researched
+  needs_review
+  approved
+  rejected
+  duplicate
+}
+
+enum DiscoveryRunStatus {
+  running
+  completed
+  failed
+}
+
 model Prospect {
   id           String  @id @default(uuid()) @db.Uuid
   referralCode String  @unique
@@ -74,6 +92,7 @@ model Prospect {
   createdAt       DateTime       @default(now())
   updatedAt       DateTime       @updatedAt
 
+  candidate     DiscoveryCandidate?
   sessions      AnalyticsSession[]
   events        ProductEvent[]
   signals       ProspectSignal[]
@@ -170,4 +189,133 @@ model ProductEvent {
   @@index([sessionId, createdAt])
   @@index([prospectId, eventType])
   @@index([eventType, isSample, createdAt])
+}
+
+// One execution of a discovery provider for a target area.
+model DiscoveryRun {
+  id           String             @id @default(uuid()) @db.Uuid
+  provider     String             @db.VarChar(40)
+  region       String             @db.VarChar(100)
+  city         String?            @db.VarChar(100)
+  businessType String             @db.VarChar(100)
+  status       DiscoveryRunStatus @default(running)
+  // Counters for the last finished run.
+  found        Int                @default(0)
+  created      Int                @default(0)
+  duplicates   Int                @default(0)
+  flagged      Int                @default(0)
+  invalid      Int                @default(0)
+  error        String?            @db.VarChar(300)
+  createdAt    DateTime           @default(now())
+  finishedAt   DateTime?
+
+  candidates DiscoveryCandidate[]
+
+  @@index([createdAt])
+}
+
+// A discovered business awaiting research and human review. Same public
+// business facts as a Prospect, but kept out of the prospect pipeline until
+// approved. Score and qualification are never stored here: they are computed
+// from the signals by src/scoring.ts whenever needed.
+model DiscoveryCandidate {
+  id    String  @id @default(uuid()) @db.Uuid
+  runId String? @db.Uuid
+
+  // Identity
+  businessName String  @db.VarChar(120)
+  website      String? @db.VarChar(200)
+  city         String? @db.VarChar(100)
+  state        String? @db.VarChar(50)
+  postalCode   String? @db.VarChar(20)
+  country      String  @default("US") @db.Char(2)
+
+  // Public business contact, each with where it was found.
+  phone          String? @db.VarChar(30)
+  phoneSourceUrl String? @db.VarChar(500)
+  email          String? @db.VarChar(254)
+  emailSourceUrl String? @db.VarChar(500)
+
+  // Normalized match keys, written by src/discovery/normalize.ts.
+  domainKey   String? @db.VarChar(200)
+  nameKey     String  @db.VarChar(160)
+  locationKey String? @db.VarChar(160)
+  phoneKey    String? @db.VarChar(15)
+
+  // Discovery provenance
+  provider     String   @db.VarChar(40)
+  externalId   String?  @db.VarChar(200)
+  sourceUrl    String?  @db.VarChar(500)
+  query        String?  @db.VarChar(300)
+  discoveredAt DateTime @default(now())
+
+  // Review
+  status          CandidateStatus @default(discovered)
+  statusChangedAt DateTime        @default(now())
+  researchedAt    DateTime?
+  decisionReason  String?         @db.VarChar(500)
+  decidedAt       DateTime?
+
+  // Possible (not confident) duplicates, flagged for a human.
+  possibleDuplicateCandidateId String? @db.Uuid
+  possibleDuplicateProspectId  String? @db.Uuid
+  duplicateReason              String? @db.VarChar(120)
+
+  // Set on approval; the candidate row stays as provenance.
+  prospectId String?   @unique @db.Uuid
+  approvedAt DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  run      DiscoveryRun?       @relation(fields: [runId], references: [id], onDelete: SetNull)
+  prospect Prospect?           @relation(fields: [prospectId], references: [id], onDelete: SetNull)
+  signals  CandidateSignal[]
+  evidence CandidateEvidence[]
+  notes    CandidateNote[]
+
+  @@unique([provider, externalId])
+  @@index([status, discoveredAt])
+  @@index([domainKey])
+  @@index([nameKey, locationKey])
+  @@index([phoneKey])
+  @@index([runId])
+}
+
+// One recorded observation. No row means unknown (same as ProspectSignal).
+model CandidateSignal {
+  id          String      @id @default(uuid()) @db.Uuid
+  candidateId String      @db.Uuid
+  key         String      @db.VarChar(64)
+  value       SignalValue
+  observedAt  DateTime    @default(now())
+
+  candidate DiscoveryCandidate @relation(fields: [candidateId], references: [id], onDelete: Cascade)
+
+  @@unique([candidateId, key])
+}
+
+// A short public excerpt supporting one signal. Never a copied page.
+model CandidateEvidence {
+  id          String   @id @default(uuid()) @db.Uuid
+  candidateId String   @db.Uuid
+  signalKey   String   @db.VarChar(64)
+  sourceUrl   String   @db.VarChar(500)
+  excerpt     String   @db.VarChar(280)
+  createdAt   DateTime @default(now())
+
+  candidate DiscoveryCandidate @relation(fields: [candidateId], references: [id], onDelete: Cascade)
+
+  @@index([candidateId, signalKey])
+}
+
+model CandidateNote {
+  id          String   @id @default(uuid()) @db.Uuid
+  candidateId String   @db.Uuid
+  body        String   @db.VarChar(2000)
+  createdAt   DateTime @default(now())
+
+  candidate DiscoveryCandidate @relation(fields: [candidateId], references: [id], onDelete: Cascade)
+
+  @@index([candidateId, createdAt])
 }

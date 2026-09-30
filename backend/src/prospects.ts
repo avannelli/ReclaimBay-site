@@ -195,7 +195,7 @@ export function parseProspectInput(raw: Raw): { input: ProspectInput; errors: st
 }
 
 /** Recorded (yes/no) observations only; unknown is the absence of a row. */
-function storedSignals(signals: Partial<Record<string, SignalState>>): Partial<Record<SignalKey, StoredSignalValue>> {
+export function storedSignals(signals: Partial<Record<string, SignalState>>): Partial<Record<SignalKey, StoredSignalValue>> {
   const out: Partial<Record<SignalKey, StoredSignalValue>> = {};
   for (const [key, v] of Object.entries(signals)) {
     if (isSignalKey(key) && (v === "yes" || v === "no")) out[key] = v;
@@ -231,37 +231,59 @@ const scoreData = (input: ScoringInput, now: Date) => ({
 
 // ---------- writes ----------
 
+/** Anything that can run queries: the client or a transaction. */
+type Tx = Prisma.TransactionClient;
+
+export interface ProspectDetails {
+  /** When each recorded signal was observed; defaults to now. */
+  observedAt?: Partial<Record<string, Date>>;
+  evidence?: { signalKey: string; sourceUrl: string; excerpt: string; createdAt?: Date }[];
+  notes?: string[];
+}
+
+/**
+ * Inserts a validated prospect with its signals, evidence, notes, cached
+ * score, and "Created" history row. Always starts as `new`: nothing here can
+ * place a prospect in a later status. Runs inside the caller's transaction.
+ */
+export async function insertProspect(tx: Tx, input: ProspectInput, referralCode: string, details: ProspectDetails = {}) {
+  const now = new Date();
+  const prospect = await tx.prospect.create({
+    data: {
+      ...input.fields,
+      referralCode,
+      status: "new",
+      statusChangedAt: now,
+      ...scoreData(scoringInputOf(input), now),
+    },
+  });
+  const rows = Object.entries(storedSignals(input.signals)).map(([key, value]) => ({
+    prospectId: prospect.id,
+    key,
+    value: value!,
+    observedAt: details.observedAt?.[key] ?? now,
+  }));
+  if (rows.length) await tx.prospectSignal.createMany({ data: rows });
+  if (details.evidence?.length) {
+    await tx.prospectEvidence.createMany({ data: details.evidence.map((e) => ({ ...e, prospectId: prospect.id })) });
+  }
+  if (details.notes?.length) {
+    await tx.prospectNote.createMany({ data: details.notes.map((body) => ({ prospectId: prospect.id, body })) });
+  }
+  await tx.prospectStatusChange.create({
+    data: { prospectId: prospect.id, fromStatus: null, toStatus: "new", reason: "Created", createdAt: now },
+  });
+  return prospect;
+}
+
 export async function createProspect(db: Db, raw: Raw) {
   const { input, errors } = parseProspectInput(raw);
   if (errors.length) throw new ProspectError(errors);
-  const scoring = scoringInputOf(input);
-  const now = new Date();
 
   // A code collision is astronomically unlikely, but retry rather than fail.
   for (let attempt = 0; ; attempt++) {
     try {
-      return await db.$transaction(async (tx) => {
-        const prospect = await tx.prospect.create({
-          data: {
-            ...input.fields,
-            referralCode: generateReferralCode(),
-            status: "new",
-            statusChangedAt: now,
-            ...scoreData(scoring, now),
-          },
-        });
-        const rows = Object.entries(storedSignals(input.signals)).map(([key, value]) => ({
-          prospectId: prospect.id,
-          key,
-          value: value!,
-          observedAt: now,
-        }));
-        if (rows.length) await tx.prospectSignal.createMany({ data: rows });
-        await tx.prospectStatusChange.create({
-          data: { prospectId: prospect.id, fromStatus: null, toStatus: "new", reason: "Created", createdAt: now },
-        });
-        return prospect;
-      });
+      return await db.$transaction((tx) => insertProspect(tx, input, generateReferralCode()));
     } catch (err) {
       const target = (err as { meta?: { target?: unknown } }).meta?.target;
       const isCodeClash = (err as { code?: string }).code === "P2002" && String(target ?? "").includes("referralCode");
@@ -345,7 +367,14 @@ export async function addNote(db: Db, prospectId: string, bodyRaw: unknown) {
   return db.prospectNote.create({ data: { prospectId, body } });
 }
 
-export async function addEvidence(db: Db, prospectId: string, raw: Raw) {
+export interface EvidenceInput {
+  signalKey: SignalKey;
+  sourceUrl: string;
+  excerpt: string;
+}
+
+/** Validates an evidence item: a known signal, a public URL, a short excerpt. */
+export function parseEvidence(raw: Raw): { evidence: EvidenceInput | null; errors: string[] } {
   const errors: string[] = [];
   const signalKey = text(raw, "signalKey") ?? "";
   if (!isSignalKey(signalKey)) errors.push("Choose the signal this evidence supports.");
@@ -358,9 +387,15 @@ export async function addEvidence(db: Db, prospectId: string, raw: Raw) {
   else if (excerpt.length > FIELD_LIMITS.excerpt) {
     errors.push(`Excerpt is ${excerpt.length} characters; keep it to a short quote of at most ${FIELD_LIMITS.excerpt}.`);
   }
-  if (errors.length) throw new ProspectError(errors);
+  if (errors.length) return { evidence: null, errors };
+  return { evidence: { signalKey: signalKey as SignalKey, sourceUrl: sourceUrl!, excerpt: excerpt! }, errors };
+}
+
+export async function addEvidence(db: Db, prospectId: string, raw: Raw) {
+  const { evidence, errors } = parseEvidence(raw);
+  if (!evidence) throw new ProspectError(errors);
   await requireProspect(db, prospectId);
-  return db.prospectEvidence.create({ data: { prospectId, signalKey, sourceUrl: sourceUrl!, excerpt: excerpt! } });
+  return db.prospectEvidence.create({ data: { prospectId, ...evidence } });
 }
 
 export async function deleteEvidence(db: Db, prospectId: string, evidenceId: string) {

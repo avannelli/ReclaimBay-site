@@ -52,7 +52,7 @@ export async function freshDb(): Promise<Db> {
 
 export async function truncate(db: Db) {
   await db.$executeRawUnsafe(
-    `TRUNCATE "ProspectEvidence", "ProspectNote", "ProspectStatusChange", "ProspectSignal", "ProductEvent", "AnalyticsSession", "Prospect" CASCADE`,
+    `TRUNCATE "CandidateEvidence", "CandidateNote", "CandidateSignal", "DiscoveryCandidate", "DiscoveryRun", "ProspectEvidence", "ProspectNote", "ProspectStatusChange", "ProspectSignal", "ProductEvent", "AnalyticsSession", "Prospect" CASCADE`,
   );
 }
 
