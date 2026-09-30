@@ -1,0 +1,145 @@
+@import "tailwindcss";
+
+/*
+ * AutoRev color system. Every accent in the UI comes from these tokens.
+ *   Navy     = trust and structure (brand, dark surfaces)
+ *   Amber    = opportunity worth attention (used sparingly)
+ *   Emerald  = positive financial value
+ *   Slate    = neutral structure and supporting text
+ * The "-ink" and "-bright" variants exist only for text contrast (WCAG AA):
+ * "-ink" for text on light surfaces, "-bright" for text on navy.
+ */
+@theme {
+  /* Turn off Tailwind's other hue palettes so stray colors can't creep in. */
+  --color-red-*: initial;
+  --color-orange-*: initial;
+  --color-amber-*: initial;
+  --color-yellow-*: initial;
+  --color-lime-*: initial;
+  --color-green-*: initial;
+  --color-emerald-*: initial;
+  --color-teal-*: initial;
+  --color-cyan-*: initial;
+  --color-sky-*: initial;
+  --color-blue-*: initial;
+  --color-indigo-*: initial;
+  --color-violet-*: initial;
+  --color-purple-*: initial;
+  --color-fuchsia-*: initial;
+  --color-pink-*: initial;
+  --color-rose-*: initial;
+  --color-gray-*: initial;
+  --color-zinc-*: initial;
+  --color-neutral-*: initial;
+  --color-stone-*: initial;
+
+  --color-navy: #0b1f33;
+  --color-navy-deep: #071725;
+
+  --color-opportunity: #d9901a;
+  --color-opportunity-hover: #b96f0d;
+  --color-opportunity-soft: #fff5df;
+  --color-opportunity-ink: #975e0b;
+
+  --color-positive: #168a5b;
+  --color-positive-soft: #eaf7f0;
+  --color-positive-ink: #13784f;
+  --color-positive-bright: #3cc18a;
+
+  --color-ink: #0f172a;
+  --color-ink-2: #475569;
+  --color-ink-3: #64748b;
+  --color-line: #e2e8f0;
+  --color-canvas: #f7f9fc;
+  --color-surface: #ffffff;
+
+  --color-danger: #c2413a;
+  --color-danger-soft: #fdf3f2;
+}
+
+@theme inline {
+  --color-background: var(--color-canvas);
+  --color-foreground: var(--color-ink);
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+
+  --shadow-card: 0 1px 2px rgb(11 31 51 / 0.04), 0 10px 28px -18px rgb(11 31 51 / 0.16);
+  --shadow-lift: 0 2px 4px rgb(11 31 51 / 0.05), 0 20px 44px -20px rgb(11 31 51 / 0.28);
+
+  --animate-fade-up: fade-up 650ms cubic-bezier(0.22, 1, 0.36, 1) both;
+  --animate-settle: settle 1100ms cubic-bezier(0.22, 1, 0.36, 1) both;
+
+  @keyframes fade-up {
+    from {
+      opacity: 0;
+      transform: translateY(14px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
+
+  /* One-time glow and settle when the headline total lands. */
+  @keyframes settle {
+    0% {
+      transform: scale(1);
+      text-shadow: 0 0 0 rgb(217 144 26 / 0);
+    }
+    35% {
+      transform: scale(1.01);
+      text-shadow: 0 0 26px rgb(217 144 26 / 0.38);
+    }
+    100% {
+      transform: scale(1);
+      text-shadow: 0 0 0 rgb(217 144 26 / 0);
+    }
+  }
+}
+
+/* Small uppercase section label, used the same way everywhere. */
+@utility eyebrow {
+  font-size: 11px;
+  line-height: 1rem;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+/* Soft amber swash under a few words of a headline. */
+@utility highlight {
+  background-image: linear-gradient(
+    transparent 74%,
+    color-mix(in srgb, var(--color-opportunity) 28%, transparent) 74%,
+    color-mix(in srgb, var(--color-opportunity) 28%, transparent) 90%,
+    transparent 90%
+  );
+}
+
+body {
+  background: var(--color-canvas);
+  color: var(--color-ink);
+  font-family: var(--font-sans), system-ui, sans-serif;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  html {
+    scroll-behavior: smooth;
+  }
+}
+
+/* "Download PDF" uses the browser's print dialog; keep the report's colors. */
+@media print {
+  @page {
+    margin: 12mm;
+  }
+
+  html {
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+
+  body {
+    background: var(--color-surface);
+  }
+}
