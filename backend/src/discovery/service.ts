@@ -569,6 +569,8 @@ export async function updateCandidate(db: Db, id: string, raw: Raw) {
         ...f,
         businessName: f.businessName!,
         ...storedKeysOf({ ...f, businessName: f.businessName!, providerPhone: current.providerPhone }),
+        // A different website is no longer the one research verified.
+        ...((f.website ?? null) !== current.website ? { websiteVerifiedAt: null } : {}),
       },
     });
   });
@@ -871,7 +873,11 @@ export async function listCandidates(db: Db, filters: CandidateFilters) {
 
   const rows = await db.discoveryCandidate.findMany({
     where: and.length ? { AND: and } : {},
-    include: { signals: true, _count: { select: { evidence: true } } },
+    include: {
+      signals: true,
+      _count: { select: { evidence: true } },
+      research: { orderBy: { queuedAt: "desc" }, take: 1, select: { status: true, outcome: true } },
+    },
     orderBy: { discoveredAt: "desc" },
     take: CANDIDATE_FETCH_CAP,
   });

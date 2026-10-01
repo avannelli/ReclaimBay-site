@@ -19,7 +19,8 @@
     "test": "tsx --test test/unit/*.test.ts",
     "test:integration": "tsx --env-file-if-exists=.env --test --test-concurrency=1 test/integration/*.test.ts",
     "discovery:import": "node --env-file-if-exists=.env dist/scripts/importProvider.js",
-    "discovery:process": "node --env-file-if-exists=.env dist/scripts/processDiscoveryRuns.js"
+    "discovery:process": "node --env-file-if-exists=.env dist/scripts/processDiscoveryRuns.js",
+    "discovery:research": "node --env-file-if-exists=.env dist/scripts/researchCandidates.js"
   },
   "dependencies": {
     "@duckdb/node-api": "1.5.6-r.1",

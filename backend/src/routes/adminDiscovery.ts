@@ -20,6 +20,7 @@ import {
   updateCandidate,
 } from "../discovery/service.js";
 import { recentImports } from "../discovery/staging.js";
+import { MAX_BATCH, candidateResearch, enqueueResearch, processQueuedResearch, researchQueue, type ProcessDeps } from "../research/service.js";
 import { ProspectError } from "../prospects.js";
 
 type Form = Record<string, string>;
@@ -35,6 +36,7 @@ const NOTICES: Record<string, string> = {
   note: "Note added.",
   evidence: "Evidence added.",
   evidence_removed: "Evidence removed.",
+  research: "Research queued. It runs in the background (about 10 seconds per website); refresh to see the results.",
 };
 
 const pick = (body: Form | undefined, keys: string[]): Values =>
@@ -45,8 +47,16 @@ const pick = (body: Form | undefined, keys: string[]): Values =>
  * already requires a session, same-origin POSTs, and the admin security
  * headers: nothing is reachable without signing in.
  */
-export async function discoveryRoutes(app: FastifyInstance, opts: { config: Config; db: Db }) {
+export async function discoveryRoutes(app: FastifyInstance, opts: { config: Config; db: Db; research?: ProcessDeps }) {
   const { config, db } = opts;
+  /** Processes queued research after the response; never inside a request. */
+  const startResearch = () =>
+    setImmediate(() => {
+      processQueuedResearch(db, opts.research ?? {}).then(
+        (r) => r.processed.length && app.log.info({ processed: r.processed.length }, "research processed"),
+        (err: unknown) => app.log.error({ err }, "research worker crashed"),
+      );
+    });
   const providers = discoveryProviders(config, db);
   const providerOptions = [...providers.values()].map((p) => ({ name: p.name, label: p.label, background: p.mode === "background" }));
 
@@ -72,20 +82,22 @@ export async function discoveryRoutes(app: FastifyInstance, opts: { config: Conf
     filters: Values,
     extra: { notice?: string; errors?: string[]; values?: Values } = {},
   ) => {
-    const [list, runs, runCount, statusCounts, imports] = await Promise.all([
+    const [list, runs, runCount, statusCounts, imports, research] = await Promise.all([
       listCandidates(db, filters),
       recentRuns(db),
       db.discoveryRun.count(),
       candidateStatusCounts(db),
       recentImports(db),
+      researchQueue(db),
     ]);
-    return html(reply, discoveryPage({ providers: providerOptions, list, runs, runCount, imports, statusCounts, filters, ...extra }));
+    return html(reply, discoveryPage({ providers: providerOptions, list, runs, runCount, imports, research, statusCounts, filters, ...extra }));
   };
 
   const renderDetail = async (reply: FastifyReply, id: string, extra: { notice?: string; errors?: string[]; values?: Values } = {}) => {
     const detail = await getCandidateDetail(db, id);
     if (!detail) return notFound(reply);
-    return html(reply, candidateDetailPage({ detail, ...extra }));
+    const research = await candidateResearch(db, id);
+    return html(reply, candidateDetailPage({ detail, research, ...extra }));
   };
 
   // ---------- overview and runs ----------
@@ -106,6 +118,11 @@ export async function discoveryRoutes(app: FastifyInstance, opts: { config: Conf
       sort: q.sort,
     };
     let notice: string | undefined;
+    if (q.done === "research_batch") {
+      notice = "Research queued for up to 10 candidates in this view. It runs in the background, one website at a time; refresh to see progress.";
+    } else if (q.done === "research_none") {
+      notice = "Nothing to research in this view: every candidate here has been researched, has research queued, or can't be researched.";
+    }
     if (q.done === "run" && q.run && UUID_RE.test(q.run)) {
       const run = await db.discoveryRun.findUnique({ where: { id: q.run } });
       if (run?.status === "completed") {
@@ -236,6 +253,35 @@ export async function discoveryRoutes(app: FastifyInstance, opts: { config: Conf
   );
 
   // The only route that creates a prospect from a candidate: an explicit human POST.
+  // ---------- automated research (queued; processed in the background) ----------
+
+  app.post<{ Params: { id: string } }>("/admin/discovery/candidates/:id/research", writeLimit, async (req, reply) => {
+    if (!validId(req.params.id, reply)) return reply;
+    const r = await enqueueResearch(db, [req.params.id], "admin");
+    const skipped = r.skipped[0];
+    if (skipped?.reason === "not found") return notFound(reply);
+    if (skipped) return renderDetail(reply.code(409), req.params.id, { errors: [`Research can't start: ${skipped.reason}.`] });
+    startResearch();
+    return reply.redirect(`/admin/discovery/candidates/${req.params.id}?done=research`, 303);
+  });
+
+  app.post<{ Body: Form }>(
+    "/admin/discovery/research",
+    { config: { rateLimit: { max: 10, timeWindow: "1 minute" } } },
+    async (req, reply) => {
+      const b = req.body ?? {};
+      const filters = pick(b, ["q", "status", "qualification", "band", "state", "city", "flagged", "tier", "provider", "sort"]);
+      const run = typeof b.run === "string" && UUID_RE.test(b.run) ? b.run : undefined;
+      const list = await listCandidates(db, { ...filters, run });
+      // Only candidates never researched, so a batch moves through the list.
+      const ids = list.rows.filter((r) => !r.candidate.research.length && !["approved", "rejected", "duplicate"].includes(r.candidate.status)).map((r) => r.candidate.id);
+      const r = await enqueueResearch(db, ids.slice(0, MAX_BATCH), "batch");
+      if (!r.queued.length) return reply.redirect("/admin/discovery?done=research_none", 303);
+      startResearch();
+      return reply.redirect("/admin/discovery?done=research_batch", 303);
+    },
+  );
+
   app.post<{ Params: { id: string } }>("/admin/discovery/candidates/:id/approve", writeLimit, async (req, reply) => {
     const { id } = req.params;
     if (!validId(id, reply)) return reply;

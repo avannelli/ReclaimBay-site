@@ -15,6 +15,7 @@ import { dashboardPage, disabledPage, loginPage } from "../admin/views.js";
 import type { Config } from "../config.js";
 import type { Db } from "../db.js";
 import type { Status } from "../prospectStatus.js";
+import type { ProcessDeps } from "../research/service.js";
 import { discoveryRoutes } from "./adminDiscovery.js";
 import {
   ProspectError,
@@ -51,7 +52,7 @@ const PUBLIC_PATHS = new Set(["/admin/login", "/admin/logout"]);
  * Private admin at /admin, protected server-side by ADMIN_SECRET. The
  * secret never reaches the static frontend.
  */
-export async function adminRoutes(app: FastifyInstance, opts: { config: Config; db: Db }) {
+export async function adminRoutes(app: FastifyInstance, opts: { config: Config; db: Db; research?: ProcessDeps }) {
   const { config, db } = opts;
   const secret = config.adminSecret;
 
@@ -295,7 +296,7 @@ export async function adminRoutes(app: FastifyInstance, opts: { config: Config; 
   );
 
   // Discovery shares this scope's session check, origin check, and headers.
-  await app.register(discoveryRoutes, { config, db });
+  await app.register(discoveryRoutes, { config, db, research: opts.research });
 }
 
 const pick = (body: Form | undefined, keys: string[]): Values =>

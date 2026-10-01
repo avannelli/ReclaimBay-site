@@ -31,6 +31,32 @@ enum SignalValue {
   no
 }
 
+// Who recorded a candidate signal or evidence item. Automated research only
+// ever replaces its own entries; a person's entries are never touched.
+enum RecordOrigin {
+  manual
+  research
+}
+
+enum ResearchStatus {
+  queued
+  running
+  completed
+  failed
+}
+
+// How far a researched fact is established.
+//   verified    confirmed on the business's own (verified) website
+//   unverified  reported by a provider or found but not confirmed
+//   uncertain   sources disagree, or the evidence is too weak to decide
+//   not_found   looked for and not found
+enum FactState {
+  verified
+  unverified
+  uncertain
+  not_found
+}
+
 enum EventType {
   landing_view
   upload_started
@@ -303,11 +329,14 @@ model DiscoveryCandidate {
   providerSources     String?                  @db.VarChar(200)
 
   // Review
-  status          CandidateStatus @default(discovered)
-  statusChangedAt DateTime        @default(now())
-  researchedAt    DateTime?
-  decisionReason  String?         @db.VarChar(500)
-  decidedAt       DateTime?
+  status            CandidateStatus @default(discovered)
+  statusChangedAt   DateTime        @default(now())
+  researchedAt      DateTime?
+  // Set when automated research confirmed the stored website is the
+  // business's own; cleared whenever the website changes.
+  websiteVerifiedAt DateTime?
+  decisionReason    String?         @db.VarChar(500)
+  decidedAt         DateTime?
 
   // Possible (not confident) duplicates, flagged for a human.
   possibleDuplicateCandidateId String? @db.Uuid
@@ -332,6 +361,7 @@ model DiscoveryCandidate {
   signals  CandidateSignal[]
   evidence CandidateEvidence[]
   notes    CandidateNote[]
+  research CandidateResearch[]
 
   @@unique([provider, externalId])
   @@index([status, discoveredAt])
@@ -344,11 +374,12 @@ model DiscoveryCandidate {
 
 // One recorded observation. No row means unknown (same as ProspectSignal).
 model CandidateSignal {
-  id          String      @id @default(uuid()) @db.Uuid
-  candidateId String      @db.Uuid
-  key         String      @db.VarChar(64)
+  id          String       @id @default(uuid()) @db.Uuid
+  candidateId String       @db.Uuid
+  key         String       @db.VarChar(64)
   value       SignalValue
-  observedAt  DateTime    @default(now())
+  observedAt  DateTime     @default(now())
+  origin      RecordOrigin @default(manual)
 
   candidate DiscoveryCandidate @relation(fields: [candidateId], references: [id], onDelete: Cascade)
 
@@ -357,16 +388,92 @@ model CandidateSignal {
 
 // A short public excerpt supporting one signal. Never a copied page.
 model CandidateEvidence {
-  id          String   @id @default(uuid()) @db.Uuid
-  candidateId String   @db.Uuid
-  signalKey   String   @db.VarChar(64)
-  sourceUrl   String   @db.VarChar(500)
-  excerpt     String   @db.VarChar(280)
-  createdAt   DateTime @default(now())
+  id          String       @id @default(uuid()) @db.Uuid
+  candidateId String       @db.Uuid
+  signalKey   String       @db.VarChar(64)
+  sourceUrl   String       @db.VarChar(500)
+  excerpt     String       @db.VarChar(280)
+  createdAt   DateTime     @default(now())
+  origin      RecordOrigin @default(manual)
+  // The research run that recorded it (research origin only).
+  researchId  String?      @db.Uuid
 
   candidate DiscoveryCandidate @relation(fields: [candidateId], references: [id], onDelete: Cascade)
+  research  CandidateResearch? @relation(fields: [researchId], references: [id], onDelete: SetNull)
 
   @@index([candidateId, signalKey])
+}
+
+// One automated research run for a candidate (see src/research). Runs are
+// history: the newest completed run is the current picture, and only the
+// most recent few are kept.
+model CandidateResearch {
+  id           String         @id @default(uuid()) @db.Uuid
+  candidateId  String         @db.Uuid
+  status       ResearchStatus @default(queued)
+  // The researcher's rule version, e.g. "r1".
+  version      String         @db.VarChar(20)
+  // "admin", "batch", or "cli".
+  trigger      String         @db.VarChar(20)
+  // What the run concluded, e.g. "website_verified", "no_website".
+  outcome      String?        @db.VarChar(40)
+  pagesFetched Int            @default(0)
+  // Short, readable warnings ("Provider phone not found on the website").
+  warnings     Json?
+  error        String?        @db.VarChar(300)
+  queuedAt     DateTime       @default(now())
+  startedAt    DateTime?
+  heartbeatAt  DateTime?
+  finishedAt   DateTime?
+
+  candidate DiscoveryCandidate  @relation(fields: [candidateId], references: [id], onDelete: Cascade)
+  sources   ResearchSource[]
+  facts     ResearchFact[]
+  evidence  CandidateEvidence[]
+
+  @@index([candidateId, queuedAt])
+  @@index([status, queuedAt])
+}
+
+// A public URL a research run requested. Never the page body.
+model ResearchSource {
+  id          String   @id @default(uuid()) @db.Uuid
+  researchId  String   @db.Uuid
+  // "website" (a page of the business's site), "robots", or "https_check".
+  kind        String   @db.VarChar(20)
+  url         String   @db.VarChar(500)
+  finalUrl    String?  @db.VarChar(500)
+  fetchedAt   DateTime @default(now())
+  httpStatus  Int?
+  ok          Boolean
+  contentType String?  @db.VarChar(100)
+  bytes       Int?
+  note        String?  @db.VarChar(200)
+
+  research CandidateResearch @relation(fields: [researchId], references: [id], onDelete: Cascade)
+  facts    ResearchFact[]
+
+  @@index([researchId])
+}
+
+// One researched fact: what was found, how established, and where.
+model ResearchFact {
+  id         String    @id @default(uuid()) @db.Uuid
+  researchId String    @db.Uuid
+  // e.g. "website", "business_name", "address", "phone", "email", "services".
+  field      String    @db.VarChar(40)
+  value      String?   @db.VarChar(500)
+  state      FactState
+  confidence Float?
+  sourceId   String?   @db.Uuid
+  // A short supporting quote (at most 280 characters), never a copied page.
+  excerpt    String?   @db.VarChar(280)
+  note       String?   @db.VarChar(300)
+
+  research CandidateResearch @relation(fields: [researchId], references: [id], onDelete: Cascade)
+  source   ResearchSource?   @relation(fields: [sourceId], references: [id], onDelete: SetNull)
+
+  @@index([researchId])
 }
 
 model CandidateNote {

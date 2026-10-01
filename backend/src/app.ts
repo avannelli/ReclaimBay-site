@@ -3,10 +3,17 @@ import type { Config } from "./config.js";
 import type { Db } from "./db.js";
 import { adminRoutes } from "./routes/admin.js";
 import { eventRoutes } from "./routes/events.js";
+import type { ProcessDeps } from "./research/service.js";
+
+/** Optional dependencies, injected by tests (production uses the defaults). */
+export interface AppDeps {
+  /** How automated research reaches the web (tests pass a fixture fetcher). */
+  research?: ProcessDeps;
+}
 
 const HEALTH_DB_TIMEOUT_MS = 2_000;
 
-export async function buildApp(config: Config, db: Db, logger: boolean = true) {
+export async function buildApp(config: Config, db: Db, logger: boolean = true, deps: AppDeps = {}) {
   const hops = config.trustProxyHops;
   const app = Fastify({
     logger: logger ? { level: process.env.LOG_LEVEL ?? "info" } : false,
@@ -35,7 +42,7 @@ export async function buildApp(config: Config, db: Db, logger: boolean = true) {
   });
 
   await app.register(eventRoutes, { config, db });
-  await app.register(adminRoutes, { config, db });
+  await app.register(adminRoutes, { config, db, research: deps.research });
 
   return app;
 }

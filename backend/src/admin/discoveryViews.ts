@@ -1,5 +1,7 @@
 import type { candidateStatusCounts, getCandidateDetail, listCandidates, recentRuns } from "../discovery/service.js";
 import type { recentImports } from "../discovery/staging.js";
+import { OUTCOME_LABELS, type ResearchOutcome } from "../research/researcher.js";
+import type { candidateResearch, researchQueue } from "../research/service.js";
 import { CANDIDATE_SORTS, DEFAULT_BUSINESS_TYPE } from "../discovery/service.js";
 import {
   CANDIDATE_REASON_REQUIRED,
@@ -43,11 +45,115 @@ type ListResult = Awaited<ReturnType<typeof listCandidates>>;
 type Detail = NonNullable<Awaited<ReturnType<typeof getCandidateDetail>>>;
 type Runs = Awaited<ReturnType<typeof recentRuns>>;
 type Imports = Awaited<ReturnType<typeof recentImports>>;
+type ResearchView = Awaited<ReturnType<typeof candidateResearch>>;
+type ResearchQueue = Awaited<ReturnType<typeof researchQueue>>;
 type StatusCounts = Awaited<ReturnType<typeof candidateStatusCounts>>;
 
 const SIGNAL_DEFS = SIGNALS as readonly SignalDefinition[];
 /** Short labels so the sort menu fits its column. */
 const SORT_LABELS: Record<string, string> = { score: "Score", discovered: "Newest", name: "Name" };
+
+// ---------- automated research ----------
+
+const outcomeLabel = (o: string | null) => (o && o in OUTCOME_LABELS ? OUTCOME_LABELS[o as ResearchOutcome] : (o ?? "—"));
+
+/** The research state of a candidate in one tag. */
+function researchTag(r: { status: string; outcome: string | null } | undefined): string {
+  if (!r) return "";
+  const label =
+    r.status === "queued" || r.status === "running"
+      ? "Research running"
+      : r.status === "failed"
+        ? "Research failed"
+        : `Research: ${outcomeLabel(r.outcome)}`;
+  const style = r.status === "failed" || r.outcome === "website_mismatch" ? ' style="border-color:var(--neg);color:var(--neg)"' : "";
+  return `<div class="sub"><span class="tag"${style}>${esc(label)}</span></div>`;
+}
+
+const FACT_LABELS: Record<string, string> = {
+  website: "Website",
+  business_name: "Business name",
+  address: "Address",
+  phone: "Phone (on the website)",
+  provider_phone: "Provider phone",
+  email: "Email",
+  services: "Services",
+  performs_repair: "Performs repair",
+  business_type: "Business type",
+  operating_status: "Operating status",
+};
+
+/** Verification state, in words and shape as well as colour. */
+const FACT_STATE: Record<string, string> = {
+  verified: '<span class="obs obs-yes">Verified</span>',
+  unverified: '<span class="tag" style="border-color:var(--amber);color:var(--warn)">Provider-reported · unverified</span>',
+  uncertain: '<span class="obs obs-unknown">Uncertain</span>',
+  not_found: '<span class="tag">Not found</span>',
+};
+
+const FACT_GROUPS: [string, string, string][] = [
+  ["verified", "Verified", "Confirmed on the business's own website, with the page as the source."],
+  ["unverified", "Provider-reported · unverified", "Reported by the discovery provider and not confirmed. Never used as contact."],
+  ["uncertain", "Uncertain", "Sources disagree, or the evidence is too weak to decide. Check by hand."],
+  ["not_found", "Not found", "Looked for and not found on the pages read."],
+];
+
+function researchSection(research: ResearchView | undefined, candidateId: string, canRun: boolean): string {
+  const latest = research?.latest ?? null;
+  const pending = research?.pending ?? null;
+  const id = esc(candidateId);
+  const status = pending
+    ? `<span class="tag">${pending.status === "running" ? "Running" : "Queued"}</span> <span class="small muted">since ${fmtDate(pending.startedAt ?? pending.queuedAt)}. Refresh to see the results.</span>`
+    : latest
+      ? `${latest.status === "failed" ? '<span class="tag" style="border-color:var(--neg);color:var(--neg)">✕ Failed</span>' : '<span class="tag">Completed</span>'} <b>${esc(outcomeLabel(latest.outcome))}</b> <span class="small muted">· ${fmtDate(latest.finishedAt ?? latest.queuedAt)} · rules ${esc(latest.version)} · ${latest.pagesFetched} page${latest.pagesFetched === 1 ? "" : "s"} read</span>`
+      : '<span class="small muted">Not researched yet.</span>';
+  const button = canRun
+    ? `<form method="post" action="/admin/discovery/candidates/${id}/research" class="inline-form"><button type="submit"${pending ? " disabled" : ""}>${latest ? "Run research again" : "Run research"}</button></form>`
+    : "";
+  const warnings = (Array.isArray(latest?.warnings) ? (latest.warnings as string[]) : []).map((w) => `<li>${esc(w)}</li>`).join("");
+  const head = `<div class="card">
+  <div class="row spread"><div>${status}</div>${button}</div>
+  <p class="small muted" style="margin:8px 0 0">Reads the business's own website (at most 5 pages; robots.txt respected; nothing stored but the facts, a short quote, and the URL). A phone or email is verified only when it appears on a website confirmed as the business's own. Research never approves a candidate or contacts anyone.</p>
+  ${latest?.error ? `<div class="callout warn" style="margin-top:10px">${esc(latest.error)}</div>` : ""}
+  ${warnings ? `<div class="callout warn" style="margin-top:10px"><b>Check by hand</b><ul class="plain small" style="margin:4px 0 0">${warnings}</ul></div>` : ""}
+</div>`;
+  if (!latest) return head;
+
+  const factItem = (f: ResearchView["runs"][number]["facts"][number]) => {
+    const src = f.source?.finalUrl ?? f.source?.url ?? null;
+    return `<li style="margin:0 0 10px"><b>${esc(FACT_LABELS[f.field] ?? f.field.replace(/_/g, " "))}</b> ${FACT_STATE[f.state] ?? ""}
+<div>${f.value ? (f.field === "website" && /^https?:/.test(f.value) ? extLink(f.value) : esc(f.value)) : '<span class="muted">—</span>'}</div>
+${f.excerpt ? `<div class="small">“${esc(f.excerpt)}”</div>` : ""}${src ? `<div class="src">source: ${extLink(src)}</div>` : ""}${f.note ? `<div class="small muted">${esc(f.note)}</div>` : ""}</li>`;
+  };
+  const groups = FACT_GROUPS.map(([state, title, hint]) => {
+    const items = latest.facts.filter((f) => f.state === state);
+    return `<div class="card"><div class="card-h">${esc(title)} (${items.length})</div><p class="small muted" style="margin:0 0 8px">${esc(hint)}</p>${
+      items.length ? `<ul class="plain">${items.map(factItem).join("")}</ul>` : '<p class="small muted" style="margin:0">None.</p>'
+    }</div>`;
+  }).join("");
+
+  const sources = latest.sources
+    .map(
+      (src) => `<tr><td>${extLink(src.url)}${src.finalUrl && src.finalUrl !== src.url ? `<div class="sub">→ ${esc(src.finalUrl)}</div>` : ""}</td>
+<td data-label="Kind">${esc(src.kind.replace("_", " "))}</td>
+<td data-label="Result">${src.ok ? '<span class="obs obs-yes">OK</span>' : '<span class="obs obs-no">Not used</span>'}${src.httpStatus ? ` <span class="small muted">HTTP ${src.httpStatus}</span>` : ""}${src.note ? `<div class="sub">${esc(src.note)}</div>` : ""}</td>
+<td class="small hide-md" data-label="Fetched">${fmtDate(src.fetchedAt)}</td></tr>`,
+    )
+    .join("");
+  const history = (research?.runs ?? [])
+    .map(
+      (r) => `<li>${fmtDate(r.queuedAt)} · ${esc(r.trigger)} · ${esc(r.status)}${r.outcome ? ` · ${esc(outcomeLabel(r.outcome))}` : ""}${r.error ? ` <span class="small muted">(${esc(r.error)})</span>` : ""}</li>`,
+    )
+    .join("");
+  return `${head}
+<div class="grid-2" style="margin-top:14px">${groups}</div>
+<div class="scroll" style="margin-top:14px"><table class="tbl cards">
+<caption class="sr-only">URLs requested by the latest research run</caption>
+<thead><tr><th scope="col">Source URL</th><th scope="col">Kind</th><th scope="col">Result</th><th scope="col" class="hide-md">Fetched</th></tr></thead>
+<tbody>${sources || `<tr><td colspan="4" class="muted">No URL was requested.</td></tr>`}</tbody>
+</table></div>
+<div class="card" style="margin-top:14px"><div class="card-h">Research history</div><ul class="plain small">${history}</ul></div>`;
+}
 
 /** What an import read and left out, from its stats (only counters that are present). */
 const IMPORT_COUNTERS: [string, string][] = [
@@ -96,6 +202,7 @@ export function discoveryPage(opts: {
   runs: Runs;
   runCount: number;
   imports: Imports;
+  research?: ResearchQueue;
   statusCounts: StatusCounts;
   filters: Values;
   values?: Values;
@@ -146,7 +253,7 @@ export function discoveryPage(opts: {
       const loc = [c.city, c.state].filter(Boolean).join(", ");
       const flagged = c.possibleDuplicateCandidateId || c.possibleDuplicateProspectId;
       return `<tr${c.status === "needs_review" ? ' class="attn"' : ""}>
-  <td><a class="name" href="/admin/discovery/candidates/${esc(c.id)}">${esc(c.businessName)}</a>${c.website ? `<div class="sub">${extLink(c.website)}</div>` : ""}${tierTag(c.categoryTier)}${c.relatedCandidateId || c.relatedProspectId ? `<div class="sub"><span class="tag">Other location shares this website</span></div>` : ""}${c.providerStatus === "permanently_closed" ? `<div class="sub"><span class="tag" style="border-color:var(--neg);color:var(--neg)">Provider says closed</span></div>` : ""}</td>
+  <td><a class="name" href="/admin/discovery/candidates/${esc(c.id)}">${esc(c.businessName)}</a>${c.website ? `<div class="sub">${extLink(c.website)}</div>` : ""}${tierTag(c.categoryTier)}${c.relatedCandidateId || c.relatedProspectId ? `<div class="sub"><span class="tag">Other location shares this website</span></div>` : ""}${c.providerStatus === "permanently_closed" ? `<div class="sub"><span class="tag" style="border-color:var(--neg);color:var(--neg)">Provider says closed</span></div>` : ""}${researchTag(c.research[0])}</td>
   <td class="hide-md" data-label="Location">${loc ? esc(loc) : '<span class="muted">—</span>'}</td>
   <td data-label="Research status">${candidateBadge(c.status)}</td>
   <td data-label="Qualification">${qualificationBadge(result.qualification)}</td>
@@ -209,6 +316,13 @@ ${f.run ? `<div class="callout" style="margin-bottom:12px">Showing candidates fr
     <div class="filter-actions"><button type="submit">Apply filters</button><a class="btn btn-secondary" href="/admin/discovery">Reset</a></div>
   </div>
   ${f.run ? `<input type="hidden" name="run" value="${esc(f.run)}">` : ""}
+</form>
+<form method="post" action="/admin/discovery/research" class="card row spread" style="margin-bottom:12px">
+  ${(["q", "status", "qualification", "band", "state", "city", "flagged", "tier", "provider", "sort", "run"] as const)
+    .map((k) => (f[k] ? `<input type="hidden" name="${k}" value="${esc(f[k])}">` : ""))
+    .join("")}
+  <span class="small"><b>Automated research</b>${opts.research ? ` · ${opts.research.queued} queued · ${opts.research.running} running · ${opts.research.completed} completed · ${opts.research.failed} failed` : ""}<br><span class="muted">Reads each business's own website and records verified facts with sources. Use filters to choose, then research up to 10 not-yet-researched candidates from this view.</span></span>
+  <button type="submit" class="btn-secondary">Research up to 10 in this view</button>
 </form>
 <div class="result-line"><span><b>${esc(shown)}</b>${anyFilter ? " match" : ""}</span><span><b>Qualification</b> (${esc(criteriaNames)}) and the <b>opportunity score</b> (ranking only) are worked out from recorded signals and are independent.</span></div>
 ${
@@ -281,7 +395,7 @@ ${editing && opts.providerPhone ? `<div class="callout warn" style="margin-botto
 
 const RESEARCH_PATH: CandidateStatus[] = ["discovered", "researching", "researched", "approved"];
 
-export function candidateDetailPage(opts: { detail: Detail; notice?: string; errors?: string[]; values?: Values }): string {
+export function candidateDetailPage(opts: { detail: Detail; research?: ResearchView; notice?: string; errors?: string[]; values?: Values }): string {
   const { detail, values = {} } = opts;
   const { candidate: c, result, dupCandidate, dupProspect, relCandidate, relProspect, approvalBlockers } = detail;
   const id = esc(c.id);
@@ -298,6 +412,7 @@ export function candidateDetailPage(opts: { detail: Detail; notice?: string; err
     .map((s) => {
       const def = SIGNAL_DEFS.find((d) => d.key === s.key)!;
       const n = evidenceCount.get(s.key) ?? 0;
+      const byResearch = c.signals.find((x) => x.key === s.key)?.origin === "research";
       const source =
         s.derived && s.state === "yes"
           ? `<span class="small muted">Derived from the stored website or public contact.</span>`
@@ -305,7 +420,7 @@ export function candidateDetailPage(opts: { detail: Detail; notice?: string; err
             ? `<a href="#evidence">${n} evidence item${n === 1 ? "" : "s"}</a>`
             : `<span class="tag" style="border-color:var(--amber);color:var(--warn)">! No evidence yet</span>`;
       return `<tr><td><b>${esc(s.label)}</b><div class="sub">${def.requiredCriterion ? '<span class="kind req">Required criterion</span>' : '<span class="kind">Opportunity signal</span>'}</div></td>
-<td data-label="Observed">${obsBadge(s.state)}</td><td class="num" data-label="Points"><span class="score-cell"><b>${s.points}</b><span class="of">/${s.weight}</span></span></td><td data-label="Source">${source}</td></tr>`;
+<td data-label="Observed">${obsBadge(s.state)}${byResearch ? '<div class="sub"><span class="tag">Set by research</span></div>' : ""}</td><td class="num" data-label="Points"><span class="score-cell"><b>${s.points}</b><span class="of">/${s.weight}</span></span></td><td data-label="Source">${source}</td></tr>`;
     })
     .join("");
 
@@ -342,7 +457,7 @@ export function candidateDetailPage(opts: { detail: Detail; notice?: string; err
     ? c.evidence
         .map(
           (e) => `<article class="ev">
-  <div class="row spread"><span><span class="kind">Signal</span> <b>${esc(signalLabel(e.signalKey))}</b></span>${
+  <div class="row spread"><span><span class="kind">Signal</span> <b>${esc(signalLabel(e.signalKey))}</b>${e.origin === "research" ? ' <span class="tag">Automated research</span>' : ""}</span>${
     frozen
       ? ""
       : `<form method="post" action="/admin/discovery/candidates/${id}/evidence/${esc(e.id)}/delete" class="inline-form"><button class="link" type="submit" aria-label="Remove evidence for ${esc(signalLabel(e.signalKey))}">Remove</button></form>`
@@ -423,6 +538,8 @@ ${pageHead({
     <div class="small">${result.known} of ${result.total} signals known. A high score does not mean the business is qualified.</div>
   </div>
 </div>
+
+${section("research", "Automated research", researchSection(opts.research, c.id, !["approved", "rejected", "duplicate"].includes(c.status)))}
 
 ${section("duplicates", "Duplicate assessment", dupCard + relCard)}
 

@@ -1,4 +1,4 @@
-# Discovery and research (Milestones 3 to 5)
+# Discovery and research (Milestones 3 to 6)
 
 Discovery helps find independent repair shops that may fit ReclaimBay. It
 never decides who is a good lead. Every business moves through the same
@@ -45,7 +45,11 @@ codes, and analytics attribution are unchanged; discovery only feeds them.
 | Provider registry (Overture, fixtures), fixture importer | `src/discovery/providers.ts` |
 | Release import, staging, and the staged (background) provider | `src/discovery/staging.ts` |
 | Persistence, runs (sync and queued), research, approval | `src/discovery/service.ts` |
-| Background job entry points | `src/scripts/importProvider.ts`, `src/scripts/processDiscoveryRuns.ts` |
+| Background job entry points | `src/scripts/importProvider.ts`, `src/scripts/processDiscoveryRuns.ts`, `src/scripts/researchCandidates.ts` |
+| Automated research: polite fetching, robots.txt, HTML reading | `src/research/fetcher.ts`, `robots.ts`, `html.ts` |
+| Automated research: verification rules (pure) | `src/research/analyze.ts` |
+| Automated research: one candidate, page selection | `src/research/researcher.ts` |
+| Automated research: runs, queue, reconciliation into signals | `src/research/service.ts` |
 | Admin pages and routes | `src/admin/discoveryViews.ts`, `src/routes/adminDiscovery.ts` |
 
 ## Data model
@@ -56,8 +60,11 @@ codes, and analytics attribution are unchanged; discovery only feeds them.
 | `DiscoveryCandidate` | The business (name, website, street address, city, state, postal code, country, latitude and longitude), **verified** phone and email each with a source URL, the **unverified provider phone**, normalized match keys, provenance (provider, provider ID such as the Overture GERS ID, release, source URL, category and tier, brand, provider confidence, provider operating status, retrieval time, upstream sources and licenses, search, discovered time), review status, research and decision timestamps, duplicate flags, related-location links, and the `prospectId` once approved |
 | `ProviderImport` | One release loaded into staging: provider, release, scope (`US-CA` for a state, `US-CA/ventura` for one county), area label, status, record count, importer counters (`stats`: read, outside the area, excluded categories, malformed, ...), redacted error, times |
 | `ProviderPlace` | A minimized staged record of one import: provider ID, name, website, phone, street, city, county, state, postal code, country, coordinates, category and tier, brand, confidence, operating status, source URL, upstream sources. No raw payloads |
-| `CandidateSignal` | One recorded yes/no observation per signal key. **No row means unknown.** |
-| `CandidateEvidence` | Signal key, public source URL, excerpt of at most 280 characters, time |
+| `CandidateSignal` | One recorded yes/no observation per signal key, and who recorded it (`origin`: `manual` or `research`). **No row means unknown.** |
+| `CandidateEvidence` | Signal key, public source URL, excerpt of at most 280 characters, time, `origin`, and the research run that recorded it |
+| `CandidateResearch` | One automated research run: status (`queued`, `running`, `completed`, `failed`), rule version, trigger, outcome, pages read, warnings, error, times |
+| `ResearchSource` | One URL a run requested: kind (`website`, `robots`, `https_check`), final URL, HTTP status, ok, content type, bytes, note. **Never the page body** |
+| `ResearchFact` | One researched fact: field, value, state (`verified`, `unverified`, `uncertain`, `not_found`), confidence, source, a quote of at most 280 characters, note |
 | `CandidateNote` | Append-only notes (at most 2,000 characters) |
 
 **Score and qualification are never stored on a candidate.** They are computed
@@ -222,6 +229,145 @@ The data model enforces this rather than relying on discipline:
   availability, website age, and digital inspection use are recorded only when a
   public source shows them. Research findings can't set a yes/no without
   evidence, and "yes" can't be set by hand on the two derived signals.
+
+## Automated research (Milestone 6)
+
+Automated research turns a candidate into an evidence-backed one by reading
+**the business's own website**, and feeds what it verifies into the EXISTING
+signals, evidence, and contact, so the existing qualification and opportunity
+score (`src/scoring.ts`, unchanged) consume it. It never approves anything,
+never creates a prospect, and never contacts anyone.
+
+```
+candidate (website from the provider: unverified)
+  -> queue a research run (admin button, admin batch, or CLI)
+  -> fetch: robots.txt, the stored website page, up to 4 linked pages
+     (contact, about, services, team), and an HTTPS check
+  -> verify ownership: is this the business's own website?
+  -> extract facts and signal values, each with its page and a short quote
+  -> store the run, its sources, and its facts
+  -> reconcile into the candidate's signals, evidence, and contact
+  -> existing qualification + opportunity score (computed on read)
+  -> a person reviews and decides (approval unchanged)
+```
+
+**Sources.** Only the business's own website, fetched directly. No search or
+maps API is used: Bing's Search APIs were retired in August 2025, Google's
+Places data can't be stored under its terms (see Provider requirements), and
+scraping Google Maps or Yelp is not allowed. So **finding a website for a
+candidate that has none is not automated**; research says so and a person
+searches. A listing, social, locator, or webmail address is never researched
+as a website.
+
+**Is this the business's own website?** The site is *verified* only when the
+business name appears **and** either the phone (provider or stored) or the
+street address does. Name only, or phone/address only, is *uncertain*; none
+of them is a *mismatch* (the stored website probably belongs to someone
+else, shown as a warning; provider data is never deleted automatically).
+Nothing from a site that isn't verified becomes contact or a signal.
+
+**Facts and their states.** Each run records facts with an explicit state:
+
+| State | Meaning |
+| ----- | ------- |
+| Verified | Confirmed on the business's own (verified) website; the page is the source |
+| Provider-reported · unverified | From the discovery provider and not confirmed (e.g. the provider phone when the site lists no phone, operating status) |
+| Uncertain | Sources disagree (e.g. the site lists a different phone), the site isn't confirmed, or the evidence is too weak |
+| Not found | Looked for on the pages read and not found |
+
+Fields: website, business name, address, phone (on the website), provider
+phone, email, services, performs repair, business type (independent, chain,
+dealership), operating status.
+
+**Contact (provider vs. verified).**
+- A phone becomes the candidate's verified phone only when it is on a verified
+  website; the page is its source. The provider phone is "verified" only when
+  that same number is on the verified website; otherwise it stays unverified,
+  or uncertain when the site lists a different number (a warning names both).
+- An email is kept only when it is on the business's own domain. An address on
+  a free or third-party mail service is never recorded (it may be personal);
+  the fact says one was seen.
+- Research fills contact only where none is stored, and never removes or
+  overwrites contact a person entered (a different number is reported).
+- A provider website stays unverified until research confirms it
+  (`websiteVerifiedAt`); editing the website clears that.
+
+**Signals** (each follows its published rule in `src/scoring.ts`, only from a
+verified website, always with the page and a quote as evidence):
+
+| Signal | Research sets it when |
+| ------ | --------------------- |
+| Independent shop | **no**: a franchise/chain brand in the site's title or headings (the rule's list, e.g. Midas, Jiffy Lube, Firestone), or a vehicle make plus dealership wording ("new vehicles", "certified pre-owned"). **yes**: the site states it ("family owned", "locally owned", "independent repair shop") and shows no chain or dealer sign. Otherwise unknown: independence is never assumed |
+| Offers general repair | **yes**: 2+ of brakes, suspension/steering, diagnostics, maintenance/oil, A/C, electrical, transmission, cooling, exhaust. **no**: 2+ specialty services (collision, glass, tint, detailing, audio, towing) and no general ones |
+| Mentions digital inspections | **yes**: digital/photo/video inspection wording, or a DVI product. **no**: the homepage and a services page were read with no mention |
+| No online booking | **no**: a service-booking link ("Book an appointment", a booking URL path) or a scheduling widget. **yes**: 2+ pages read with none (a test-drive, quote, or FAQ link is not booking) |
+| Website not on HTTPS | From the HTTPS check: loads with a valid certificate = no; fails, redirects to http, or a certificate error = yes |
+| No recent date on website | The newest copyright/updated/full date on the pages read: current or previous year = no; 2+ years old = yes; none = unknown |
+| 3+ bays or technicians | A stated count ("6 service bays", "4 ASE-certified technicians"): 3+ = yes, 1-2 = no |
+| Has a website, Public business contact | Unchanged: derived from the stored website and verified contact |
+
+**Reconciliation and idempotency.** A run replaces the previous run's
+research signals and evidence (origin `research`) instead of adding to them;
+a signal or evidence item a person recorded (origin `manual`) is never
+changed, and a disagreement is reported as a warning. Runs are kept as history
+(the newest 5 per candidate). One run can be queued or running per candidate.
+The lifecycle follows the existing rule: a candidate moves to Researched only
+when its signals are all evidence-backed; a Discovered candidate whose run
+yields no evidence returns to Discovered; Needs review stays Needs review;
+approved, rejected, and duplicate candidates are not researched.
+
+**Failure, retries, and safety controls.**
+- Per request: 10-second timeout, at most 1.5 MB read, HTML only.
+- One retry, only for transient failures (5xx, 429, network); never for 4xx,
+  DNS, or certificate errors. No retry loops.
+- robots.txt is read once per site and honoured (our agent's group, else `*`);
+  a server error on robots.txt means the site is skipped.
+- At least 1 second between requests to the same host; at most 5 pages per
+  run; 1 second between candidates in a batch; batches of at most 10 (admin)
+  or 25 (CLI). Only same-site contact/about/services/team pages are followed.
+- User agent: `ReclaimBayResearch/1.0 (+https://reclaimbay.com)`.
+- A site that can't be reached makes the run **failed** (earlier research is
+  kept); a site that forbids reading is **completed** with that outcome. A run
+  whose worker died is marked failed after 10 minutes and is never retried
+  automatically: run it again.
+
+**Admin workflow.** On a candidate, **Run research** (or Run research again)
+queues a run; it is processed in the background (about 10 seconds per site).
+The Automated research section shows the status, time, rule version, pages
+read, warnings, the facts grouped as Verified / Provider-reported · unverified
+/ Uncertain / Not found with their quotes and sources, every URL requested
+with its result, and the run history. Signals and evidence set by research are
+labelled. On the overview, **Research up to 10 in this view** queues the first
+10 not-yet-researched candidates matching the current filters, and each row
+shows its research outcome.
+
+```bash
+npm run discovery:research -- --candidate <id> [--candidate <id> ...]
+npm run discovery:research -- --limit 5 [--tier core] [--city Oxnard]
+npm run discovery:research -- --process          # only process what is queued
+```
+
+**Real-data validation (Ventura County, 2026-10-01, rules r1).** Ten
+deliberately chosen candidates, 45 requests per pass (robots.txt included), under a minute:
+
+| Candidate | Chosen as | Result |
+| --------- | --------- | ------ |
+| Bill's Quality Auto Care | independent shop | Website verified; phone verified (matches the provider's); general repair, digital inspections, HTTPS recorded; independence not stated on the site, so it stays unknown (Unverified, score 45) |
+| Dependable Car Care (Simi Valley) | legitimate website, multi-location | Verified; phone and business email verified; scheduling widget found |
+| Aris Garage | independent shop | Failed: the domain no longer resolves |
+| Midas (Simi Valley) | chain | Website not confirmed: the provider's link is a regional locator page with a national 800 number; nothing verified |
+| Jiffy Lube (E Thompson Blvd) | chain | Verified location page; Independent shop = no (franchise brand) |
+| Swickard Chevrolet of Thousand Oaks Service | dealer | Verified; Independent shop = no (dealership); digital inspections = yes |
+| Mayer Automotive Repair | no website, provider phone only | No website; the provider phone stays unverified; nothing set |
+| Derrico Automotive | conflicting information | Mismatch: the stored website is Swensen Automotive's; warnings name the different phone |
+| Angie's Collision Center | likely false positive | Mismatch: the domain no longer shows the business |
+| Simi Valley Auto Glass | likely false positive | Verified; only glass services, so "general repair" is left unknown (too little to set "no") |
+
+Re-running all ten replaced their research signals and evidence (25 before
+and after) and created no prospects. The first run found three rule defects,
+fixed before the second: missed "Digital Technician Video Inspection" wording,
+a test-drive and an FAQ link counted as booking, and an unresolvable domain
+reported as "disallowed".
 
 ## Approval
 
@@ -478,8 +624,9 @@ details, or anything from a customer report. `applyResearchFindings()` accepts i
 findings under the same rules as a person: known signals only, yes/no only with
 evidence, contact only with a source on the business's own website, nothing
 overwrites contact a person already entered, and the candidate lands at `researched` for a human decision. Invalid
-findings are refused as a whole. **No research provider is configured and the
-admin has no "run research" button.** Research is done by hand today.
+findings are refused as a whole. This interface remains for future providers;
+the website researcher of Milestone 6 (above) is wired in directly through
+`src/research/service.ts`, which applies the same rules plus origin tracking.
 
 ## Provider requirements (decision needed)
 
@@ -513,20 +660,18 @@ keep provider-supplied fields, so check that first.
 
 ### Research: website reading is required for automation
 
-Automating signals means fetching a shop's own public pages and reading them.
-That needs a fetcher (respecting robots.txt and rate limits) and either an LLM
-API key or rule-based extraction, with output limited to `ResearchFindings`.
-Expected cost is usage-based and depends on the model and pages per shop. The
-validation path, evidence rules, and human gate already exist; the provider does
-not. Until one is chosen, research stays manual.
+**Status:** done in Milestone 6 with rule-based extraction from the business's
+own website (no LLM, no paid API, no credentials). An LLM-assisted extractor or
+a website-finding search API could be added later behind the same boundary
+(`src/research/researcher.ts`), configured by environment variables.
 
 ## Admin
 
 | Page | What it does |
 | ---- | ------------ |
-| `/admin/discovery` | Run discovery (provider, e.g. Overture Maps Places; a category choice: core, or core + adjacent), add a candidate, status counts, search and filters (status, qualification, score band, state, city, possible duplicate, category tier), sorting by score, recency, or name, recent runs with their provider, the import they read, status (including Queued), release, tiers, and counters, and **provider imports** (area, release, records staged, what was read and left out, status, errors, and whether retention has pruned their rows). List rows tag the tier, "Other location shares this website", and "Provider says closed" |
+| `/admin/discovery` | Run discovery (provider, e.g. Overture Maps Places; a category choice: core, or core + adjacent), add a candidate, status counts, search and filters (status, qualification, score band, state, city, possible duplicate, category tier), sorting by score, recency, or name, recent runs with their provider, the import they read, status (including Queued), release, tiers, and counters, and **provider imports** (area, release, records staged, what was read and left out, status, errors, and whether retention has pruned their rows). List rows tag the tier, "Other location shares this website", "Provider says closed", and the research outcome. **Research up to 10 in this view** queues automated research for the first 10 not-yet-researched candidates matching the filters, with queue counts |
 | `/admin/discovery/candidates/new` | Add a candidate by hand |
-| `/admin/discovery/candidates/:id` | What we know (including street and position; a provider website is marked unverified), what we don't know, and where each fact came from (provider, GERS ID for Overture, release, category and tier, brand, provider confidence, operating status, retrieval time, upstream sources with attribution). The verified phone and the **unverified provider phone** are shown separately. Qualification and score shown separately. Possible-duplicate explanation and other-location links. Status moves, evidence, notes, and Approve |
+| `/admin/discovery/candidates/:id` | What we know (including street and position; a provider website is marked unverified), what we don't know, and where each fact came from (provider, GERS ID for Overture, release, category and tier, brand, provider confidence, operating status, retrieval time, upstream sources with attribution). The verified phone and the **unverified provider phone** are shown separately. Qualification and score shown separately. Possible-duplicate explanation and other-location links. **Automated research**: Run research, status, facts as Verified / Provider-reported · unverified / Uncertain / Not found with quotes and sources, URLs requested, warnings, and history; research-set signals and evidence are labelled. Status moves, evidence, notes, and Approve |
 | `/admin/discovery/candidates/:id/edit` | Edit facts and record signals with each signal's rules. A provider phone is shown as a reminder to verify it on the business's own website before entering it |
 
 Discovery pages are registered inside the admin scope, so they share its
@@ -537,7 +682,13 @@ Discovery sends nothing to analytics, and no customer report data is involved.
 ## Not automated yet
 
 - Imports beyond one county at a time, or of other providers (OpenStreetMap).
-- Reading websites or filling in signals automatically.
+- Finding a website for a candidate that has none (no free, terms-compatible
+  search API), and reading sources other than the business's own website
+  (maps, directories, social pages, state registries).
+- Researching all candidates at once, or on a schedule: research runs on
+  request, for one candidate or a batch of at most 10 (admin) / 25 (CLI).
+- Removing a provider website research found to be wrong: it is flagged; a
+  person removes it.
 - Contacting anyone. No email, calls, outreach, follow-ups, or campaigns.
 - Scheduled or recurring imports and runs. The `discovery:import` and
   `discovery:process` jobs exist; no scheduler is configured.
@@ -567,6 +718,16 @@ Discovery sends nothing to analytics, and no customer report data is involved.
   TIGERweb service, and DuckDB downloads its `httpfs` extension on first use.
 - An import interrupted mid-way stays `running` until the next import of the
   same scope, which marks it failed and prunes its rows (after 1 hour).
+- Research reads static HTML only: content drawn by JavaScript (some booking
+  buttons, some copyright years) is not seen. Absence-based values ("no online
+  booking", "no digital inspections") are therefore weaker than presence-based
+  ones and are worded as what was reviewed.
+- Independence is set to "yes" only when the site says so; most independent
+  shops don't, so it often stays unknown and needs a person.
+- A chain's location page (e.g. jiffylube.com) can verify as the location's
+  website; the chain brand then sets Independent shop to "no".
+- The in-process research worker stops if the web process restarts; queued
+  runs are picked up by the next action or `npm run discovery:research -- --process`.
 
 ## Tests
 
@@ -574,12 +735,16 @@ Discovery sends nothing to analytics, and no customer report data is involved.
 npm test                    # unit: normalization, dedupe rules A-G and the match index (incl. the
                             # real-data regression pairs), lifecycle, scoring reuse, approval mapping
                             # (no provider phone), privacy, and Overture: releases, category tiers,
-                            # record mapping, boundaries, importer stats, query safety
+                            # record mapping, boundaries, importer stats, query safety; automated research:
+                            # robots.txt, HTML reading, ownership verification, every signal rule,
+                            # contact rules, conflicts, retries and failures (fixture websites only)
 TEST_DATABASE_URL=<local url> npm run test:integration
                             # runs, dedupe against candidates and prospects, research, lifecycle,
                             # approval, provenance, the admin pages over HTTP, the pipeline
                             # (import/staging/pruning, queued runs, reclaim, tiers, provider phone),
-                            # and Overture end to end with the network source replaced
+                            # Overture end to end with the network source replaced, and automated
+                            # research (queue, reconciliation, idempotency, failures, admin pages)
+                            # against fixture websites (no live sites)
 ```
 
 See [PROSPECTS.md](PROSPECTS.md#tests) for the disposable-database setup and safety guards.
