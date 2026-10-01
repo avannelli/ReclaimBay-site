@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
-import type { Subject } from "../../src/research/analyze.js";
+import { sitePhones, type Subject } from "../../src/research/analyze.js";
 import { PoliteFetcher, RESEARCH_LIMITS, type HttpGet, type HttpResult } from "../../src/research/fetcher.js";
 import { parseHtml } from "../../src/research/html.js";
 import { researchCandidate } from "../../src/research/researcher.js";
@@ -998,5 +998,46 @@ describe("booking buttons and the Kukui MyGarage widget", () => {
     const s = await booking(`<a href="/go">Book an Appointment</a><button>Make an appointment</button>`);
     assert.equal(s.value, "no");
     assert.match(s.excerpt, /^Booking link: "Book an Appointment"/);
+  });
+});
+
+/* Production batch #7 (2026-10-01): "805 388 - 0700" is a phone number. */
+describe("phone numbers written with spaced separators", () => {
+  const phonesIn = (text: string) => [...sitePhones([{ url: "https://saviersauto.example.com/", role: "home", parsed: parseHtml(`<body><p>${text}</p></body>`), html: "" }]).keys()];
+
+  test("Pops One Stop Repair Shop: '805 388 - 0700' is read", () => {
+    assert.deepEqual(phonesIn("Pop's Camarillo 805 388 - 0700"), ["8053880700"]);
+  });
+
+  test("hyphens, spaces, dots, parentheses, and spaces around separators", () => {
+    for (const text of ["805-388-0700", "805 388 0700", "805.388.0700", "(805) 388-0700", "805 - 388 - 0700", "805 . 388 . 0700", "805-388 - 0700", "+1 805 388 0700", "1-805-388-0700"]) {
+      assert.deepEqual(phonesIn(`Call ${text} today`), ["8053880700"], text);
+    }
+  });
+
+  test("digit runs that aren't phone numbers are not read", () => {
+    for (const text of [
+      "2017 Dodge Challenger Mileage 89,936 Service Date 9/14/2026",
+      "Oxnard, CA 93030-4925",
+      "Fits 1998 - 2005 models",
+      "VIN 1HGCM82633A004352",
+      "Order 8053880700",
+      "Part 805 388 07001",
+      "© 2000-26 MechanicNet Group",
+      "Mon-Fri 8:00 - 5:30, Sat 9:00 - 12:00",
+    ]) {
+      assert.deepEqual(phonesIn(text), [], text);
+    }
+  });
+
+  test("the exact Pops case end to end: the provider phone is on the site, so name + phone confirm it", async () => {
+    const s = server(
+      siteWith(page("POPS ONE STOP REPAIR SHOP | HOME", "<h1>Pops One Stop Repair Shop</h1><p>SHOE REPAIR BOOT REPAIR VACUUM REPAIR</p><p>Pop's Camarillo 805 388 - 0700</p><p>Pop's Floorcare 805 504 - 9565</p>")),
+    );
+    const r = await researchCandidate(subject({ businessName: "Pops One Stop Repair Shop", streetAddress: "2131 Pickwick Dr", city: "Camarillo", providerPhone: "+18053880700" }), s.fetcher(), TODAY);
+    assert.equal(fact(r, "provider_phone")!.state, "verified");
+    assert.equal(r.outcome, "website_verified");
+    assert.equal(r.contact.phone, "(805) 388-0700");
+    assert.equal(signal(r, "general_repair_services"), undefined, "no automotive signal is invented");
   });
 });

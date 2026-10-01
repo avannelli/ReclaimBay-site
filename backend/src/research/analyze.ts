@@ -96,7 +96,14 @@ const hostOf = (url: string) => {
   }
 };
 
-const PHONE_IN_TEXT = /(?:\+?1[\s.-]?)?\(?\b(\d{3})\)?[\s.-]?(\d{3})[\s.-](\d{4})\b/g;
+/**
+ * A US phone number in page text: "805-388-0700", "(805) 388-0700",
+ * "805.388.0700", "805 388 0700", and with spaces around the separators
+ * ("805 388 - 0700"). The groups stay apart and bounded, so a run of digits
+ * ("8053880700") or a longer number is not a phone.
+ */
+const PHONE_SEP = String.raw`(?:\s{0,2}[.-]\s{0,2}|\s{1,2})`;
+const PHONE_IN_TEXT = new RegExp(String.raw`(?:\+?1[\s.-]?)?\(?\b(\d{3})\)?${PHONE_SEP}?(\d{3})${PHONE_SEP}(\d{4})\b`, "g");
 
 /** Every phone on the site, with the page where it first appears. */
 export function sitePhones(pages: Page[]): Map<string, string> {

@@ -451,6 +451,12 @@ widget (`mygarage.kukui.com`) is a recognized scheduling widget. Schneider's
 Automotive had been marked "no online booking" although its header has a
 "Make an appointment" button that opens MyGarage.
 
+**Rules r10 (2026-10-01).** Phone numbers in page text may have spaces around
+their separators ("805 388 - 0700", "805 - 388 - 0700"), as well as the
+hyphens, dots, spaces, and parentheses already read. A run of digits with no
+separators, or a longer number, is still not a phone. Pops One Stop Repair
+Shop's site lists the provider's number as "805 388 - 0700", which was missed.
+
 ## Approval
 
 Approval is an explicit human POST from the candidate page. It:
