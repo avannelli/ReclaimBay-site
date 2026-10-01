@@ -26,6 +26,8 @@ export interface ParsedPage {
   siteName: string | null;
   headings: string[];
   links: PageLink[];
+  /** Visible text of <button> elements: some sites' booking action is a button, not a link. */
+  buttons: string[];
   tels: string[];
   emails: string[];
   text: string;
@@ -108,6 +110,7 @@ export function parseHtml(html: string): ParsedPage {
     else if (/^mailto:/i.test(href)) emails.push(decodeURIComponent(href.slice(7).split("?")[0]!).trim().toLowerCase());
     else links.push({ href, text: squash(m[2]!).slice(0, 120) });
   }
+  const buttons = [...new Set([...clean.matchAll(/<button\b[^>]*>([\s\S]*?)<\/button>/gi)].map((m) => squash(m[1]!).slice(0, 120)).filter(Boolean))];
   const body = /<body\b[^>]*>([\s\S]*)<\/body>/i.exec(clean)?.[1] ?? clean;
   const text = squash(body.replace(/<(br|p|div|li|h\d|tr|section|footer|header)\b/gi, " $&")).slice(0, 200_000);
   return {
@@ -115,6 +118,7 @@ export function parseHtml(html: string): ParsedPage {
     siteName,
     headings,
     links: links.slice(0, 400),
+    buttons: buttons.slice(0, 50),
     tels: [...new Set(tels)].slice(0, 20),
     emails: [...new Set(emails)].slice(0, 20),
     text,

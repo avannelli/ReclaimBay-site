@@ -959,3 +959,44 @@ describe("comparison wording right after 'dealership'", () => {
     assert.equal(fact(r, "business_type")!.state, "uncertain");
   });
 });
+
+/* Production batch #6 (2026-10-01): a Kukui MyGarage booking button is online booking. */
+describe("booking buttons and the Kukui MyGarage widget", () => {
+  const booking = async (body: string, head = "") => {
+    const home = HOME.replace("</h1>", `</h1>${body}`).replace("</head>", `${head}</head>`);
+    const s = server(goodSite({ "https://saviersauto.example.com/": { body: home } }));
+    return signal(await researchCandidate(subject(), s.fetcher(), TODAY), "no_online_booking")!;
+  };
+  const MYGARAGE = `<script src="https://mygarage.kukui.com/MyGarageLoader.js?id=287eca79-ecaa-4c5a-aa2c-290e3c670352"></script>`;
+
+  test("Schneider's Automotive: 'Make an appointment' button + MyGarage loader is online booking", async () => {
+    const s = await booking(`<div class="header-appointments"><button class="btn myGarage" type="button">Make an appointment</button></div>`, MYGARAGE);
+    assert.equal(s.value, "no");
+    assert.match(s.excerpt, /Make an appointment/);
+  });
+
+  test("the Kukui MyGarage loader alone is a scheduling widget", async () => {
+    const s = await booking("", MYGARAGE);
+    assert.equal(s.value, "no");
+    assert.match(s.excerpt, /mygarage\.kukui\.com/i);
+  });
+
+  test("a button with the existing booking wording is a booking action", async () => {
+    for (const text of ["Book an Appointment", "Schedule Service", "Request an appointment"]) {
+      assert.equal((await booking(`<button type="button">${text}</button>`)).value, "no", text);
+    }
+  });
+
+  test("other buttons are not booking", async () => {
+    const s = await booking(
+      `<button class="nav-trigger" type="button"><span class="icon"></span></button><button type="submit">Send</button><button>Request a Quote</button><button>Schedule a Test Drive</button><button>Learn more</button>`,
+    );
+    assert.equal(s.value, "yes");
+  });
+
+  test("a booking link still counts, and wins over a button", async () => {
+    const s = await booking(`<a href="/go">Book an Appointment</a><button>Make an appointment</button>`);
+    assert.equal(s.value, "no");
+    assert.match(s.excerpt, /^Booking link: "Book an Appointment"/);
+  });
+});

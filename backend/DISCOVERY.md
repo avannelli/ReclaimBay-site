@@ -310,7 +310,7 @@ verified website, always with the page and a quote as evidence):
 | Independent shop | **no**: a franchise/chain brand in the site's title or headings (the rule's list, e.g. Midas, Jiffy Lube, Firestone), or dealership **activity**: new-vehicle inventory or sales, certified pre-owned, test drives, trade-in appraisal, or the business calling itself a vehicle dealer ("authorized Toyota dealer", "we are your local Chevrolet dealer"). "Authorized dealer" counts only with a vehicle make or vehicle word: a parts brand's badge ("Skyjacker Authorized Dealer") is not a dealership. The bare word "dealership" is not evidence, nor is a comparison ("better than the dealership", "without the dealership price"), nor a vehicle make in the title (the make only labels real dealer evidence). **yes**: the site states it ("family owned", "locally owned", "independent repair shop", "Independent Porsche Service Center", "independent BMW repair") and shows no chain or dealer sign. Dealer activity and an independence statement together leave it unknown (business type uncertain). Otherwise unknown: independence is never assumed |
 | Offers general repair | **yes**: 2+ of brakes, suspension/steering, diagnostics, maintenance/oil, A/C, electrical, transmission, cooling, exhaust. **no**: 2+ specialty services (collision, glass, tint, detailing, audio, towing) and no general ones |
 | Mentions digital inspections | **yes**: digital/photo/video inspection wording, or a DVI product. **no**: the homepage and a services page were read with no mention |
-| No online booking | **no**: a service-booking link ("Book an appointment", a booking URL path) or a scheduling widget. **yes**: 2+ pages read with none (a test-drive, quote, or FAQ link is not booking) |
+| No online booking | **no**: a service-booking link ("Book an appointment", a booking URL path), a button with the same booking wording ("Make an appointment"), or a scheduling widget. **yes**: 2+ pages read with none (a test-drive, quote, or FAQ link is not booking) |
 | Website not on HTTPS | From the HTTPS check: loads with a valid certificate = no; fails, redirects to http, or a certificate error = yes |
 | No recent date on website | The newest copyright/updated/full date on the pages read: current or previous year = no; 2+ years old = yes; none = unknown |
 | 3+ bays or technicians | A stated count ("6 service bays", "4 ASE-certified technicians"): 3+ = yes, 1-2 = no. A zero-padded number ("03") or an item of a numbered feature list ("1 Locally Owned 2 Premium Parts 3 ASE Certified Technicians") is not a count; a later real count on the page still is |
@@ -443,6 +443,13 @@ service", "dealership-quality", "dealership prices". Exclusive Auto Service, a
 family-owned repair shop, had been left "uncertain" (independent and dealer)
 by "We are the dealership alternative". Genuine evidence ("We are your local
 Chevrolet dealership", "an authorized Toyota dealer") is unchanged.
+
+**Rules r9 (2026-10-01).** A `<button>` whose text uses the existing booking
+wording ("Make an appointment", "Schedule Service") counts as online booking,
+as a link with that text already did; other buttons don't. The Kukui MyGarage
+widget (`mygarage.kukui.com`) is a recognized scheduling widget. Schneider's
+Automotive had been marked "no online booking" although its header has a
+"Make an appointment" button that opens MyGarage.
 
 ## Approval
 

@@ -357,7 +357,9 @@ const BOOKING_PATH = /\/(?:[^?#]*[-_/])?(?:appointments?|schedule[-_]?service|se
 const NOT_BOOKING = /test[- ]?drive|career|job|employment|fleet|faq/i;
 const isBookingLink = (l: { href: string; text: string }) =>
   !NOT_BOOKING.test(l.text) && !NOT_BOOKING.test(l.href) && ((l.text.length <= 50 && BOOKING_TEXT.test(l.text.trim())) || BOOKING_PATH.test(l.href));
-const BOOKING_WIDGETS = /(calendly\.com|setmore\.com|booksy\.com|squareup\.com\/appointments|autoops|shopmonkey\.io|tekmetric\.com|mechanicadvisor|myshopmanager|openbay\.com|xtime\.com|autoshopmanager|shop-ware\.com|steercrm)/i;
+/** A button is a booking action only with the same booking wording a link needs ("Make an appointment"). */
+const isBookingButton = (text: string) => text.length <= 50 && !NOT_BOOKING.test(text) && BOOKING_TEXT.test(text.trim());
+const BOOKING_WIDGETS = /(calendly\.com|setmore\.com|booksy\.com|squareup\.com\/appointments|autoops|shopmonkey\.io|tekmetric\.com|mechanicadvisor|myshopmanager|openbay\.com|xtime\.com|autoshopmanager|shop-ware\.com|steercrm|mygarage\.kukui\.com)/i;
 
 const NUMBER_WORDS: Record<string, number> = { one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9, ten: 10, eleven: 11, twelve: 12 };
 // A count is 1-99 without a leading zero: "03" is a list number, not three.
@@ -729,9 +731,12 @@ export function analyze(subject: Subject, pages: Page[], secureHttps: boolean | 
 
     // No online booking.
     const bookingLink = pages.flatMap((p) => p.parsed.links.map((l) => ({ p, l }))).find(({ l }) => isBookingLink(l));
+    const bookingButton = pages.flatMap((p) => p.parsed.buttons.map((t) => ({ p, t }))).find(({ t }) => isBookingButton(t));
     const widget = pages.find((p) => BOOKING_WIDGETS.test(p.html));
     if (bookingLink) {
       signals.push({ key: "no_online_booking", value: "no", sourceUrl: bookingLink.p.url, excerpt: clip(`Booking link: "${bookingLink.l.text || bookingLink.l.href}"`) });
+    } else if (bookingButton) {
+      signals.push({ key: "no_online_booking", value: "no", sourceUrl: bookingButton.p.url, excerpt: clip(`Booking button: "${bookingButton.t}"`) });
     } else if (widget) {
       signals.push({ key: "no_online_booking", value: "no", sourceUrl: widget.url, excerpt: clip(`Online scheduling widget on the page (${BOOKING_WIDGETS.exec(widget.html)![0]}).`) });
     } else if (pages.length >= 2) {
