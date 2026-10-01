@@ -307,7 +307,7 @@ verified website, always with the page and a quote as evidence):
 
 | Signal | Research sets it when |
 | ------ | --------------------- |
-| Independent shop | **no**: a franchise/chain brand in the site's title or headings (the rule's list, e.g. Midas, Jiffy Lube, Firestone), or dealership **activity**: new-vehicle inventory or sales, certified pre-owned, test drives, trade-in appraisal, or the business calling itself a dealer ("authorized Toyota dealer", "we are your local Chevrolet dealer"). The bare word "dealership" is not evidence, nor is a comparison ("better than the dealership", "without the dealership price"), nor a vehicle make in the title (the make only labels real dealer evidence). **yes**: the site states it ("family owned", "locally owned", "independent repair shop", "Independent Porsche Service Center", "independent BMW repair") and shows no chain or dealer sign. Dealer activity and an independence statement together leave it unknown (business type uncertain). Otherwise unknown: independence is never assumed |
+| Independent shop | **no**: a franchise/chain brand in the site's title or headings (the rule's list, e.g. Midas, Jiffy Lube, Firestone), or dealership **activity**: new-vehicle inventory or sales, certified pre-owned, test drives, trade-in appraisal, or the business calling itself a vehicle dealer ("authorized Toyota dealer", "we are your local Chevrolet dealer"). "Authorized dealer" counts only with a vehicle make or vehicle word: a parts brand's badge ("Skyjacker Authorized Dealer") is not a dealership. The bare word "dealership" is not evidence, nor is a comparison ("better than the dealership", "without the dealership price"), nor a vehicle make in the title (the make only labels real dealer evidence). **yes**: the site states it ("family owned", "locally owned", "independent repair shop", "Independent Porsche Service Center", "independent BMW repair") and shows no chain or dealer sign. Dealer activity and an independence statement together leave it unknown (business type uncertain). Otherwise unknown: independence is never assumed |
 | Offers general repair | **yes**: 2+ of brakes, suspension/steering, diagnostics, maintenance/oil, A/C, electrical, transmission, cooling, exhaust. **no**: 2+ specialty services (collision, glass, tint, detailing, audio, towing) and no general ones |
 | Mentions digital inspections | **yes**: digital/photo/video inspection wording, or a DVI product. **no**: the homepage and a services page were read with no mention |
 | No online booking | **no**: a service-booking link ("Book an appointment", a booking URL path) or a scheduling widget. **yes**: 2+ pages read with none (a test-drive, quote, or FAQ link is not booking) |
@@ -410,6 +410,19 @@ written as a word as its numeric form, first through twentieth ("2180 First
 St" = "2180 1st St"), in either direction, on the page text and in structured
 data. Found on Perry's Quality Auto Repair (provider "2180 1st St", website
 "2180 First St, Suite C-10"). Duplicate detection's street key is unchanged.
+
+**Rules r5 (2026-10-01).** From the second production batch:
+- "Authorized/franchised/official … dealer" is dealership evidence only with a
+  vehicle make or vehicle word ("authorized Toyota dealer", "Subaru Authorized
+  Dealer", "authorized new car dealer"). Aftermarket parts badges ("Xtreme
+  Diesel / Skyjacker / Rough Country Authorized Dealer") had made Bender's
+  Automotive, a repair shop, a "dealership" and disqualified it.
+- When a confirmed website's structured business data gives a single address
+  for this business that differs from the provider's (and the provider's isn't
+  on the site), a warning shows both and asks for the current location to be
+  verified by hand. Neither address is changed, and ownership stands. Found on
+  Pops Auto Repair (provider 17958 E Telegraph Rd, Santa Paula; website 665
+  Ventura St, Fillmore).
 
 ## Approval
 

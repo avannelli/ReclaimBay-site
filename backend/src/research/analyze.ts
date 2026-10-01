@@ -186,6 +186,30 @@ export function findAddress(subject: Subject, pages: Page[]): { url: string; exc
   return null;
 }
 
+/**
+ * The business address the site's structured data gives for this business
+ * (matched by name or provider phone), when it is a single address and not
+ * the provider's. Several addresses (a multi-location site) are not compared.
+ */
+export function differentSiteAddress(subject: Subject, pages: Page[]): { address: string; url: string } | null {
+  const providerKey = addressMatchKey(subject.streetAddress);
+  if (!providerKey) return null;
+  const tel = phoneKey(subject.providerPhone);
+  const found = new Map<string, { address: string; url: string }>();
+  for (const p of pages) {
+    for (const s of p.parsed.structured) {
+      const key = addressMatchKey(s.streetAddress);
+      if (!key) continue;
+      const ours = namesSimilar(s.name, subject.businessName) || (tel !== null && phoneKey(s.telephone) === tel);
+      if (!ours || found.has(key)) continue;
+      found.set(key, { address: [s.streetAddress, [s.locality, s.postalCode].filter(Boolean).join(" ")].filter(Boolean).join(", "), url: p.url });
+    }
+  }
+  const only = found.size === 1 ? [...found][0] : undefined;
+  if (!only) return null;
+  return only[0] === providerKey ? null : only[1];
+}
+
 // ---------- which phone belongs to this location ----------
 
 /** Toll-free area codes: a central number, not a location's. */
@@ -286,6 +310,10 @@ const MAKES = [
   "jeep", "kia", "lexus", "lincoln", "mazda", "mercedes-benz", "mini", "mitsubishi", "nissan", "porsche", "ram", "subaru", "tesla",
   "toyota", "volkswagen", "volvo",
 ];
+const MAKE_WORDS = MAKES.map((m) => m.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|");
+/** Words that make a "dealer" a vehicle dealer ("car dealer"), not a parts dealer. */
+const VEHICLE_WORDS = "(?:new |used )?(?:car|vehicle|auto|automobile|truck|motor vehicle)s?";
+
 /**
  * Evidence that the business sells vehicles (a dealership), from what it does
  * or says it is. The bare word "dealership", or a make in the title, is not
@@ -301,8 +329,11 @@ const DEALER_ACTIVITY = new RegExp(
     "(?:schedule|book) (?:a |your )?test drive",
     "value your trade",
     "trade[- ]in (?:value|appraisal)",
-    "(?:authorized|franchised|official) (?:[a-z-]+ ){0,2}dealer(?:ship)?",
-    "(?:we are|is) (?:a|an|the|your) (?:local |premier |trusted )?(?:[a-z-]+ ){0,2}dealer(?:ship)?",
+    // "Authorized dealer" only with a vehicle make or vehicle word: parts brands
+    // ("Skyjacker Authorized Dealer") say it too.
+    `(?:authorized|franchised|official) (?:(?:${MAKE_WORDS}) |${VEHICLE_WORDS} )dealer(?:ship)?`,
+    `(?:${MAKE_WORDS}) (?:authorized|franchised|official) dealer(?:ship)?`,
+    `(?:we are|is) (?:a|an|the|your) (?:[a-z-]+ ){0,3}?(?:dealership|(?:${MAKE_WORDS}|${VEHICLE_WORDS}) dealer)`,
     "(?:[a-z-]+ )?dealership (?:in|serving|located in)",
     "new (?:and|&) used (?:cars|vehicles|trucks)",
   ].join("|"),
@@ -484,6 +515,18 @@ export function analyze(subject: Subject, pages: Page[], secureHttps: boolean | 
           note: subject.streetAddress ? `Reported by ${subject.provider}; not found on the pages read.` : "No street address known.",
         },
   );
+
+  // A confirmed site that gives another address: maybe a move, or an outdated
+  // provider address. Reported only; neither address is changed.
+  if (ownership === "verified" && !address) {
+    const other = differentSiteAddress(subject, pages);
+    if (other) {
+      const provider = [subject.streetAddress, subject.city, [subject.state, subject.postalCode].filter(Boolean).join(" ")].filter(Boolean).join(", ");
+      warnings.push(
+        `The website gives a different business address (${other.address}) than ${subject.provider} (${provider}). The business may have moved, or the provider's address may be out of date. Verify the current location by hand.`,
+      );
+    }
+  }
 
   // ----- phone -----
   if (subject.providerPhone) {

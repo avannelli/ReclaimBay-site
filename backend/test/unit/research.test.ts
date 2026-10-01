@@ -715,3 +715,127 @@ describe("ordinal street names on the website", () => {
     assert.equal(fact(r, "address")!.state, "verified");
   });
 });
+
+/* Production batch #2 (2026-10-01): parts-brand "Authorized Dealer" badges. */
+describe("parts-brand 'Authorized Dealer' badges are not a vehicle dealership", () => {
+  const run = async (title: string, body: string, name = "Saviers Road Auto Repair") => {
+    const s = server(siteWith(page(title, `<h1>${name}</h1><p>(805) 555-0101 · 5577 Saviers Rd, Oxnard</p>${body}`)));
+    return researchCandidate(subject({ businessName: name }), s.fetcher(), TODAY);
+  };
+  const BENDERS_BADGES =
+    "<p>Part of a network of top-tier repair shops committed to premium lubricants and exceptional service standards.</p>" +
+    "<ul><li>Xtreme Diesel Authorized Dealer</li><li>Skyjacker Authorized Dealer</li><li>Rough Country Authorized Dealer</li><li>O'Reilly Auto Parts Warranty Partner</li></ul>";
+
+  test("Bender's Automotive: the exact badges are not dealership evidence", async () => {
+    const r = await run("Bender's Automotive | Thousand Oaks", BENDERS_BADGES, "Bender's Automotive");
+    assert.equal(r.outcome, "website_verified");
+    assert.notEqual(signal(r, "independent_shop")?.value, "no");
+    assert.notEqual(fact(r, "business_type")!.value, "dealership");
+  });
+
+  test("the badges with an independence statement: independent", async () => {
+    const r = await run("Saviers Road Auto Repair", `<p>Family owned since 1984.</p>${BENDERS_BADGES}`);
+    assert.equal(signal(r, "independent_shop")!.value, "yes");
+  });
+
+  test("'we are an authorized Rough Country dealer' is not a vehicle dealership", async () => {
+    const r = await run("Saviers Road Auto Repair", "<p>We are an authorized Rough Country dealer and installer.</p>");
+    assert.notEqual(signal(r, "independent_shop")?.value, "no");
+  });
+
+  for (const text of [
+    "<p>Your authorized Toyota dealer in Oxnard.</p>",
+    "<p>The official Ford dealership for Ventura County.</p>",
+    "<p>Subaru Authorized Dealer</p>",
+    "<p>An authorized new car dealer since 1975.</p>",
+    "<p>We are your local Chevrolet dealer.</p>",
+    "<p>Kirby is a trusted auto dealer for Ventura drivers.</p>",
+  ]) {
+    test(`a genuine vehicle dealer is still a dealership: ${text.replace(/<[^>]+>/g, "")}`, async () => {
+      const r = await run("Saviers Road Auto Repair", text);
+      assert.equal(signal(r, "independent_shop")?.value, "no");
+      assert.equal(fact(r, "business_type")!.value, "dealership");
+    });
+  }
+});
+
+/* Production batch #2 (2026-10-01): a confirmed site giving another address than the provider. */
+describe("a confirmed website that gives a different address", () => {
+  const ld = (o: object) => `<script type="application/ld+json">${JSON.stringify(o)}</script>`;
+  const pops = (address: object, extra = "") =>
+    server(
+      siteWith(
+        page(
+          "Auto Repair Fillmore, CA - Expert Mechanics - Pops Auto Repair",
+          `<h1>Pops Auto Repair</h1><p>Call 805-873-2610</p>${extra}`,
+          ld({ "@type": "AutoRepair", name: "Pops Auto Repair", telephone: "805-873-2610", address }),
+        ),
+      ),
+    );
+  const POPS = subject({ businessName: "Pops Auto Repair", streetAddress: "17958 E Telegraph Rd", city: "Santa Paula", state: "CA", postalCode: "93060", providerPhone: "+18058732610" });
+  const discrepancy = (w: string[]) => w.filter((x) => /gives a different business address/.test(x));
+
+  test("Pops Auto Repair: provider 17958 E Telegraph Rd, Santa Paula; site 665 Ventura St, Fillmore", async () => {
+    const r = await researchCandidate(POPS, pops({ streetAddress: "665 Ventura St", addressLocality: "Fillmore", addressRegion: "CA", postalCode: "93015" }).fetcher(), TODAY);
+    assert.equal(r.outcome, "website_verified", "a different address does not undo ownership");
+    const [w] = discrepancy(r.warnings);
+    assert.ok(w, "a warning is shown");
+    assert.match(w!, /665 Ventura St, Fillmore 93015/);
+    assert.match(w!, /17958 E Telegraph Rd, Santa Paula, CA 93060/);
+    assert.match(w!, /Verify the current location by hand/);
+    assert.equal(discrepancy(r.warnings).length, 1);
+    const a = fact(r, "address")!;
+    assert.deepEqual([a.value, a.state], ["17958 E Telegraph Rd", "unverified"], "the provider address is not replaced");
+    assert.equal(signal(r, "independent_shop"), undefined, "no signal comes from the address");
+  });
+
+  test("the same address: no warning (and the address is verified)", async () => {
+    const r = await researchCandidate(POPS, pops({ streetAddress: "17958 East Telegraph Road", addressLocality: "Santa Paula" }).fetcher(), TODAY);
+    assert.equal(fact(r, "address")!.state, "verified");
+    assert.deepEqual(discrepancy(r.warnings), []);
+  });
+
+  test("an ordinal or abbreviation written differently: no warning", async () => {
+    for (const [provider, site] of [
+      ["2180 1st St", "2180 First Street, Suite C-10"],
+      ["1200 East Thousand Oaks Boulevard", "1200 E. Thousand Oaks Blvd #4"],
+    ]) {
+      const r = await researchCandidate({ ...POPS, streetAddress: provider! }, pops({ streetAddress: site }).fetcher(), TODAY);
+      assert.deepEqual(discrepancy(r.warnings), [], `${provider} / ${site}`);
+    }
+  });
+
+  test("a site that isn't confirmed: no discrepancy warning", async () => {
+    const r = await researchCandidate({ ...POPS, providerPhone: "+18059990000" }, server(
+      siteWith(page("Pops Auto Repair", "<h1>Pops Auto Repair</h1>", ld({ "@type": "AutoRepair", name: "Pops Auto Repair", address: { streetAddress: "665 Ventura St" } }))),
+    ).fetcher(), TODAY);
+    assert.equal(r.outcome, "website_unconfirmed");
+    assert.deepEqual(discrepancy(r.warnings), []);
+  });
+
+  test("a site that belongs to another business: no discrepancy warning", async () => {
+    const r = await researchCandidate(POPS, server(
+      siteWith(page("Valley Glass", "<h1>Valley Glass</h1><p>(805) 555-7777</p>", ld({ "@type": "LocalBusiness", name: "Valley Glass", telephone: "(805) 555-7777", address: { streetAddress: "12 Main St" } }))),
+    ).fetcher(), TODAY);
+    assert.equal(r.outcome, "website_mismatch");
+    assert.deepEqual(discrepancy(r.warnings), []);
+  });
+
+  test("several locations in the site's data, or another organization's address: no warning", async () => {
+    const multi = server(
+      siteWith(
+        page(
+          "Pops Auto Repair",
+          "<h1>Pops Auto Repair</h1><p>Call 805-873-2610</p>",
+          ld([
+            { "@type": "AutoRepair", name: "Pops Auto Repair Fillmore", telephone: "805-873-2610", address: { streetAddress: "665 Ventura St" } },
+            { "@type": "AutoRepair", name: "Pops Auto Repair Piru", address: { streetAddress: "400 Main St" } },
+          ]),
+        ),
+      ),
+    );
+    assert.deepEqual(discrepancy((await researchCandidate(POPS, multi.fetcher(), TODAY)).warnings), [], "multi-location");
+    const agency = pops({ streetAddress: "17958 E Telegraph Rd" }, ld({ "@type": "Organization", name: "Web Wizards Agency", telephone: "(213) 555-0000", address: { streetAddress: "1 Market St" } }));
+    assert.deepEqual(discrepancy((await researchCandidate(POPS, agency.fetcher(), TODAY)).warnings), [], "the site builder's address is not the business's");
+  });
+});
