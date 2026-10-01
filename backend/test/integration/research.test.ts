@@ -8,6 +8,7 @@ import { scoreCandidate } from "../../src/discovery/approval.js";
 import { approveCandidate, changeCandidateStatus, ingestBusinesses, updateCandidate } from "../../src/discovery/service.js";
 import type { DiscoveredBusiness } from "../../src/discovery/types.js";
 import { changeStatus } from "../../src/prospects.js";
+import { RESEARCH_VERSION } from "../../src/research/researcher.js";
 import {
   RESEARCH_HISTORY,
   enqueueResearch,
@@ -69,7 +70,7 @@ describe("automated research (service)", { skip: skipReason }, () => {
     assert.equal(c.phone, null, "a provider phone is never contact on its own");
 
     const run = (await research(c.id))!;
-    assert.deepEqual([run.status, run.outcome, run.version], ["completed", "website_verified", "r1"]);
+    assert.deepEqual([run.status, run.outcome, run.version], ["completed", "website_verified", RESEARCH_VERSION]);
     assert.equal(run.pagesFetched, 4);
 
     const after = await full(c.id);
@@ -94,7 +95,7 @@ describe("automated research (service)", { skip: skipReason }, () => {
     });
     assert.equal(after.evidence.length, 7, "one evidence item per signal");
     assert.ok(after.evidence.every((e) => e.origin === "research" && e.researchId === run.id && e.sourceUrl.startsWith("https://saviersauto.example.com/")));
-    assert.ok(after.notes.some((n) => /Automated research \(r1\): website verified/.test(n.body)));
+    assert.ok(after.notes.some((n) => new RegExp(`Automated research \\(${RESEARCH_VERSION}\\): website verified`).test(n.body)));
 
     // Sources and facts are stored for audit, without page bodies.
     const sources = await db.researchSource.findMany({ where: { researchId: run.id } });
@@ -355,7 +356,7 @@ describe("automated research in the admin (HTTP)", { skip: skipReason }, () => {
 
     page = (await get(`/admin/discovery/candidates/${c.id}`)).body;
     assert.match(page, /Website verified/);
-    assert.match(page, /rules r1 · 4 pages read/);
+    assert.match(page, new RegExp(`rules ${RESEARCH_VERSION} · 4 pages read`));
     assert.match(page, /Verified \(\d+\)/);
     assert.match(page, /class="obs obs-yes">Verified</);
     assert.match(page, /Provider-reported · unverified \(\d+\)/);

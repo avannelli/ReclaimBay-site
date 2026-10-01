@@ -284,6 +284,16 @@ dealership), operating status.
   website; the page is its source. The provider phone is "verified" only when
   that same number is on the verified website; otherwise it stays unverified,
   or uncertain when the site lists a different number (a warning names both).
+- Many sites list several numbers (a central toll-free line, other
+  locations). The phone chosen is **this location's**, in order: the
+  provider's number when the site lists it; the number in the site's
+  structured business data whose street address is this location's; the one
+  number (or the one local, non-toll-free number) within about 250 characters
+  of the matched street address, or among several there (side-by-side
+  location cards) the one in the provider phone's area code; the only local
+  number in the provider phone's area code; the site's only number; the only non-toll-free number.
+  Otherwise the phone is **uncertain** (the numbers are listed, a warning
+  asks for a manual check) and none is set: the first number is never taken.
 - An email is kept only when it is on the business's own domain. An address on
   a free or third-party mail service is never recorded (it may be personal);
   the fact says one was seen.
@@ -297,7 +307,7 @@ verified website, always with the page and a quote as evidence):
 
 | Signal | Research sets it when |
 | ------ | --------------------- |
-| Independent shop | **no**: a franchise/chain brand in the site's title or headings (the rule's list, e.g. Midas, Jiffy Lube, Firestone), or a vehicle make plus dealership wording ("new vehicles", "certified pre-owned"). **yes**: the site states it ("family owned", "locally owned", "independent repair shop") and shows no chain or dealer sign. Otherwise unknown: independence is never assumed |
+| Independent shop | **no**: a franchise/chain brand in the site's title or headings (the rule's list, e.g. Midas, Jiffy Lube, Firestone), or dealership **activity**: new-vehicle inventory or sales, certified pre-owned, test drives, trade-in appraisal, or the business calling itself a dealer ("authorized Toyota dealer", "we are your local Chevrolet dealer"). The bare word "dealership" is not evidence, nor is a comparison ("better than the dealership", "without the dealership price"), nor a vehicle make in the title (the make only labels real dealer evidence). **yes**: the site states it ("family owned", "locally owned", "independent repair shop", "Independent Porsche Service Center", "independent BMW repair") and shows no chain or dealer sign. Dealer activity and an independence statement together leave it unknown (business type uncertain). Otherwise unknown: independence is never assumed |
 | Offers general repair | **yes**: 2+ of brakes, suspension/steering, diagnostics, maintenance/oil, A/C, electrical, transmission, cooling, exhaust. **no**: 2+ specialty services (collision, glass, tint, detailing, audio, towing) and no general ones |
 | Mentions digital inspections | **yes**: digital/photo/video inspection wording, or a DVI product. **no**: the homepage and a services page were read with no mention |
 | No online booking | **no**: a service-booking link ("Book an appointment", a booking URL path) or a scheduling widget. **yes**: 2+ pages read with none (a test-drive, quote, or FAQ link is not booking) |
@@ -322,12 +332,21 @@ approved, rejected, and duplicate candidates are not researched.
   DNS, or certificate errors. No retry loops.
 - robots.txt is read once per site and honoured (our agent's group, else `*`);
   a server error on robots.txt means the site is skipped.
+- **Blocked vs. unreachable.** HTTP 401 or 403, a robots.txt disallow, or a
+  robots.txt server error mean the site **blocks automated access**: outcome
+  `access_blocked`, run completed, warning "Website blocks automated access;
+  verify manually." It is not treated as dead and not as a mismatch, and the
+  site root is not tried after a block. DNS failure, connection failure, or a
+  timeout (after its one retry) mean **unreachable**: the run fails. Only an
+  ordinary HTTP error on a deep link (e.g. 404) falls back to the site root.
 - At least 1 second between requests to the same host; at most 5 pages per
   run; 1 second between candidates in a batch; batches of at most 10 (admin)
   or 25 (CLI). Only same-site contact/about/services/team pages are followed.
 - User agent: `ReclaimBayResearch/1.0 (+https://reclaimbay.com)`.
 - A site that can't be reached makes the run **failed** (earlier research is
-  kept); a site that forbids reading is **completed** with that outcome. A run
+  kept); a site that blocks automated access is **completed** with outcome
+  `access_blocked` (runs from rules r1 recorded a robots.txt block as
+  `robots_disallowed`). A run
   whose worker died is marked failed after 10 minutes and is never retried
   automatically: run it again.
 
@@ -368,6 +387,14 @@ and after) and created no prospects. The first run found three rule defects,
 fixed before the second: missed "Digital Technician Video Inspection" wording,
 a test-drive and an FAQ link counted as booking, and an unresolvable domain
 reported as "disallowed".
+
+**Rules r2 (2026-10-01).** A second controlled batch of ten found three more
+defects, fixed in r2: an independent Porsche specialist ("genuine parts of a
+dealership, without the dealership price") classified as a dealership; a
+multi-location site's central toll-free number taken as the location's phone
+because it came first; and a site answering HTTP 403 reported as unreachable.
+Dealership now needs dealer activity, the phone follows the location rules
+above, and 401/403 is `access_blocked`.
 
 ## Approval
 

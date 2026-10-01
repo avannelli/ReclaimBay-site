@@ -170,20 +170,83 @@ export function findName(subject: Subject, pages: Page[]): { url: string; excerp
 }
 
 /** Where the street address appears: house number and street name close together. */
-export function findAddress(subject: Subject, pages: Page[]): { url: string; excerpt: string } | null {
+export function findAddress(subject: Subject, pages: Page[]): { url: string; excerpt: string; index: number } | null {
   const key = streetKey(subject.streetAddress);
   if (!key) return null;
   const [number, ...rest] = key.split(" ");
   const word = rest.find((w) => w.length > 2 && !["n", "s", "e", "w"].includes(w)) ?? rest[0];
   if (!number || !word) return null;
   for (const p of pages) {
-    for (const s of p.parsed.structured) if (streetKey(s.streetAddress) === key) return { url: p.url, excerpt: clip(`${s.streetAddress}${s.locality ? `, ${s.locality}` : ""}`) };
+    for (const s of p.parsed.structured) if (streetKey(s.streetAddress) === key) return { url: p.url, excerpt: clip(`${s.streetAddress}${s.locality ? `, ${s.locality}` : ""}`), index: -1 };
     const lower = p.parsed.text.toLowerCase();
     const re = new RegExp(`\\b${number}\\b[^\\d]{1,40}?\\b${word.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`, "i");
     const m = re.exec(lower);
-    if (m) return { url: p.url, excerpt: quote(p.parsed.text, m.index, m[0].length) };
+    if (m) return { url: p.url, excerpt: quote(p.parsed.text, m.index, m[0].length), index: m.index };
   }
   return null;
+}
+
+// ---------- which phone belongs to this location ----------
+
+/** Toll-free area codes: a central number, not a location's. */
+const TOLL_FREE = new Set(["800", "833", "844", "855", "866", "877", "888"]);
+const isTollFree = (key: string) => TOLL_FREE.has(key.slice(0, 3));
+
+/** How far from the matched street address a phone still counts as "next to" it. */
+const NEAR_ADDRESS = 250;
+
+export type PhoneChoice = { key: string; url: string; how: string } | { ambiguous: string[] } | null;
+
+/**
+ * The phone of THIS location on a site that may list many. In order:
+ * the provider's number when the site lists it; the phone in structured
+ * data whose address is this location's; the one phone next to the matched
+ * street address (or, among several there, the one in the provider
+ * phone's area code); the only number in the provider phone's area code; the
+ * site's only number; the only non-toll-free number. Anything else is
+ * ambiguous: no number is guessed.
+ */
+export function choosePhone(
+  subject: Subject,
+  pages: Page[],
+  phones: Map<string, string>,
+  address: { url: string; index: number } | null,
+): PhoneChoice {
+  if (!phones.size) return null;
+  const providerKey = phoneKey(subject.providerPhone);
+  if (providerKey && phones.has(providerKey)) {
+    return { key: providerKey, url: phones.get(providerKey)!, how: "the provider-reported number, listed on the business's own website" };
+  }
+  const street = streetKey(subject.streetAddress);
+  for (const p of pages) {
+    for (const s of p.parsed.structured) {
+      const k = phoneKey(s.telephone);
+      if (k && street && streetKey(s.streetAddress) === street) return { key: k, url: p.url, how: "listed with this location's address in the site's business data" };
+    }
+  }
+  if (address && address.index >= 0) {
+    const page = pages.find((p) => p.url === address.url);
+    if (page) {
+      const window = page.parsed.text.slice(Math.max(0, address.index - NEAR_ADDRESS), address.index + NEAR_ADDRESS);
+      const near = [...new Set([...window.matchAll(PHONE_IN_TEXT)].map((m) => `${m[1]}${m[2]}${m[3]}`))];
+      const local = near.filter((k) => !isTollFree(k));
+      if (near.length === 1) return { key: near[0]!, url: page.url, how: "listed next to this location's street address" };
+      if (local.length === 1) return { key: local[0]!, url: page.url, how: "the local number next to this location's street address" };
+      // Location cards side by side: the neighbour's number can be as close
+      // as this one's. The one in this location's area code decides.
+      const nearArea = providerKey ? local.filter((k) => k.slice(0, 3) === providerKey.slice(0, 3)) : [];
+      if (nearArea.length === 1) return { key: nearArea[0]!, url: page.url, how: "the number in this location's area code next to its street address" };
+    }
+  }
+  const keys = [...phones.keys()];
+  const local = keys.filter((k) => !isTollFree(k));
+  if (providerKey) {
+    const sameArea = local.filter((k) => k.slice(0, 3) === providerKey.slice(0, 3));
+    if (sameArea.length === 1) return { key: sameArea[0]!, url: phones.get(sameArea[0]!)!, how: "the only number on the site in this location's area code" };
+  }
+  if (keys.length === 1) return { key: keys[0]!, url: phones.get(keys[0]!)!, how: "the only phone number on the business's own website" };
+  if (local.length === 1) return { key: local[0]!, url: phones.get(local[0]!)!, how: "the only local number on the site (the others are toll-free)" };
+  return { ambiguous: keys };
 }
 
 // ---------- signal vocabularies (from the rules in src/scoring.ts) ----------
@@ -223,10 +286,34 @@ const MAKES = [
   "jeep", "kia", "lexus", "lincoln", "mazda", "mercedes-benz", "mini", "mitsubishi", "nissan", "porsche", "ram", "subaru", "tesla",
   "toyota", "volkswagen", "volvo",
 ];
-const DEALER_WORDS = /\b(new (vehicles|inventory|cars for sale)|certified pre-owned|dealership|dealer service|shop new|new & used|new and used (cars|vehicles))\b/i;
+/**
+ * Evidence that the business sells vehicles (a dealership), from what it does
+ * or says it is. The bare word "dealership", or a make in the title, is not
+ * enough: independent specialists name makes and compare themselves to
+ * dealers ("dealer-quality service without the dealership price").
+ */
+const DEALER_ACTIVITY = new RegExp(
+  [
+    "new (?:vehicle|car|truck|suv)s? (?:inventory|for sale|sales|specials)",
+    "(?:shop|browse|search|view) (?:our )?(?:new|used|pre-owned) (?:inventory|vehicles|cars|trucks)",
+    "new inventory",
+    "certified pre-owned(?: (?:inventory|vehicles|cars|program))?",
+    "(?:schedule|book) (?:a |your )?test drive",
+    "value your trade",
+    "trade[- ]in (?:value|appraisal)",
+    "(?:authorized|franchised|official) (?:[a-z-]+ ){0,2}dealer(?:ship)?",
+    "(?:we are|is) (?:a|an|the|your) (?:local |premier |trusted )?(?:[a-z-]+ ){0,2}dealer(?:ship)?",
+    "(?:[a-z-]+ )?dealership (?:in|serving|located in)",
+    "new (?:and|&) used (?:cars|vehicles|trucks)",
+  ].join("|"),
+  "gi",
+);
+
+/** Words that turn a dealer mention into a comparison ("better than the dealership"). */
+const CONTRAST = /\b(than|unlike|instead of|without|vs\.?|versus|not|alternative to|compared (to|with)|like|of)\s+(a |an |the |your |any )?$/i;
 
 const INDEPENDENT_WORDS =
-  /\b(family[- ]owned|locally[- ]owned|independently[- ]owned|owner[- ]operated|privately[- ]owned|independent (auto|car|automotive)? ?(repair|shop|garage|service|mechanic)s?)\b/i;
+  /\b(family[- ]owned|locally[- ]owned|independently[- ]owned|owner[- ]operated|privately[- ]owned|independent(?:\s+[a-z0-9&'.-]+){0,3}?\s+(?:repair|service|shop|garage|mechanic|specialist|centre|center)s?)\b/i;
 
 const DVI_WORDS =
   /\b((digital|photo|video)(\s+(vehicle|courtesy|multi[- ]point|technician|video|photo))*\s+inspections?|dvi\b|(photo|video)s? (of|with) (your |each )?(inspection|vehicle)|inspection reports? (sent )?(by|via|through) (text|email)|(texted|emailed) inspection|autovitals|bolt on technology)\b/i;
@@ -252,6 +339,32 @@ const DATE_PATTERNS = [
   new RegExp(`\\b${MONTHS}\\.?\\s+\\d{1,2},?\\s+((?:19|20)\\d{2})\\b`, "gi"),
   /\b(?:updated|posted|published)[^.\d]{0,20}((?:19|20)\d{2})\b/gi,
 ];
+
+/** The first dealer-activity phrase that isn't a comparison. */
+function dealerActivity(pages: Page[]) {
+  for (const p of pages) {
+    for (const source of [[p.parsed.title, p.parsed.siteName, ...p.parsed.headings].filter(Boolean).join(" | "), p.parsed.text]) {
+      DEALER_ACTIVITY.lastIndex = 0;
+      for (const m of source.matchAll(DEALER_ACTIVITY)) {
+        const before = source.slice(Math.max(0, (m.index ?? 0) - 30), m.index);
+        if (CONTRAST.test(before)) continue;
+        return { page: p, text: source, index: m.index ?? 0, match: m };
+      }
+    }
+  }
+  return null;
+}
+
+/** An independence statement in the site's own labels or text. */
+function independenceStatement(pages: Page[]) {
+  for (const p of pages) {
+    const labels = [p.parsed.title, p.parsed.siteName, ...p.parsed.structured.map((s) => s.name), ...p.parsed.headings].filter(Boolean).join(" | ");
+    const inLabels = INDEPENDENT_WORDS.exec(labels);
+    if (inLabels) return { page: p, text: labels, index: inLabels.index, match: inLabels };
+  }
+  const m = firstMatch(pages, INDEPENDENT_WORDS);
+  return m ? { page: m.page, text: m.page.parsed.text, index: m.index, match: m.match } : null;
+}
 
 const firstMatch = (pages: Page[], re: RegExp) => {
   for (const p of pages) {
@@ -354,19 +467,29 @@ export function analyze(subject: Subject, pages: Page[], secureHttps: boolean | 
     );
     if (!providerOnSite && phones.size) warnings.push(`The provider's phone is not on the website, which lists ${[...phones.keys()].map(formatPhone).join(", ")}.`);
   }
-  if (phones.size) {
-    const [bestKey, bestUrl] = providerOnSite && providerKey ? [providerKey, providerOnSite] : [...phones.entries()][0]!;
+  const choice = choosePhone(subject, pages, phones, address);
+  if (choice && "key" in choice) {
     facts.push({
       field: "phone",
-      value: formatPhone(bestKey),
+      value: formatPhone(choice.key),
       state: ownership === "verified" ? "verified" : "uncertain",
-      sourceUrl: bestUrl,
-      note: ownership === "verified" ? "Listed on the business's own website." : "Listed on a website not confirmed as the business's own.",
+      sourceUrl: choice.url,
+      note: ownership === "verified" ? `Verified: ${choice.how}.` : "Listed on a website not confirmed as the business's own.",
     });
     if (ownership === "verified") {
-      contact.phone = formatPhone(bestKey);
-      contact.phoneSourceUrl = bestUrl;
+      contact.phone = formatPhone(choice.key);
+      contact.phoneSourceUrl = choice.url;
     }
+  } else if (choice) {
+    const listed = choice.ambiguous.slice(0, 6).map(formatPhone).join(", ");
+    facts.push({
+      field: "phone",
+      value: listed,
+      state: "uncertain",
+      sourceUrl: phones.get(choice.ambiguous[0]!) ?? null,
+      note: `The website lists ${choice.ambiguous.length} numbers and none is clearly this location's. Check by hand.`,
+    });
+    if (ownership === "verified") warnings.push("The website lists several phone numbers and none could be tied to this location. Verify the phone by hand.");
   } else {
     facts.push({ field: "phone", value: null, state: "not_found", note: "No phone number on the pages read." });
   }
@@ -432,9 +555,10 @@ export function analyze(subject: Subject, pages: Page[], secureHttps: boolean | 
   const labels = pages.flatMap((p) => [p.parsed.title ?? "", p.parsed.siteName ?? "", ...p.parsed.headings.slice(0, 3)]).join(" | ");
   const chain = CHAIN_BRANDS.find((b) => labels.toLowerCase().includes(b) || nameAndBrand.includes(b));
   const chainOnSite = chain ? pages.find((p) => [p.parsed.title, p.parsed.siteName, ...p.parsed.headings.slice(0, 3)].some((l) => l?.toLowerCase().includes(chain))) : undefined;
+  // A make in the title only labels a dealer's evidence; it is never evidence itself.
   const make = MAKES.find((m) => new RegExp(`\\b${m}\\b`, "i").test(labels) || siteHost.includes(m.replace("-", "")));
-  const dealerText = make ? firstMatch(pages, DEALER_WORDS) : null;
-  const independent = firstMatch(pages, INDEPENDENT_WORDS);
+  const dealerText = dealerActivity(pages);
+  const independent = independenceStatement(pages);
 
   // ----- signals (only from the business's own, verified website) -----
   if (ownership === "verified") {
@@ -443,24 +567,31 @@ export function analyze(subject: Subject, pages: Page[], secureHttps: boolean | 
       const label = [chainOnSite.parsed.title, chainOnSite.parsed.siteName, ...chainOnSite.parsed.headings].find((l) => l?.toLowerCase().includes(chain!))!;
       signals.push({ key: "independent_shop", value: "no", sourceUrl: chainOnSite.url, excerpt: clip(`Franchise or chain brand "${chain}": ${label}`) });
       facts.push({ field: "business_type", value: "chain or franchise", state: "verified", sourceUrl: chainOnSite.url, excerpt: clip(label) });
+    } else if (dealerText && independent) {
+      facts.push({
+        field: "business_type",
+        value: null,
+        state: "uncertain",
+        sourceUrl: dealerText.page.url,
+        excerpt: quote(dealerText.text, dealerText.index, dealerText.match[0].length),
+        note: "The site states it is independent but also shows dealership activity. Check by hand.",
+      });
     } else if (dealerText) {
-      const ex = quote(dealerText.page.parsed.text, dealerText.index, dealerText.match[0].length);
-      signals.push({ key: "independent_shop", value: "no", sourceUrl: dealerText.page.url, excerpt: clip(`Dealership (${make}): ${ex}`) });
+      const ex = quote(dealerText.text, dealerText.index, dealerText.match[0].length);
+      signals.push({ key: "independent_shop", value: "no", sourceUrl: dealerText.page.url, excerpt: clip(`Dealership${make ? ` (${make})` : ""}: ${ex}`) });
       facts.push({ field: "business_type", value: "dealership", state: "verified", sourceUrl: dealerText.page.url, excerpt: ex });
-    } else if (independent && !chain && !make) {
-      const ex = quote(independent.page.parsed.text, independent.index, independent.match[0].length);
+    } else if (independent && !chain) {
+      const ex = quote(independent.text, independent.index, independent.match[0].length);
       signals.push({ key: "independent_shop", value: "yes", sourceUrl: independent.page.url, excerpt: ex });
       facts.push({ field: "business_type", value: "independent", state: "verified", sourceUrl: independent.page.url, excerpt: ex });
     } else {
       facts.push({
         field: "business_type",
-        value: chain ? "possibly a chain" : make ? "possibly a dealership" : null,
+        value: chain ? "possibly a chain" : null,
         state: "uncertain",
         note: chain
           ? `"${chain}" appears in the provider data but not on the website. Check ownership by hand.`
-          : make
-            ? `The site names ${make} but shows no dealership wording. Check by hand.`
-            : "No franchise or dealer brand found, but the site doesn't state it is independent. Check ownership by hand.",
+          : "No franchise brand or dealership activity found, but the site doesn't state it is independent. Check ownership by hand.",
       });
     }
 

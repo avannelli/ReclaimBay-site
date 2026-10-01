@@ -15,7 +15,7 @@ import { RESEARCH_LIMITS, type PoliteFetcher, type SourceRecord } from "./fetche
 import { parseHtml } from "./html.js";
 
 /** Bumped whenever a rule changes, so runs say which rules produced them. */
-export const RESEARCH_VERSION = "r1";
+export const RESEARCH_VERSION = "r2";
 
 export type ResearchOutcome =
   | "website_verified"
@@ -23,6 +23,8 @@ export type ResearchOutcome =
   | "website_mismatch"
   | "no_website"
   | "website_unreachable"
+  | "access_blocked"
+  /** Older runs (r1) only; blocked sites are now "access_blocked". */
   | "robots_disallowed";
 
 export const OUTCOME_LABELS: Record<ResearchOutcome, string> = {
@@ -31,8 +33,17 @@ export const OUTCOME_LABELS: Record<ResearchOutcome, string> = {
   website_mismatch: "Website looks like another business",
   no_website: "No website known",
   website_unreachable: "Website unreachable",
+  access_blocked: "Website blocks automated access",
   robots_disallowed: "Website disallows automated reading",
 };
+
+/** Shown on every run whose website refused automated access. */
+export const BLOCKED_WARNING = "Website blocks automated access; verify manually.";
+
+/** Why the first page wasn't read: the site refused automated access, or it couldn't be reached. */
+function failureKind(note: string | null | undefined): "blocked" | "unreachable" {
+  return /^(skipped|blocked)/.test(note ?? "") ? "blocked" : "unreachable";
+}
 
 export interface ResearchResult {
   /** "failed" only when the website could not be read at all. */
@@ -130,30 +141,42 @@ export async function researchCandidate(subject: Subject, fetcher: PoliteFetcher
     return r;
   };
 
-  // The page the website points to; if it fails and has a path, the site root.
+  // The page the website points to; if it answered with an ordinary HTTP
+  // error (e.g. 404) and has a path, the site root. Never after a block
+  // (401/403, robots.txt) or when the site can't be reached at all.
   let first = await read(subject.website, "home");
   if (!pages.length) {
     const root = new URL(subject.website);
-    if (root.pathname !== "/" && !first.source.note?.startsWith("skipped") && first.source.note !== "failed: site unreachable") {
+    const httpError = first.result?.status !== null && first.result?.status !== undefined && failureKind(first.source.note) === "unreachable";
+    if (root.pathname !== "/" && httpError) {
       root.pathname = "/";
       root.search = "";
       first = await read(root.toString(), "home");
     }
   }
   if (!pages.length) {
-    const blocked = first.source.note?.startsWith("skipped") ?? false;
+    // Blocked (HTTP 401/403, robots.txt) is not dead and not a mismatch: the
+    // site exists but refuses automated reading. Unreachable (DNS,
+    // connection, timeout, server error) is a failed run that can be retried.
+    const blocked = failureKind(first.source.note) === "blocked";
     const note = first.source.note ?? "could not be read";
+    const how = /robots\.txt/.test(note) ? "its robots.txt" : `HTTP ${first.result?.status ?? ""}`.trim();
     return {
       ...base,
       status: blocked ? "completed" : "failed",
-      outcome: blocked ? "robots_disallowed" : "website_unreachable",
+      outcome: blocked ? "access_blocked" : "website_unreachable",
       error: blocked ? null : `The website could not be read: ${note}.`,
       pagesFetched: 0,
       facts: [
-        { field: "website", value: subject.website, state: "uncertain", note: blocked ? "The site's robots.txt doesn't allow automated reading; check it by hand." : `Could not be read (${note}).` },
+        {
+          field: "website",
+          value: subject.website,
+          state: "uncertain",
+          note: blocked ? `The website blocks automated access (${how}); it was not read. Verify it by hand.` : `Could not be read (${note}).`,
+        },
         ...providerFacts(subject),
       ],
-      warnings: [blocked ? "The website disallows automated reading (robots.txt). Research it by hand." : "The website could not be loaded. Try again later, or check it by hand."],
+      warnings: [blocked ? BLOCKED_WARNING : "The website could not be loaded. Try again later, or check it by hand."],
     };
   }
 

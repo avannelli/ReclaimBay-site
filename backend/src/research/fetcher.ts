@@ -223,6 +223,10 @@ export class PoliteFetcher {
     const { result: r, attempts } = await this.request(url, RESEARCH_LIMITS.timeoutMs);
     const retried = attempts > 1 ? " (after a retry)" : "";
     if (r.error) return { source: this.record("website", url, r, false, `failed: ${r.error}${retried}`), html: null, result: r };
+    if (r.status === 401 || r.status === 403) {
+      // The site refuses automated access: blocked, not dead. Never retried.
+      return { source: this.record("website", url, r, false, `blocked: HTTP ${r.status} (automated access refused)`), html: null, result: r };
+    }
     if (r.status === null || r.status < 200 || r.status >= 300) {
       return { source: this.record("website", url, r, false, `HTTP ${r.status}${retried}`), html: null, result: r };
     }

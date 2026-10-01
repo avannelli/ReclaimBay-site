@@ -349,14 +349,14 @@ describe("failures, retries, and robots.txt", () => {
   test("a site that disallows crawling is not read at all", async () => {
     const s = server({ "https://saviersauto.example.com/robots.txt": { status: 200, body: "User-agent: *\nDisallow: /\n" } });
     const r = await researchCandidate(subject(), s.fetcher(), TODAY);
-    assert.deepEqual([r.status, r.outcome], ["completed", "robots_disallowed"]);
+    assert.deepEqual([r.status, r.outcome], ["completed", "access_blocked"], "a robots.txt block is 'automated access blocked'");
     assert.deepEqual(s.calls, ["https://saviersauto.example.com/robots.txt"]);
   });
 
   test("an unreachable robots.txt (server error) means the site is skipped, to be safe", async () => {
     const s = server({ "https://saviersauto.example.com/robots.txt": { status: 500, body: "" } });
     const r = await researchCandidate(subject(), s.fetcher(), TODAY);
-    assert.equal(r.outcome, "robots_disallowed");
+    assert.equal(r.outcome, "access_blocked");
     assert.ok(!s.calls.includes("https://saviersauto.example.com/"));
   });
 
@@ -400,5 +400,231 @@ describe("real-data regressions", () => {
     assert.equal(await run(`<a href="/serviceappmt.aspx">Service</a>`), "no", "a booking URL path");
     assert.equal(await run(`<a href="/go">Book an Appointment</a>`), "no", "a booking action");
     assert.equal(await run(`<a href="/contact-us">Request a Quote</a>`), "yes", "a quote request is not booking");
+  });
+});
+
+/*
+ * Refinements from the 10-candidate real-data batch (2026-10-01):
+ * dealership evidence, the phone of this location, and blocked sites.
+ */
+
+const siteWith = (home: string): Record<string, Fixture> => ({
+  "https://saviersauto.example.com/robots.txt": { status: 404 },
+  "https://saviersauto.example.com/": { body: home },
+});
+
+describe("dealership evidence", () => {
+  const verify = "<p>(805) 555-0101 · 5577 Saviers Rd, Oxnard</p>";
+  const run = async (title: string, body: string, name = "Saviers Road Auto Repair") => {
+    const s = server(siteWith(page(title, `<h1>${name}</h1>${verify}${body}`)));
+    return researchCandidate(subject({ businessName: name }), s.fetcher(), TODAY);
+  };
+
+  test("HOUSE Automotive: an independent Porsche specialist comparing itself to a dealership is not a dealership", async () => {
+    const r = await run(
+      "HOUSE Automotive | Independent Porsche Service Center",
+      "<p>Whatever your Porsche needs, we handle it. At HOUSE you get the tools, training, and genuine parts of a dealership, without the dealership price.</p>",
+      "HOUSE Automotive",
+    );
+    assert.equal(r.outcome, "website_verified");
+    assert.notEqual(fact(r, "business_type")!.value, "dealership");
+    assert.equal(signal(r, "independent_shop")!.value, "yes", "explicit independent-shop language is respected");
+    assert.match(signal(r, "independent_shop")!.excerpt, /Independent Porsche Service Center/);
+    assert.ok(signal(r, "independent_shop")!.sourceUrl.startsWith("https://saviersauto.example.com/"), "the quote keeps its source");
+  });
+
+  test("an independent brand specialist that mentions dealerships stays independent", async () => {
+    const r = await run("Saviers Road Auto Repair | Independent BMW repair", "<p>Dealer-level service at independent prices. Skip the trip to the dealership.</p>");
+    assert.equal(signal(r, "independent_shop")!.value, "yes");
+    assert.notEqual(fact(r, "business_type")!.value, "dealership");
+  });
+
+  test("'independent Mercedes service' is an independence statement despite the make in between", async () => {
+    const r = await run("Saviers Road Auto Repair", "<p>Your independent Mercedes service specialists since 1990.</p>");
+    assert.equal(signal(r, "independent_shop")!.value, "yes");
+  });
+
+  test("an actual dealership (new inventory, certified pre-owned, test drives) is not independent", async () => {
+    const r = await run("Saviers Road Auto Repair | Toyota of Oxnard", "<p>Browse our new inventory and certified pre-owned vehicles. Schedule a test drive today.</p>");
+    assert.equal(signal(r, "independent_shop")!.value, "no");
+    assert.match(signal(r, "independent_shop")!.excerpt, /^Dealership \(toyota\): /i, "the make is only a label on the evidence");
+    assert.equal(fact(r, "business_type")!.value, "dealership");
+  });
+
+  test("a business identifying itself as a dealer is a dealership", async () => {
+    const r = await run("Saviers Road Auto Repair", "<p>We are your local Chevrolet dealer serving Oxnard.</p>");
+    assert.equal(signal(r, "independent_shop")!.value, "no");
+  });
+
+  test("a make in the title alone is not a dealership, and independence stays unknown", async () => {
+    const r = await run("Saviers Road Auto Repair | Honda & Acura Repair Oxnard", "<p>Honda and Acura repair, brakes, and maintenance.</p>");
+    assert.equal(signal(r, "independent_shop"), undefined, "neither dealer nor independent is established");
+    assert.equal(fact(r, "business_type")!.state, "uncertain");
+  });
+
+  test("the word 'dealership' in a comparison is never dealer evidence", async () => {
+    for (const body of [
+      "<p>Better than the dealership, at half the price.</p>",
+      "<p>Unlike a dealership, we explain every repair.</p>",
+      "<p>A trusted alternative to the dealership for over 20 years.</p>",
+      "<p>Dealership quality without the dealership price.</p>",
+    ]) {
+      const r = await run("Saviers Road Auto Repair", body);
+      assert.notEqual(fact(r, "business_type")!.value, "dealership", body);
+      assert.notEqual(signal(r, "independent_shop")?.value, "no", body);
+    }
+  });
+
+  test("independence and dealer activity on the same site: uncertain, not guessed", async () => {
+    const r = await run("Saviers Road Auto Repair | Independent Ford Service", "<p>Shop our new inventory and certified pre-owned trucks.</p>");
+    assert.equal(signal(r, "independent_shop"), undefined);
+    assert.equal(fact(r, "business_type")!.state, "uncertain");
+  });
+});
+
+describe("the phone of this location", () => {
+  const name = "<h1>Saviers Road Auto Repair</h1>";
+  const filler = "<p>" + "Quality repairs for every make and model. ".repeat(20) + "</p>";
+  const home = (body: string, head = "") => siteWith(page("Saviers Road Auto Repair", `${name}${body}`, head));
+
+  test("the provider's number, when the site lists it, is verified as before", async () => {
+    const s = server(home(`<p>Call (877) 555-0000 or (805) 555-0101. 5577 Saviers Rd.</p>`));
+    const r = await researchCandidate(subject(), s.fetcher(), TODAY);
+    assert.equal(r.contact.phone, "(805) 555-0101");
+    assert.equal(fact(r, "phone")!.state, "verified");
+    assert.match(fact(r, "phone")!.note!, /provider-reported number/);
+  });
+
+  test("multi-location site: the phone next to this location's address wins over the central toll-free number", async () => {
+    const s = server(
+      home(
+        `<p>Call (866) 656-5307 for all locations.</p>${filler}<p>Ventura: 9 Main St, (805) 555-0201</p>${filler}<p>Oxnard: 5577 Saviers Rd · (805) 555-0303</p>${filler}<p>Thousand Oaks: 3 Oak Ave · (805) 555-0404</p>`,
+      ),
+    );
+    const r = await researchCandidate(subject({ providerPhone: "+18059990000" }), s.fetcher(), TODAY);
+    assert.equal(r.outcome, "website_verified");
+    assert.equal(r.contact.phone, "(805) 555-0303");
+    assert.match(fact(r, "phone")!.note!, /next to this location's street address/);
+  });
+
+  test("HOUSE Automotive: side-by-side location cards; the number by this address in this area code is chosen", async () => {
+    const s = server(
+      home(
+        `<p>Call (866) 656-5307.</p>${filler}<div>Encino 16101 Ventura Blvd Encino, CA 91436 Mon–Fri: 8AM – 5PM (818) 403-3904 4.9 • 577 reviews</div>` +
+          `<div>Oxnard 5577 Saviers Rd Oxnard, CA 93033 Mon–Fri: 8AM – 5PM (805) 555-0303 4.9 • 223 reviews</div>${filler}<div>Pasadena (626) 740-3903 · (805) 929-1900 fleet line</div>`,
+      ),
+    );
+    const r = await researchCandidate(subject({ providerPhone: "+18056789769" }), s.fetcher(), TODAY);
+    assert.equal(r.contact.phone, "(805) 555-0303", "not the central toll-free number and not the neighbouring location's");
+    assert.match(fact(r, "phone")!.note!, /area code next to its street address/);
+  });
+
+  test("two numbers next to the address and none in this area code: uncertain, not the first", async () => {
+    const s = server(home(`${filler}<div>Encino (818) 403-3904</div><div>5577 Saviers Rd (213) 555-0303</div>${filler}`));
+    const r = await researchCandidate(subject({ providerPhone: "+18056789769" }), s.fetcher(), TODAY);
+    assert.equal(r.contact.phone, undefined);
+    assert.equal(fact(r, "phone")!.state, "uncertain");
+  });
+
+  test("a location's structured data with its address gives its phone", async () => {
+    const ld = `<script type="application/ld+json">{"@type":"AutoRepair","name":"Saviers Road Auto Repair","telephone":"(805) 555-0505","address":{"streetAddress":"5577 Saviers Rd","addressLocality":"Oxnard"}}</script>`;
+    const s = server(home(`<p>Call (877) 555-0000 or (805) 555-0606.</p>`, ld));
+    const r = await researchCandidate(subject({ providerPhone: null }), s.fetcher(), TODAY);
+    assert.equal(r.contact.phone, "(805) 555-0505");
+    assert.match(fact(r, "phone")!.note!, /business data/);
+  });
+
+  test("the only number in this location's area code is chosen when nothing else ties a phone to it", async () => {
+    const s = server(home(`<p>Call (877) 555-0000, (213) 555-0700 or (805) 555-0800.</p>${filler}${filler}<footer>5577 Saviers Rd, Oxnard</footer>`));
+    const r = await researchCandidate(subject({ providerPhone: "+18059990000" }), s.fetcher(), TODAY);
+    assert.equal(r.contact.phone, "(805) 555-0800");
+    assert.match(fact(r, "phone")!.note!, /area code/);
+  });
+
+  test("a central toll-free number beside one local number: the local one is chosen, not the first", async () => {
+    const s = server(home(`<p>Call (866) 656-5307 or (805) 555-0900.</p>${filler}${filler}<footer>5577 Saviers Rd</footer>`));
+    const r = await researchCandidate(subject({ providerPhone: null }), s.fetcher(), TODAY);
+    assert.equal(r.contact.phone, "(805) 555-0900");
+    assert.match(fact(r, "phone")!.note!, /only local number/);
+  });
+
+  test("a site whose only number is toll-free: that is the business's published phone", async () => {
+    const s = server(home(`<p>Call (866) 656-5307.</p><p>5577 Saviers Rd</p>`));
+    const r = await researchCandidate(subject({ providerPhone: null }), s.fetcher(), TODAY);
+    assert.equal(r.contact.phone, "(866) 656-5307");
+  });
+
+  test("several numbers and no tie to this location: no phone is guessed; it is uncertain and flagged", async () => {
+    const s = server(home(`<p>(805) 555-1001 · (805) 555-1002 · (805) 555-1003 · (626) 555-1004</p>${filler}${filler}<footer>5577 Saviers Rd, Oxnard</footer>`));
+    const r = await researchCandidate(subject({ providerPhone: "+18059990000" }), s.fetcher(), TODAY);
+    assert.equal(r.outcome, "website_verified", "name and address still confirm the website");
+    assert.equal(r.contact.phone, undefined);
+    assert.equal(fact(r, "phone")!.state, "uncertain");
+    assert.match(fact(r, "phone")!.value!, /\(805\) 555-1001/);
+    assert.ok(r.warnings.some((w) => /none could be tied to this location/.test(w)));
+    assert.notEqual(fact(r, "provider_phone")!.state, "verified", "the provider phone is not confirmed by another number");
+  });
+
+  test("two unrelated numbers, no provider phone, no address tie: uncertain", async () => {
+    const s = server(home(`<p>(213) 555-2001 · (626) 555-2002</p>${filler}${filler}<footer>5577 Saviers Rd</footer>`));
+    const r = await researchCandidate(subject({ providerPhone: null }), s.fetcher(), TODAY);
+    assert.equal(r.contact.phone, undefined);
+    assert.equal(fact(r, "phone")!.state, "uncertain");
+  });
+});
+
+describe("blocked vs unreachable sites", () => {
+  for (const status of [401, 403]) {
+    test(`HTTP ${status}: automated access blocked, recorded clearly, no root retry, not dead and not a mismatch`, async () => {
+      const s = server({
+        "https://saviersauto.example.com/robots.txt": { status: 404 },
+        "https://saviersauto.example.com/locations/oxnard": { status, body: "Forbidden" },
+      });
+      const r = await researchCandidate(subject({ website: "https://saviersauto.example.com/locations/oxnard" }), s.fetcher(), TODAY);
+      assert.deepEqual([r.status, r.outcome, r.error], ["completed", "access_blocked", null]);
+      assert.deepEqual(r.warnings, ["Website blocks automated access; verify manually."]);
+      assert.ok(!s.calls.includes("https://saviersauto.example.com/"), "no root retry after a block");
+      assert.equal(s.calls.filter((u) => u.endsWith("/oxnard")).length, 1, "a block is never retried");
+      const src = r.sources.find((x) => x.kind === "website")!;
+      assert.equal(src.httpStatus, status);
+      assert.equal(src.note, `blocked: HTTP ${status} (automated access refused)`);
+      assert.match(fact(r, "website")!.note!, new RegExp(`blocks automated access \\(HTTP ${status}\\)`));
+      assert.equal(fact(r, "website")!.state, "uncertain");
+    });
+  }
+
+  test("a robots.txt disallow is 'automated access blocked'", async () => {
+    const s = server({ "https://saviersauto.example.com/robots.txt": { status: 200, body: "User-agent: *\nDisallow: /\n" } });
+    const r = await researchCandidate(subject(), s.fetcher(), TODAY);
+    assert.deepEqual([r.status, r.outcome], ["completed", "access_blocked"]);
+    assert.deepEqual(r.warnings, ["Website blocks automated access; verify manually."]);
+    assert.match(fact(r, "website")!.note!, /its robots\.txt/);
+  });
+
+  test("a DNS failure on the page is 'unreachable' (a failed run), not blocked", async () => {
+    const s = server({ "https://saviersauto.example.com/robots.txt": { status: 404 }, "https://saviersauto.example.com/": { error: "dns" } });
+    const r = await researchCandidate(subject(), s.fetcher(), TODAY);
+    assert.deepEqual([r.status, r.outcome], ["failed", "website_unreachable"]);
+  });
+
+  test("a timeout is 'unreachable' after one retry, and the root is not tried", async () => {
+    const s = server({ "https://saviersauto.example.com/robots.txt": { status: 404 }, "https://saviersauto.example.com/shop/oxnard": { error: "timeout" } });
+    const r = await researchCandidate(subject({ website: "https://saviersauto.example.com/shop/oxnard" }), s.fetcher(), TODAY);
+    assert.deepEqual([r.status, r.outcome], ["failed", "website_unreachable"]);
+    assert.equal(s.calls.filter((u) => u.endsWith("/shop/oxnard")).length, 2);
+    assert.ok(!s.calls.includes("https://saviersauto.example.com/"));
+  });
+
+  test("a connection failure is 'unreachable'", async () => {
+    const s = server({ "https://saviersauto.example.com/robots.txt": { status: 404 }, "https://saviersauto.example.com/": { error: "connection" } });
+    const r = await researchCandidate(subject(), s.fetcher(), TODAY);
+    assert.deepEqual([r.status, r.outcome], ["failed", "website_unreachable"]);
+  });
+
+  test("an ordinary 404 on a deep link still falls back to the site root", async () => {
+    const s = server({ ...goodSite(), "https://saviersauto.example.com/old-page": { status: 404, body: "gone" } });
+    const r = await researchCandidate(subject({ website: "https://saviersauto.example.com/old-page" }), s.fetcher(), TODAY);
+    assert.equal(r.outcome, "website_verified");
+    assert.ok(s.calls.includes("https://saviersauto.example.com/"));
   });
 });
