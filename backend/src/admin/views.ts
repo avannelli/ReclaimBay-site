@@ -1,3 +1,4 @@
+import { LOGO_FULL_REVERSE, LOGO_LOCKUP_REVERSE } from "./brandArt.js";
 import { STYLE } from "./styles.js";
 import type { ProspectRow, Summary } from "./stats.js";
 import { emptyState, esc, extLink, fmtDate, pageHead, section } from "./ui.js";
@@ -10,9 +11,12 @@ const head = (title: string) => `<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="robots" content="noindex,nofollow"><title>${esc(title)}</title><style>${STYLE}</style></head>`;
 
-/** Unauthenticated pages (login, disabled): a plain centered card. */
+/** Unauthenticated pages (login, disabled): the full logo over a plain centered card. */
 export function page(title: string, body: string): string {
-  return `${head(title)}<body class="login">${body}</body></html>`;
+  return `${head(title)}<body class="login"><div class="login-wrap">
+<div class="login-logo">${LOGO_FULL_REVERSE}</div>
+${body}
+</div></body></html>`;
 }
 
 export type AdminSection = "funnel" | "prospects" | "discovery";
@@ -31,7 +35,7 @@ export function appPage(title: string, active: AdminSection, body: string): stri
   return `${head(title)}<body>
 <a class="skip" href="#main">Skip to content</a>
 <header class="appbar"><div class="appbar-in">
-  <a class="brand" href="/admin" aria-label="ReclaimBay admin home">RECLAIM<b>BAY</b></a>
+  <a class="brand" href="/admin" aria-label="ReclaimBay admin home">${LOGO_LOCKUP_REVERSE}</a>
   <nav class="nav" aria-label="Admin sections">${links}</nav>
   <form method="post" action="/admin/logout"><button class="btn-quiet" type="submit">Sign out</button></form>
 </div></header>
@@ -43,7 +47,6 @@ export function loginPage(error?: string): string {
   return page(
     "Sign in · ReclaimBay admin",
     `<div class="login-card">
-  <div class="brand-line">RECLAIM<b>BAY</b></div>
   <h1>Admin sign in</h1>
   <form method="post" action="/admin/login">
     <div class="field">
@@ -60,7 +63,7 @@ export function loginPage(error?: string): string {
 export function disabledPage(): string {
   return page(
     "Admin disabled · ReclaimBay",
-    `<div class="login-card"><div class="brand-line">RECLAIM<b>BAY</b></div><h1>Admin disabled</h1>
+    `<div class="login-card"><h1>Admin disabled</h1>
 <p class="lede">ADMIN_SECRET is not configured (or is shorter than the minimum length) on the server.</p></div>`,
   );
 }

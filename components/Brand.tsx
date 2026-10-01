@@ -1,105 +1,95 @@
-import type { CSSProperties } from "react";
-import { BRAND, MARK } from "@/lib/brand";
+import Image from "next/image";
+import { BRAND, LOGO } from "@/lib/brand";
+import { LOGO_BOX, LOGO_GRADIENTS, LOGO_PATHS, LOGO_SOLIDS, type Gradient } from "@/lib/brandArt";
 
 /*
- * ReclaimBay brand pieces. With `animated`, the mark plays the upload
- * transition: bay fades in, bars rise, the arrow swoops up (see the rb-*
- * rules in globals.css, which do nothing under reduced motion).
+ * ReclaimBay logo pieces. Both render the approved artwork (lib/brand.ts):
+ * BrandLogo as a static vector file, AnimatedBrandLockup inline so its parts
+ * can play the upload transition (see the rb-* rules in globals.css, which
+ * do nothing under reduced motion).
  */
 
-const delay = (ms: number): CSSProperties => ({ animationDelay: `${ms}ms` });
-
-export function BrandMark({
-  className = "h-8 w-10",
-  tone = "light",
-  animated = false,
+/** The logo as an image. Callers set only a height; the width follows. */
+export function BrandLogo({
+  variant = "lockup",
+  className = "h-10",
+  eager = false,
 }: {
+  variant?: keyof typeof LOGO;
   className?: string;
-  /** "dark" for navy backgrounds. */
-  tone?: "light" | "dark";
-  animated?: boolean;
+  /** Above the fold: load it first. */
+  eager?: boolean;
 }) {
-  const bay = tone === "dark" ? "#ffffff" : "var(--color-navy)";
-  const bar = tone === "dark" ? "#94a3b8" : "var(--color-ink-2)";
+  const file = LOGO[variant];
+  return (
+    <Image
+      src={file.src}
+      alt={variant === "full" ? `${BRAND.name}: ${BRAND.descriptor}` : BRAND.name}
+      width={file.width}
+      height={file.height}
+      className={`w-auto max-w-full ${className}`}
+      loading={eager ? "eager" : "lazy"}
+      fetchPriority={eager ? "high" : "auto"}
+      draggable={false}
+    />
+  );
+}
+
+function LinearGradient({ id, g }: { id: string; g: Gradient }) {
+  const span = g.to - g.from;
+  const axis = g.axis === "y" ? { x1: 0, y1: g.from, x2: 0, y2: g.to } : { x1: g.from, y1: 0, x2: g.to, y2: 0 };
+  return (
+    <linearGradient id={id} gradientUnits="userSpaceOnUse" {...axis}>
+      {g.stops.map(([at, color]) => (
+        <stop key={at} offset={(at - g.from) / span} stopColor={color} />
+      ))}
+    </linearGradient>
+  );
+}
+
+/**
+ * The mark and wordmark, inline, for the upload transition: the garage
+ * fades in, the bars rise, the arrow sweeps up, and the wordmark fades in.
+ * Rendered once per page, so its gradient ids are fixed.
+ */
+export function AnimatedBrandLockup({ className = "h-14" }: { className?: string }) {
+  const [x, y, w, h] = LOGO_BOX.lockup;
+  const id = (part: string) => `rb-t-${part}`;
   return (
     <svg
-      aria-hidden
-      viewBox={`0 0 ${MARK.width} ${MARK.height}`}
-      className={`${animated ? "rb-anim" : ""} ${className}`}
+      role="img"
+      aria-label={BRAND.name}
+      viewBox={`${x} ${y} ${w} ${h}`}
+      className={`rb-anim w-auto max-w-full ${className}`}
+      style={{ aspectRatio: `${w} / ${h}` }}
     >
-      <path
-        className="rb-bay"
-        d={MARK.bay}
-        fill="none"
-        stroke={bay}
-        strokeWidth={MARK.stroke.bay}
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-      {MARK.bars.map(([x, top], i) => (
-        <rect
-          key={x}
+      <defs>
+        <LinearGradient id={id("arrow")} g={LOGO_GRADIENTS.arrow} />
+        <LinearGradient id={id("house")} g={LOGO_GRADIENTS.house} />
+        <LinearGradient id={id("bay")} g={LOGO_GRADIENTS.bay} />
+        {LOGO_GRADIENTS.bars.map((g, i) => (
+          <LinearGradient key={i} id={id(`bar${i}`)} g={g} />
+        ))}
+      </defs>
+      {/* The arrow's tail runs under the garage post, so it is drawn first. */}
+      <g className="rb-lift">
+        <path className="rb-arrow" fillRule="evenodd" fill={`url(#${id("arrow")})`} d={LOGO_PATHS.arrow} />
+      </g>
+      <path className="rb-bay" fillRule="evenodd" fill={`url(#${id("house")})`} d={LOGO_PATHS.house} />
+      {LOGO_PATHS.bars.map((d, i) => (
+        <path
+          key={i}
           className="rb-bar"
-          style={animated ? delay(160 + i * 90) : undefined}
-          x={x}
-          y={top}
-          width={MARK.barWidth}
-          height={MARK.floor - top}
-          rx="0.9"
-          fill={bar}
+          style={{ animationDelay: `${160 + i * 80}ms` }}
+          fillRule="evenodd"
+          fill={`url(#${id(`bar${i}`)})`}
+          d={d}
         />
       ))}
-      <g className="rb-lift">
-        <path
-          className="rb-arrow"
-          d={MARK.arrow}
-          pathLength={1}
-          fill="none"
-          stroke="var(--color-opportunity)"
-          strokeWidth={MARK.stroke.arrow}
-          strokeLinecap="round"
-        />
-        <path
-          className="rb-head"
-          d={MARK.head}
-          fill="var(--color-opportunity)"
-          stroke="var(--color-opportunity)"
-          strokeWidth="1"
-          strokeLinejoin="round"
-        />
+      <g className="rb-word">
+        <path fillRule="evenodd" fill={LOGO_SOLIDS.reclaim} d={LOGO_PATHS.reclaim} />
+        <path fillRule="evenodd" fill={`url(#${id("bay")})`} d={LOGO_PATHS.bay} />
       </g>
     </svg>
-  );
-}
-
-/** "Reclaim" in navy, "Bay" in amber. Size comes from the caller. */
-export function BrandWordmark({
-  className = "",
-  tone = "light",
-}: {
-  className?: string;
-  tone?: "light" | "dark";
-}) {
-  const [first, second] = BRAND.nameParts;
-  return (
-    <span className={`font-bold tracking-tight ${className}`}>
-      <span className={tone === "dark" ? "text-white" : "text-navy"}>{first}</span>
-      <span className="text-opportunity">{second}</span>
-    </span>
-  );
-}
-
-/** Mark and wordmark for the header; the descriptor joins from `sm` up. */
-export function BrandLockup() {
-  return (
-    <span className="inline-flex items-center gap-3">
-      <BrandMark className="h-10 w-[3.125rem] shrink-0 sm:h-11 sm:w-[3.4375rem]" />
-      <span className="flex flex-col">
-        <BrandWordmark className="text-2xl leading-7 sm:text-[1.75rem] sm:leading-8" />
-        <span className="hidden text-[13px] leading-4 text-ink-3 sm:block">
-          {BRAND.descriptor}
-        </span>
-      </span>
-    </span>
   );
 }

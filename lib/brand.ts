@@ -1,8 +1,6 @@
 /** Product naming used across the UI, metadata, and exports. */
 export const BRAND = {
   name: "ReclaimBay",
-  /** The wordmark is set in two colors: "Reclaim" navy, "Bay" amber. */
-  nameParts: ["Reclaim", "Bay"],
   descriptor: "Declined-work intelligence for repair shops",
   /** Used once, in the footer. */
   tagline: "Bring declined work back into view.",
@@ -11,28 +9,21 @@ export const BRAND = {
 } as const;
 
 /*
- * The ReclaimBay mark, on a 40 x 32 grid: a service-bay outline (two posts
- * and a roofline), three rising bars inside it, and an amber arrow swooping
- * up and out through the open roof: declined work brought back as value.
+ * The logo is the approved artwork in brand/reclaimbay-logo.png: a garage
+ * outline with rising bars and a gold arrow, "Reclaim" in navy, "Bay" in
+ * gold, and the descriptor as its tagline. It is never redrawn by hand.
+ * Everything else is traced or rendered from it:
  *
- * components/Brand.tsx renders this as SVG, the favicons are generated from
- * it, and lib/pdfReport.ts redraws it with the same numbers.
+ *   public/brand/*.svg    vector logo files (full, lockup without tagline,
+ *                         mark); full and lockup also in a reverse version
+ *                         for navy
+ *   lib/brandArt.ts       the same vectors, for the inline animated lockup
+ *   lib/brandRaster.ts    PNG renders for the PDF report
+ *   app/icon.svg, favicon.ico, apple-icon.png   the mark on a navy tile
  */
-export const MARK = {
-  width: 40,
-  height: 32,
-  /** Left post, roofline, and right post. */
-  bay: "M3.75 30.5V12.25L17.5 6.25l5 2.25M36.25 30.5V14.5",
-  /** Bars as [x, top]; all stand on `floor` and share `barWidth`. */
-  bars: [
-    [9.25, 24.5],
-    [16.25, 21],
-    [23.25, 17],
-  ],
-  barWidth: 4.25,
-  floor: 30.5,
-  /** The swoop and its arrowhead. */
-  arrow: "M6.5 21.5C15 21 25.5 16 32.25 7.25",
-  head: "M36.4 2.6 29.7 4.1l5.25 5.1z",
-  stroke: { bay: 3.25, arrow: 2.75 },
+export const LOGO = {
+  /** Mark and wordmark: headers, footers, compact places. */
+  lockup: { src: "/brand/reclaimbay-lockup.svg", width: 1824, height: 361 },
+  /** The full logo with its tagline: where it is large enough to read. */
+  full: { src: "/brand/reclaimbay-logo.svg", width: 1824, height: 361 },
 } as const;

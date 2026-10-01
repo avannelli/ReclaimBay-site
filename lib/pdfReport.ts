@@ -1,6 +1,6 @@
 import type { jsPDF } from "jspdf";
 import { RECENT_DAYS } from "./analyze";
-import { BRAND, MARK } from "./brand";
+import { BRAND } from "./brand";
 import {
   allocatePercents,
   formatAge,
@@ -19,7 +19,7 @@ import type { Analysis, Bucket, Opportunity } from "./types";
 
 // Mirrors the color tokens in app/globals.css.
 const C = {
-  navy: "#0b1f33",
+  navy: "#0c253b",
   navyDeep: "#071725",
   amber: "#d9901a",
   amberHover: "#b96f0d",
@@ -36,7 +36,7 @@ const C = {
   slate100: "#f1f5f9",
   slate300: "#cbd5e1",
   slate400: "#94a3b8",
-  navyBar: "#304152", // navy at 85% on white
+  navyBar: "#30465a", // navy at 85% on white
   white: "#ffffff",
 };
 
@@ -74,12 +74,22 @@ const plural = (n: number, one: string, many: string) =>
   `${n.toLocaleString("en-US")} ${n === 1 ? one : many}`;
 
 export async function downloadSummaryPdf(input: SummaryInput, saveAs: string) {
-  const { jsPDF: JsPDF } = await import("jspdf");
+  const [{ jsPDF: JsPDF }, logos] = await Promise.all([import("jspdf"), import("./brandRaster")]);
   const doc = new JsPDF({ unit: "pt", format: "letter", compress: true });
   doc.setProperties({ title: `${BRAND.name} declined-work report`, creator: BRAND.name });
-  new SummaryWriter(doc, input).write();
+  new SummaryWriter(doc, input, { full: logos.PDF_LOGO_FULL, lockup: logos.PDF_LOGO_LOCKUP }).write();
   doc.save(saveAs);
 }
+
+/** A PNG render of the logo (lib/brandRaster.ts). */
+interface LogoImage {
+  data: string;
+  width: number;
+  height: number;
+}
+
+/** Where the wordmark's baseline sits, as a fraction of the logo's height. */
+const LOGO_BASELINE = 0.709;
 
 interface TextOpts {
   size: number;
@@ -98,6 +108,7 @@ class SummaryWriter {
   constructor(
     private readonly doc: jsPDF,
     private readonly input: SummaryInput,
+    private readonly logos: { full: LogoImage; lockup: LogoImage },
   ) {
     this.a = input.analysis;
     this.money = moneyFormat(input.analysis.showCents);
@@ -166,44 +177,13 @@ class SummaryWriter {
   }
 
   /**
-   * The ReclaimBay mark (lib/brand.ts MARK), drawn as vectors for a navy
-   * background: white bay outline, slate bars, amber arrow. `h` is its
-   * height; the width follows the mark's 40 x 32 proportions.
+   * The ReclaimBay logo in its reverse version, for the navy bands. Placed so
+   * its wordmark sits on `baseline`; `h` is its height. Returns its width.
    */
-  private mark(x: number, y: number, h: number) {
-    const s = h / MARK.height;
-    const d = this.doc;
-    const at = (px: number, py: number) => [x + px * s, y + py * s] as const;
-
-    // Bay: left post and roofline, then the right post (mirrors MARK.bay).
-    d.setLineCap("round");
-    d.setLineJoin("round");
-    d.setLineWidth(MARK.stroke.bay * s);
-    d.setDrawColor(C.white);
-    d.lines([[0, -18.25 * s], [13.75 * s, -6 * s], [5 * s, 2.25 * s]], ...at(3.75, 30.5));
-    d.line(...at(36.25, 30.5), ...at(36.25, 14.5));
-
-    for (const [bx, top] of MARK.bars) {
-      this.rect(...at(bx, top), MARK.barWidth * s, (MARK.floor - top) * s, C.slate400, 0.9 * s);
-    }
-
-    // Arrow swoop and head (mirrors MARK.arrow and MARK.head).
-    d.setDrawColor(C.amber);
-    d.setLineWidth(MARK.stroke.arrow * s);
-    d.lines([[8.5 * s, -0.5 * s, 19 * s, -5.5 * s, 25.75 * s, -14.25 * s]], ...at(6.5, 21.5));
-    d.setFillColor(C.amber);
-    d.triangle(...at(36.4, 2.6), ...at(29.7, 4.1), ...at(34.95, 9.2), "F");
-    d.setLineCap("butt");
-    d.setLineJoin("miter");
-  }
-
-  /** "Reclaim" in white, "Bay" in amber; returns the wordmark's width. */
-  private wordmark(x: number, y: number, size: number) {
-    const [first, second] = BRAND.nameParts;
-    this.text(first, x, y, { size, bold: true, color: C.white });
-    const w = this.width(first, size, true);
-    this.text(second, x + w, y, { size, bold: true, color: C.amber });
-    return w + this.width(second, size, true);
+  private logo(img: LogoImage, x: number, baseline: number, h: number) {
+    const w = (h * img.width) / img.height;
+    this.doc.addImage(img.data, "PNG", x, baseline - LOGO_BASELINE * h, w, h, undefined, "NONE");
+    return w;
   }
 
   private dot(x: number, y: number, color: string, r = 2.4) {
@@ -217,9 +197,8 @@ class SummaryWriter {
     this.doc.addPage();
     this.rect(0, 0, PAGE_W, 26, C.navy);
     this.rect(0, 26, PAGE_W, 1.2, C.amber);
-    this.mark(M, 6.5, 13);
-    const wm = this.wordmark(M + 22, 17, 8.5);
-    this.text("Declined-work report", M + 22 + wm + 8, 17, {
+    const lw = this.logo(this.logos.lockup, M, 17, 15);
+    this.text("Declined-work report", M + lw + 8, 17, {
       size: 8,
       color: C.slate400,
     });
@@ -304,12 +283,8 @@ class SummaryWriter {
     this.rect(0, 0, PAGE_W, 78, C.navy);
     this.rect(0, 78, PAGE_W, 2, C.amber);
 
-    this.mark(M, 23, 27);
-    this.wordmark(M + 44, 36, 15);
-    this.text(BRAND.descriptor, M + 44, 50, {
-      size: 9,
-      color: C.slate400,
-    });
+    // The full logo, tagline included.
+    this.logo(this.logos.full, M, 48, 44);
 
     this.text(`Analyzed ${formatDateTime(analyzedAt)}`, M + W, 36, {
       size: 8.5,
