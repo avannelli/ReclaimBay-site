@@ -163,7 +163,7 @@ dl.kv dd { margin:0; overflow-wrap:anywhere; min-width:0; }
 .v-big .pill { font-size:13px; padding:3px 10px; }
 
 /* ---------- tables ---------- */
-.scroll { overflow-x:auto; background:var(--surface); border:1px solid var(--line); border-radius:var(--radius); box-shadow:var(--shadow); }
+.scroll { position:relative; overflow-x:auto; background:var(--surface); border:1px solid var(--line); border-radius:var(--radius); box-shadow:var(--shadow); }
 table.tbl { width:100%; border-collapse:collapse; }
 .tbl th { text-align:left; font-size:11.5px; font-weight:700; letter-spacing:.04em; text-transform:uppercase; color:var(--muted); background:var(--surface-2); padding:9px 12px; border-bottom:1px solid var(--line); white-space:nowrap; }
 .tbl td { padding:10px 12px; border-bottom:1px solid var(--line); vertical-align:top; }
@@ -175,7 +175,7 @@ table.tbl { width:100%; border-collapse:collapse; }
 .tbl tr.attn td:first-child { box-shadow:inset 3px 0 0 var(--amber); }
 .tbl tr.hl td { background:var(--accent-soft); }
 .tbl tr.zero td { color:var(--muted); }
-.tbl td .sub { font-size:12px; color:var(--muted); margin-top:1px; }
+.tbl td .sub { font-size:12px; color:var(--muted); margin-top:1px; overflow-wrap:anywhere; }
 .tbl td .sub a, .src a { color:var(--muted); text-decoration:none; } .tbl td .sub a:hover, .src a:hover { color:var(--accent); text-decoration:underline; }
 .score-cell { white-space:nowrap; } .score-cell b { font-size:15px; font-variant-numeric:tabular-nums; } .score-cell .of { color:var(--muted); font-size:12px; }
 .tbl tfoot td { background:var(--surface-2); border-top:1px solid var(--line); font-weight:650; }

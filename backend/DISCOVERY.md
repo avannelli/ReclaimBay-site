@@ -1,4 +1,4 @@
-# Discovery and research (Milestone 3)
+# Discovery and research (Milestones 3 to 5)
 
 Discovery helps find independent repair shops that may fit ReclaimBay. It
 never decides who is a good lead. Every business moves through the same
@@ -15,6 +15,16 @@ discovery provider / manual entry
         -> PROSPECT at status New               (existing Prospect model)
 ```
 
+Large open-data providers (Overture Maps Places, since Milestone 5) feed the
+same path through a background pipeline, so no web request ever processes a
+dataset:
+
+```
+PROVIDER RELEASE  -> discovery:import (background job) -> staging (ProviderImport + ProviderPlace)
+                  -> queued DiscoveryRun -> worker processes it in batches
+                  -> clean + normalize -> deduplicate -> CANDIDATES -> (same path as above)
+```
+
 A discovered business is never a prospect until a person approves it. The
 Prospect model, its statuses, scoring weights, qualification rules, referral
 codes, and analytics attribution are unchanged; discovery only feeds them.
@@ -28,16 +38,24 @@ codes, and analytics attribution are unchanged; discovery only feeds them.
 | Duplicate detection (pure) | `src/discovery/dedupe.ts` |
 | Candidate lifecycle (pure) | `src/discovery/candidateStatus.ts` |
 | Candidate to Prospect mapping (pure) | `src/discovery/approval.ts` |
-| Provider registry and the fixture provider | `src/discovery/providers.ts` |
-| Persistence, runs, research, approval | `src/discovery/service.ts` |
+| Provider category codes and tiers (incl. the Overture classifier) | `src/discovery/categories.ts` |
+| Overture Places: release lookup, record mapping, importer | `src/discovery/overture.ts` |
+| Overture Places: reading the release (DuckDB, background only) | `src/discovery/overtureSource.ts` |
+| County boundaries for scoped imports (US Census TIGERweb) | `src/discovery/boundaries.ts` |
+| Provider registry (Overture, fixtures), fixture importer | `src/discovery/providers.ts` |
+| Release import, staging, and the staged (background) provider | `src/discovery/staging.ts` |
+| Persistence, runs (sync and queued), research, approval | `src/discovery/service.ts` |
+| Background job entry points | `src/scripts/importProvider.ts`, `src/scripts/processDiscoveryRuns.ts` |
 | Admin pages and routes | `src/admin/discoveryViews.ts`, `src/routes/adminDiscovery.ts` |
 
 ## Data model
 
 | Table | Holds |
 | ----- | ----- |
-| `DiscoveryRun` | One provider execution: provider, region, city, business type, status, and counters (found, created, skipped duplicates, flagged, invalid) |
-| `DiscoveryCandidate` | The business (name, website, city, state, postal code, country), public phone and email **each with a source URL**, normalized match keys, provenance (provider, provider ID, source URL, search, discovered time), review status, research and decision timestamps, duplicate flags, and the `prospectId` once approved |
+| `DiscoveryRun` | One provider execution: provider, region, city, business type, category tiers, status (`queued`, `running`, `completed`, `failed`), counters (found, created, skipped duplicates, flagged, invalid), the provider release, the staging import, and started / heartbeat / finished times |
+| `DiscoveryCandidate` | The business (name, website, street address, city, state, postal code, country, latitude and longitude), **verified** phone and email each with a source URL, the **unverified provider phone**, normalized match keys, provenance (provider, provider ID such as the Overture GERS ID, release, source URL, category and tier, brand, provider confidence, provider operating status, retrieval time, upstream sources and licenses, search, discovered time), review status, research and decision timestamps, duplicate flags, related-location links, and the `prospectId` once approved |
+| `ProviderImport` | One release loaded into staging: provider, release, scope (`US-CA` for a state, `US-CA/ventura` for one county), area label, status, record count, importer counters (`stats`: read, outside the area, excluded categories, malformed, ...), redacted error, times |
+| `ProviderPlace` | A minimized staged record of one import: provider ID, name, website, phone, street, city, county, state, postal code, country, coordinates, category and tier, brand, confidence, operating status, source URL, upstream sources. No raw payloads |
 | `CandidateSignal` | One recorded yes/no observation per signal key. **No row means unknown.** |
 | `CandidateEvidence` | Signal key, public source URL, excerpt of at most 280 characters, time |
 | `CandidateNote` | Append-only notes (at most 2,000 characters) |
@@ -47,6 +65,10 @@ by `scoreProspect()` in `src/scoring.ts` whenever a page or list needs them
 (`scoreCandidate()` in `approval.ts` is a thin adapter, not a second
 implementation), so a candidate can't disagree with scoring or drift from it.
 Only a Prospect keeps a cached score, as before.
+
+**Provenance fields are provider facts, not verdicts.** Category tier, brand,
+confidence, and operating status are what the provider reported. None of them
+feeds qualification or the score.
 
 The candidate's research source URLs are its evidence, phone, and email source
 URLs plus the discovery record URL. The detail page lists them together under
@@ -89,35 +111,82 @@ URLs plus the discovery record URL. The detail page lists them together under
 
 ## Deduplication
 
-Deterministic only: no fuzzy or AI matching. Every record is checked against
-all stored candidates and all prospects, plus the other records in the same run.
+Deterministic only: no AI matching. Every record is checked against all stored
+candidates and all prospects, plus the other records in the same run. A large
+run uses an in-memory index (`MatchIndex`) that compares each record only with
+records sharing a key or a nearby map cell, with results identical to a full scan.
 
-| Outcome | When | What happens |
-| ------- | ---- | ------------ |
-| `CONFIDENT_DUPLICATE` | The same provider **and** provider ID, **or** the same website domain (business-owned domains only) | The record is skipped and counted. Nothing is created, updated, or merged. |
-| `REVIEW_REQUIRED` | The same normalized name in the same city and state, **or** the same ten-digit phone number | The record **is stored**, enters `needs_review`, and carries the reason and a link to the match. |
-| `NO_MATCH` | Nothing overlaps | Stored as `discovered`. |
+A **place** is compared by coordinates when both records have them (within 75 m
+is the same place, 250 m or more is a different place, in between is unknown),
+otherwise by street address, otherwise a different city counts as a different
+place. Coordinates within 75 m whose street addresses **differ** are not proof
+of one place (neighbours on a strip, units in a complex): that counts as
+unconfirmed. Names are **similar** when their distinctive words overlap
+(generic words like "auto" and "repair" don't count, one typo is allowed).
+Names match **strongly** when they are identical after normalization, or their
+shared distinctive words cover at least half of *each* name, not counting words
+that name the city ("Santa Paula Auto Center" does not strongly match "Santa
+Paula Automotive Machine Shop").
 
+| Rule | When | Outcome |
+| ---- | ---- | ------- |
+| A | Same provider and provider ID | Confident duplicate: skipped |
+| B | Same website, same place, similar name | Confident duplicate: skipped |
+| B | Same website, same place, different name | Review: stored, flagged |
+| C | Same website, different place | **Related**: stored as its own candidate and linked ("other location") |
+| D | Same website and city, similar name, no street or coordinates to compare | Confident duplicate: skipped |
+| D | Same website, location can't be confirmed | Review |
+| E | Strongly matching name at the same place (coordinates or street), nothing else in common | Confident duplicate |
+| E | Similar (not strong) name at the same place | Review |
+| E | Similar name within 150 m | Review |
+| F | Same phone, same place, similar name | Confident duplicate |
+| F | Same phone otherwise | Review |
+| G | Same name and city, different place | Related |
+| G | Same name and city, place unknown | Review |
+
+| Outcome | What happens |
+| ------- | ------------ |
+| `CONFIDENT_DUPLICATE` | The record is skipped and counted. Nothing is created, updated, or merged. |
+| `REVIEW_REQUIRED` | The record **is stored**, enters `needs_review`, and carries the reason and a link to the match. |
+| Related (with `NO_MATCH`) | Stored as `discovered`, linked to the other location with the reason. A related link is not a duplicate flag and is not evidence about independence. |
+| `NO_MATCH` | Stored as `discovered`. |
+
+- **Multi-location businesses and chains are kept.** A shared website is not
+  enough to skip a record: each location is stored, and the link shows they
+  belong together. Whether that means a chain is decided during research.
 - **Weak evidence is never auto-skipped.** A shared name or phone can be a second
-  location, a relocated shop, or a shared switchboard.
+  location, a relocated shop, or a shared switchboard. Rule E was tightened in
+  Milestone 5 after the first real Overture import showed ten neighbouring
+  businesses skipped as "duplicates" on one shared word (e.g. "Daves' Motor
+  Works" at 679 E Easy St and "Dave's Garage" at 649). They are now kept and
+  flagged; only the two genuine duplicates in that county were skipped.
 - **Existing prospects are authoritative.** Discovery only reads them. A
-  confident match skips the record; a weak match is flagged. A prospect is never
-  modified by discovery. At approval, a confident match with an existing prospect
-  blocks the approval ("mark this candidate as a duplicate instead").
+  confident match skips the record; a weak match is flagged; another location is
+  linked. A prospect is never modified by discovery. At approval, a confident
+  match with an existing prospect blocks the approval ("mark this candidate as a
+  duplicate instead"); a related or review-level match does not.
 - **Normalization:**
   - Domains: lowercase, `www.` removed. Listing and social hosts (Facebook,
-    Yelp, Google, Instagram, and similar) never identify a business and are
-    dropped as websites, so they can't count as "has a website".
+    Yelp, Google, Instagram, hub.biz, WhatsApp, Superpages, and similar),
+    webmail hosts given as a "website" (gmail.com, yahoo.com, ...), and **shared
+    infrastructure** (store-locator subdomains such as `locations.`/`stores.`,
+    and parts-program or manufacturer sites such as acdelco.com, autovalue.com,
+    napaautocare.com, carquest.com) never identify a business. They are dropped
+    as websites, so they can't count as "has a website" or link two shops.
   - Names: lowercase, accents and punctuation removed, `&` becomes `and`, and
     trailing legal suffixes (`Inc`, `LLC`, `Corp`, …) are removed. Words like
     "auto" and "repair" are kept, so `Smith Auto` and `Smith Auto Body` differ.
-  - Phones: ten digits, with a leading `1` removed.
+  - Streets: lowercase, common words abbreviated (`East` to `e`, `Boulevard` to
+    `blvd`), units removed; a street with no house number is not a key.
+  - Phones: ten digits, with a leading `1` removed. The unverified provider phone
+    is used as a match key only.
 - **Flags are set when a record is stored.** They are not recomputed after
   later edits.
 - **Concurrency:** a unique index on (provider, provider ID) stops two
-  simultaneous runs from storing the same provider record twice. Domain and
-  weak matches are checked in application code, so two simultaneous runs could
-  both store a domain duplicate. Runs are started by hand, one at a time.
+  simultaneous runs from storing the same provider record twice. Other matches
+  are checked in application code, so two different runs processed at the same
+  time could both store a domain duplicate. Each run is claimed by exactly one
+  worker.
 
 ## Research rules
 
@@ -135,8 +204,18 @@ The data model enforces this rather than relying on discipline:
 - There are no fields for any of the above. A provider record is reduced to the
   allowed business fields; anything else it sends is discarded. A test checks
   that the discovery tables have no such columns.
-- **Contact details** need the public URL where they are listed. Without one,
-  the value is dropped (discovery) or refused (entry).
+- **Contact details** need the public URL where they are listed, or they are
+  refused.
+- **A provider phone is unverified.** A discovery provider's phone is stored
+  only as `providerPhone`, shown as "Unverified", and used only to find
+  duplicates. It never fills the business phone, never satisfies "public
+  business contact" or Ready to contact, and is never copied to a prospect at
+  approval. It becomes the business phone only when it is confirmed on the
+  business's own website: by a person (entering it with that page as the
+  source) or by research.
+- **Research may verify contact only from the business's own website** (its
+  domain or a subdomain). A directory, listing, locator, or social page is
+  refused, as is any contact for a candidate with no website stored.
 - **Evidence** is a known signal, a public http(s) URL, and an excerpt of at most
   280 characters. It is not a place to paste a page.
 - **Unknown stays unknown.** Employee count, bay count, technician count, booking
@@ -150,14 +229,15 @@ Approval is an explicit human POST from the candidate page. It:
 
 1. Checks the candidate is `researched` or `needs_review`, every recorded signal
    has evidence, the facts pass the **same validators as creating a prospect by
-   hand**, and no existing prospect has the same domain.
+   hand**, and no existing prospect is a confident duplicate (see the rules above).
 2. Creates the **existing Prospect** through the same insert path, at status
    **New**, with a new opaque referral code and the cached score from
    `scoring.ts`.
-3. Copies the business facts, public contact with sources, signals (with their
-   observation times), and evidence (with their timestamps).
+3. Copies the business facts, verified public contact with sources, signals
+   (with their observation times), and evidence (with their timestamps). The
+   unverified provider phone and the provider metadata are not copied.
 4. Writes a note on the prospect recording the provider, provider ID, source URL,
-   search, discovery date, candidate, and run.
+   search, provider release, discovery date, candidate, and run.
 5. Marks the candidate `approved` and links it to the prospect. The candidate
    stays, as the discovery record.
 
@@ -178,7 +258,19 @@ qualification, score, and bands. Discovery adds no signals and changes no
 weights. **Qualification** (Independent shop and Offers general repair) and the
 **opportunity score** stay separate, in the list and on the detail page.
 Discovery confidence never becomes qualification: a freshly discovered record has
-no signals and is Unverified.
+no signals and is Unverified. Neither do the provider's category tier, brand,
+confidence, or operating status.
+
+### Category tiers
+
+Provider categories are grouped in `categories.ts` into **core** (general and
+specialist mechanical repair, e.g. Overture `automotive_repair`,
+`brake_service_and_repair`, `transmission_repair`; OSM `shop=car_repair`) and
+**adjacent** (tires, oil change, inspection, truck repair, general automotive
+service). Unlisted categories have no tier and are not discovered. A run picks
+"Core" (the default) or "Core + adjacent". **The tier is a discovery filter
+only**: it decides which staged records a run reads, and the list can filter by
+it. It is never a qualification input or a score signal.
 
 ## Providers
 
@@ -188,19 +280,60 @@ A provider implements `DiscoveryProvider`:
 
 ```ts
 interface DiscoveryProvider {
-  readonly name: string;   // stored on every candidate, e.g. "google-places"
+  readonly name: string;   // stored on every candidate, e.g. "overture"
   readonly label: string;  // shown in the admin
-  discover(target: { region: string; city: string | null; businessType: string }): Promise<DiscoveredBusiness[]>;
+  readonly mode?: "sync" | "background";
+  discover?(target: DiscoveryTarget): Promise<DiscoveredBusiness[]>;                // small, synchronous
+  discoverBatches?(target: DiscoveryTarget): AsyncIterable<DiscoveredBusiness[]>;   // large, background
 }
+// DiscoveryTarget: region, city, businessType, tiers
 ```
 
-`DiscoveredBusiness` holds only `externalId`, `businessName`, `website`, `city`,
-`state`, `postalCode`, `country`, `phone`, and `sourceUrl`. To add a provider,
-implement the interface and register it in `discoveryProviders()`
-(`src/discovery/providers.ts`). Nothing else changes: cleaning, deduplication,
-candidates, research, scoring, and approval are provider-independent. Runs are
-synchronous within the request, limited to 200 records and 30 seconds; a provider
-failure is recorded on the run (with URLs redacted) instead of breaking the page.
+`DiscoveredBusiness` holds only the allowed business fields: `externalId`,
+`businessName`, `website`, `streetAddress`, `city`, `state`, `postalCode`,
+`country`, `latitude`, `longitude`, `phone` (unverified), `sourceUrl`, and the
+provenance fields `category`, `categoryTier`, `brand`, `confidence`,
+`operatingStatus`, `retrievedAt`, `release`. Anything else is discarded by
+cleaning. To add a provider, implement the interface and register it in
+`discoveryProviders()` (`src/discovery/providers.ts`). Nothing else changes:
+cleaning, deduplication, candidates, research, scoring, and approval are
+provider-independent.
+
+- **Sync providers** run within the request, limited to 200 records and 30
+  seconds. A provider failure is recorded on the run (with URLs redacted)
+  instead of breaking the page.
+- **Background providers** are never run in a request. Submitting the form only
+  creates a `queued` run and returns. The run is processed after the response
+  (in the web process) or by the `discovery:process` job: the worker claims it
+  (only one worker can), reads the provider in batches, deduplicates with one
+  shared index, and saves counters and a heartbeat after every batch. A run
+  whose heartbeat is more than 10 minutes old is reclaimed and processed again;
+  reprocessing is safe because provider IDs and dedupe make ingest idempotent.
+
+### Release import and staging (background)
+
+A large open-data provider is loaded per release and per scope, then read by
+runs:
+
+```bash
+npm run build
+npm run discovery:import -- --provider <importer> --release <release id> --scope US-CA
+npm run discovery:process      # process queued runs once (e.g. from a scheduler)
+```
+
+- An importer (`ProviderImporter`) yields batches of minimized `StagedPlace`
+  rows; `runImport()` stores them in `ProviderPlace` under one `ProviderImport`.
+  Rows without an ID or name are skipped and repeated IDs are stored once.
+- A failed import is marked failed with a redacted error, and its rows are
+  never read. After each successful import only the **two newest completed
+  imports** per provider and scope keep their rows; older and failed ones are
+  pruned.
+- `createStagedProvider()` turns the latest completed import for the target's
+  state into a background provider. It filters by county (from the region, e.g.
+  "Ventura County, CA"), city, category tiers, provider operating status (places
+  the provider reports permanently closed are skipped), and a minimum provider
+  confidence of 0.5. Runs record the release they read.
+- Nothing in the import path creates candidates or prospects.
 
 **What exists now:**
 - **`fixture`**: a deterministic set of clearly synthetic businesses (example.com
@@ -208,9 +341,128 @@ failure is recorded on the run (with URLs redacted) instead of breaking the page
   social-page "website", and an unsourced phone. It is **offered only outside
   production**. Set `ENABLE_FIXTURE_DISCOVERY=1` to opt in on a server that
   treats itself as production; don't, on the real database.
+- **`fixture-staged`**: a background provider over the synthetic fixture
+  importer, reproducing the multi-location cases found in the Ventura County
+  provider evaluation: one shop with two locations on one website, a true
+  duplicate a few metres away, a three-location chain, two shops on a
+  parts-program locator domain, a shared phone, and records excluded by tier,
+  closure, confidence, and county. Also offered only outside production.
 - **Manual entry** ("Add candidate"): provider `manual`, with the same cleaning
-  and duplicate rules. In production this is the only way candidates enter until
-  a provider is chosen.
+  and duplicate rules. A phone a person enters here, with the page where it is
+  listed, is verified contact. In production this is the only way candidates
+  enter until a provider is connected.
+
+### Overture Maps Places (Milestone 5)
+
+The first real discovery provider. Everything below was checked against
+Overture's documentation and the data itself on 2026-09-30.
+
+**Source and release.** Overture publishes Places as GeoParquet on a public S3
+bucket (`s3://overturemaps-us-west-2/release/<release>/theme=places/type=place/`,
+mirrored on Azure). Releases are monthly; Overture keeps about two months of
+them. The importer resolves `--release latest` through Overture's STAC release
+catalog (`https://stac.overturemaps.org/catalog.json`, field `latest`) and
+refuses a release the catalog doesn't list. Validated with release
+**2026-09-23.1** (Overture schema v2.0: categories are `taxonomy` and
+`basic_category`; the old `categories` property no longer exists).
+
+**How it is read.** `overtureSource.ts` queries the bucket with DuckDB (the
+access method Overture documents), selecting only the needed columns, inside
+the county's bounding box, and only places under the `automotive_service`
+branch of the taxonomy (or with a repair category as an alternate, so those
+can be counted). DuckDB uses Parquet row-group statistics to skip everything
+outside the box, so a county reads a few megabytes of a release of more than
+10 GB. Nothing is downloaded to disk. DuckDB is loaded only by the import job,
+never by the web server. Anonymous access; **no credentials**.
+
+**Geographic scope (deliberately small).** One county per import; a statewide
+or national import is refused. Validated on **Ventura County, CA** (the
+project's test region since Milestone 3). The bounding box is only a prefilter:
+each place is kept only if its point lies inside the county boundary, fetched
+from the US Census Bureau's TIGERweb service (public domain). Overture's own
+`divisions` boundaries are not used: they contain OpenStreetMap data (ODbL),
+and joining them to places would bring share-alike obligations.
+
+**Record mapping** (`mapOvertureRow`):
+
+| Overture | ReclaimBay | Notes |
+| -------- | ---------- | ----- |
+| `id` (GERS ID) | `externalId` | Stable place identity, used for re-import and dedupe rule A. **Identifies the place; says nothing about ownership, independence, or fit.** |
+| `names.primary` | `businessName` | A branch named only by its street with a `brand` (e.g. AllThePlaces' Jiffy Lube "E Thompson Blvd") becomes "Jiffy Lube (E Thompson Blvd)". Never applied without a brand |
+| `geometry` (point; read from `bbox`) | `latitude`, `longitude` | (0, 0) and out-of-range values are rejected |
+| `addresses[]` (first US address) | street (`freeform`), city (`locality`), postal code | The state comes from the boundary. Overture documents `region` as ISO 3166-2 (`US-CA`); the data uses `CA`. Both are accepted |
+| `taxonomy.primary`, `taxonomy.hierarchy` | category and tier | See the mapping below |
+| `websites[]` | `website` | The first that is the business's own (not social, listing, locator, webmail); query strings (utm tracking) removed. **Provider data, unverified**: shown as "Reported by overture, unverified" |
+| `phones[0]` | `providerPhone` | **Unverified.** See below |
+| `operating_status` | operating status | `open` / `temporarily_closed` / `permanently_closed`; runs skip permanently closed |
+| `confidence` | provider confidence | Overture: confidence that the place exists, not that it is open. Runs skip below 0.5 |
+| `brand.names.primary` | brand | As reported. A brand suggests a chain; it never decides qualification |
+| `sources[]` | upstream sources | e.g. "meta (CDLA-Permissive-2.0); Foursquare (Apache-2.0)". Overture's own derived entries are left out |
+| emails, socials, other fields | (dropped) | Never selected |
+
+There is no per-place public page in Overture, so `sourceUrl` is empty; the
+GERS ID and release are the reference. Overture has **no related-location
+field**; other locations of a business are found by ReclaimBay's own dedupe
+(shared website at a different place, rule C).
+
+**Category mapping** (`categories.ts`, `overtureTier`). Only the **primary**
+category decides, and it must sit under
+`travel_and_transportation > vehicle_service > automotive_service`:
+
+| Tier | Overture categories |
+| ---- | ------------------- |
+| Core | `automotive_repair`, `brake_service_and_repair`, `engine_repair_service`, `transmission_repair`, `exhaust_and_muffler_repair`, `auto_electrical_repair` |
+| Adjacent | `automotive_service` (generic), `tire_dealer_and_repair`, `oil_change_station`, `emissions_inspection`, `truck_repair`, `car_inspection` |
+| Excluded (counted on the import) | `auto_body_shop`, `auto_detailing`, `car_wash`, `towing_service`, `auto_customization`, `auto_glass_service`, `windshield_installation_and_repair`, `car_window_tinting`, `tire_shop`, `auto_restoration_service`, `auto_security`, `auto_upholstery`, `automotive_consultant`, `trailer_repair`, `wheel_and_rim_repair`, `vehicle_wrap`, `car_buyer`, `car_stereo_installation`, `automobile_registration_service`, and any automotive category not yet listed |
+| Not discovered | Places whose repair category is only an **alternate** (e.g. a gas station listing `automotive_repair`), counted as `alternate_only` |
+
+Ambiguous categories are excluded rather than assumed to be repair shops. The
+tier remains a discovery filter only (see Category tiers).
+
+**Provider phone.** Overture's phone is stored only as `providerPhone`: shown as
+Unverified, used only as a dedupe key, never the business phone, never "public
+business contact", never enough for Ready to contact, and never copied to a
+prospect at approval. Only research that finds it on the business's own website
+(or a person entering it with that page as the source) verifies it.
+
+**Attribution and license.** Places is CDLA-Permissive-2.0, with some records
+Apache-2.0 (Foursquare) or CC0 (AllThePlaces), as listed per record in
+`sources`; it contains no OpenStreetMap data. Overture asks for the attribution
+"Overture Maps Foundation, overturemaps.org"; the candidate page shows it with
+each record's upstream sources. Apache-2.0 records also carry Foursquare's
+notice (opensource.foursquare.com/places-notice-txt). Candidates are internal
+(admin only); publishing derived data would need these attributions.
+
+**Commands** (background jobs; run against the intended database):
+
+```bash
+npm run build
+npm run discovery:import -- --provider overture --release latest --scope US-CA --county "Ventura County"
+#   rerunning the same release is a no-op; --force imports it again
+npm run discovery:process      # or queue a run from /admin/discovery (provider: Overture Maps Places)
+```
+
+Then a run with provider **Overture Maps Places** and region **Ventura County,
+CA** reads the newest completed import for that county (its own import, or a
+statewide one if one ever exists) and records which import and release it read.
+
+**Real-data validation (Ventura County, release 2026-09-23.1, 2026-09-30):**
+
+| Step | Result |
+| ---- | ------ |
+| Import (about 10 s) | 1,431 automotive rows read in the bounding box; 139 outside the county boundary; 515 in excluded categories (body shops 120, detailing 59, car washes 56, customization 49, towing 41, auto glass/windshield/tint 107, tire shops 33, others); 3 with repair only as an alternate; 0 malformed; **774 staged** (571 core, 203 adjacent) |
+| Core run (`discovery:process`) | 525 eligible (40 below confidence 0.5 and 6 permanently closed left out): **523 candidates**, 2 skipped as confident duplicates (both genuine), 38 flagged for review, 27 linked as other locations |
+| Core + adjacent run (admin) | 711 found: 178 more candidates, 533 skipped (the 525 already stored, plus 8 adjacent records of the same places), 29 flagged |
+| Rerun of the same release | Import: no-op. Processing: 0 new, 525 skipped |
+| Contact | 0 verified phones; 675 of 701 candidates carry only the unverified provider phone |
+
+A random sample of 40 core candidates held about 31 genuine general or
+mechanical repair shops. About one in five were category false positives that
+Overture itself labels `automotive_repair` (collision and glass shops, a
+smog-only station, a wrecker, a machine shop, an RV service center), along with
+dealerships and chain locations (Tesla, Chevrolet, Jiffy Lube, Caliber). They
+are not filtered by name: research and qualification (Independent shop, Offers
+general repair) are what decide.
 
 ### Research providers
 
@@ -224,15 +476,18 @@ interface ResearchProvider {
 The provider sees only the name, website, city, and state, never notes, contact
 details, or anything from a customer report. `applyResearchFindings()` accepts its
 findings under the same rules as a person: known signals only, yes/no only with
-evidence, contact only with a source, nothing overwrites contact a person already
-entered, and the candidate lands at `researched` for a human decision. Invalid
+evidence, contact only with a source on the business's own website, nothing
+overwrites contact a person already entered, and the candidate lands at `researched` for a human decision. Invalid
 findings are refused as a whole. **No research provider is configured and the
 admin has no "run research" button.** Research is done by hand today.
 
 ## Provider requirements (decision needed)
 
-Nothing below is wired in. No dependency, credential, or external service was
-added. Choosing one is a product and legal decision.
+**Status:** Overture Maps Places was chosen after the Milestone 4 evaluation and
+is connected (Milestone 5, above): no credential, monthly releases, one county
+at a time. OpenStreetMap remains an optional supplement for later (ODbL;
+internal use only). The comparison below is kept as the record of that
+decision.
 
 ### Discovery: a business-listing source is required
 
@@ -269,10 +524,10 @@ not. Until one is chosen, research stays manual.
 
 | Page | What it does |
 | ---- | ------------ |
-| `/admin/discovery` | Run discovery, add a candidate, status counts, search and filters (status, qualification, score band, state, city, possible duplicate), sorting by score, recency, or name, and recent runs with their counters |
+| `/admin/discovery` | Run discovery (provider, e.g. Overture Maps Places; a category choice: core, or core + adjacent), add a candidate, status counts, search and filters (status, qualification, score band, state, city, possible duplicate, category tier), sorting by score, recency, or name, recent runs with their provider, the import they read, status (including Queued), release, tiers, and counters, and **provider imports** (area, release, records staged, what was read and left out, status, errors, and whether retention has pruned their rows). List rows tag the tier, "Other location shares this website", and "Provider says closed" |
 | `/admin/discovery/candidates/new` | Add a candidate by hand |
-| `/admin/discovery/candidates/:id` | What we know, what we don't know, and where each fact came from. Qualification and score shown separately. Possible-duplicate explanation with links. Status moves, evidence, notes, and Approve |
-| `/admin/discovery/candidates/:id/edit` | Edit facts and record signals with each signal's rules |
+| `/admin/discovery/candidates/:id` | What we know (including street and position; a provider website is marked unverified), what we don't know, and where each fact came from (provider, GERS ID for Overture, release, category and tier, brand, provider confidence, operating status, retrieval time, upstream sources with attribution). The verified phone and the **unverified provider phone** are shown separately. Qualification and score shown separately. Possible-duplicate explanation and other-location links. Status moves, evidence, notes, and Approve |
+| `/admin/discovery/candidates/:id/edit` | Edit facts and record signals with each signal's rules. A provider phone is shown as a reminder to verify it on the business's own website before entering it |
 
 Discovery pages are registered inside the admin scope, so they share its
 session check, same-origin check on every POST, rate limits, and security
@@ -281,10 +536,11 @@ Discovery sends nothing to analytics, and no customer report data is involved.
 
 ## Not automated yet
 
-- Choosing or calling a real discovery provider, or any network fetch.
+- Imports beyond one county at a time, or of other providers (OpenStreetMap).
 - Reading websites or filling in signals automatically.
 - Contacting anyone. No email, calls, outreach, follow-ups, or campaigns.
-- Scheduled or recurring discovery runs.
+- Scheduled or recurring imports and runs. The `discovery:import` and
+  `discovery:process` jobs exist; no scheduler is configured.
 - Re-checking duplicates after edits, or merging candidates.
 - Copying candidate notes onto the prospect.
 
@@ -293,16 +549,37 @@ Discovery sends nothing to analytics, and no customer report data is involved.
 - The list computes scores in memory for up to 2,000 matching candidates and shows
   the first 200. Fine for hundreds of candidates; a cached score would be needed
   for many thousands.
-- Runs are synchronous inside the request. A slow provider holds the page until it
-  finishes or times out at 30 seconds.
+- Sync runs are synchronous inside the request. A slow provider holds the page
+  until it finishes or times out at 30 seconds. Large providers must be
+  background providers.
+- A background run loads the match keys of all candidates and prospects into
+  memory once. That is small per record and fine for tens of thousands.
+- A run processed in the web process stops if the process restarts. It is
+  reclaimed after 10 minutes without a heartbeat, but only when
+  `discovery:process` next runs.
+- Overture: one county per import; a county's places are only as current as the
+  latest import (rerun monthly). Category labels are Overture's and include
+  false positives (about one in five in the Ventura sample). "Similar name
+  nearby" flags are noisy in dense corridors (14 of the 38 core flags in
+  Ventura County). A provider website can be wrong (seen: a car-rental page,
+  another business's site); research must confirm it. The importer needs
+  network access to Overture's bucket, its STAC catalog, and the Census
+  TIGERweb service, and DuckDB downloads its `httpfs` extension on first use.
+- An import interrupted mid-way stays `running` until the next import of the
+  same scope, which marks it failed and prunes its rows (after 1 hour).
 
 ## Tests
 
 ```bash
-npm test                    # unit: normalization, dedupe, lifecycle, scoring reuse, approval mapping, privacy
+npm test                    # unit: normalization, dedupe rules A-G and the match index (incl. the
+                            # real-data regression pairs), lifecycle, scoring reuse, approval mapping
+                            # (no provider phone), privacy, and Overture: releases, category tiers,
+                            # record mapping, boundaries, importer stats, query safety
 TEST_DATABASE_URL=<local url> npm run test:integration
                             # runs, dedupe against candidates and prospects, research, lifecycle,
-                            # approval, provenance, and the admin pages over HTTP
+                            # approval, provenance, the admin pages over HTTP, the pipeline
+                            # (import/staging/pruning, queued runs, reclaim, tiers, provider phone),
+                            # and Overture end to end with the network source replaced
 ```
 
 See [PROSPECTS.md](PROSPECTS.md#tests) for the disposable-database setup and safety guards.

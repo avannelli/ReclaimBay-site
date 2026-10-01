@@ -124,14 +124,14 @@ describe("discovery admin (HTTP)", { skip: skipReason }, () => {
   });
 
   describe("production configuration", () => {
-    test("no fake provider is offered in production, and runs are refused", async () => {
+    test("no fake provider is offered in production (only Overture), and fake-provider runs are refused", async () => {
       const prod = await buildApp(loadConfig({ ...ENV, NODE_ENV: "production" }), db, false);
       try {
         const prodCookie = await signIn(prod);
         const page = await prod.inject({ method: "GET", url: "/admin/discovery", headers: { cookie: prodCookie } });
         assert.equal(page.statusCode, 200);
-        assert.match(page.body, /No discovery provider is configured/);
-        assert.doesNotMatch(page.body, /name="provider"/);
+        assert.match(page.body, /<option value="overture">Overture Maps Places/, "the real provider is offered");
+        assert.doesNotMatch(page.body, /value="fixture"|value="fixture-staged"/, "no fake provider in production");
         assert.match(page.body, /Add candidate/, "manual entry still works");
         const run = await prod.inject({ method: "POST", url: "/admin/discovery/runs", headers: { ...FORM, cookie: prodCookie }, payload: form({ provider: "fixture", region: "Ventura County, CA" }) });
         assert.equal(run.statusCode, 400);
@@ -146,7 +146,7 @@ describe("discovery admin (HTTP)", { skip: skipReason }, () => {
       const opted = await buildApp(loadConfig({ ...ENV, NODE_ENV: "production", ENABLE_FIXTURE_DISCOVERY: "1" }), db, false);
       try {
         const res = await opted.inject({ method: "GET", url: "/admin/discovery", headers: { cookie: await signIn(opted) } });
-        assert.match(res.body, /name="provider"/);
+        assert.match(res.body, /value="fixture"/);
       } finally {
         await opted.close();
       }
@@ -198,7 +198,9 @@ describe("discovery admin (HTTP)", { skip: skipReason }, () => {
       assert.match(page, /class="st q-unverified q-big">Unverified/);
       assert.match(page, /Opportunity score · ranking only, not a verdict/);
       assert.match(page, /directory\.example\.com\/listing\/fx-1001/);
-      assert.match(page, /9 of 9 signals are unknown|7 of 9 signals are unknown/);
+      assert.match(page, /8 of 9 signals are unknown/, "only 'has a website' is known; the provider phone is unverified");
+      assert.match(page, /Provider phone/);
+      assert.match(page, /Unverified/);
       assert.match(page, /Not ready to approve yet/);
       assert.doesNotMatch(page, /Approve and create prospect/);
     });

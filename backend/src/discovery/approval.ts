@@ -87,6 +87,7 @@ export interface Provenance {
   discoveredAt: Date;
   candidateId: string;
   runId: string | null;
+  release?: string | null;
 }
 
 /** The note written on the new Prospect so its origin is never lost. */
@@ -97,6 +98,7 @@ export function provenanceNote(p: Provenance): string {
     p.externalId && `Provider ID: ${p.externalId}.`,
     p.sourceUrl && `Discovery source: ${p.sourceUrl}.`,
     p.query && `Search: ${p.query}.`,
+    p.release && `Release: ${p.release}.`,
     `Discovered: ${p.discoveredAt.toISOString().slice(0, 10)}.`,
     `Candidate: ${p.candidateId}.`,
     p.runId && `Run: ${p.runId}.`,

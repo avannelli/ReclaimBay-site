@@ -114,6 +114,19 @@ describe("candidateToProspectInput (approval mapping)", () => {
     assert.match(statusRequirementErrors("qualified", ctx).join(), /Unverified/);
     assert.match(statusRequirementErrors("ready_to_contact", ctx).join(), /Unverified/);
   });
+
+  test("a provider phone is never mapped: it is unverified, so the prospect has no contact and can't be Ready to contact", () => {
+    const fromProvider = { ...facts({ phone: null, phoneSourceUrl: null }), providerPhone: "(805) 555-1101" } as CandidateFacts;
+    const { input, errors } = candidateToProspectInput(fromProvider);
+    assert.deepEqual(errors, []);
+    assert.equal(input.fields.phone, null);
+    assert.equal(input.fields.phoneSourceUrl, null);
+    assert.doesNotMatch(JSON.stringify(input), /555-1101/);
+    const result = scoreCandidate(fromProvider);
+    assert.equal(result.breakdown.find((s) => s.key === "public_business_contact")!.state, "unknown");
+    const ctx = { businessName: fromProvider.businessName, hasPublicContact: false, qualification: result.qualification };
+    assert.match(statusRequirementErrors("ready_to_contact", ctx).join(), /requires a public business phone or email/);
+  });
 });
 
 describe("evidence gate helpers", () => {
@@ -144,6 +157,14 @@ describe("provenance", () => {
       assert.ok(note.includes(part), part);
     }
     assert.ok(note.length <= 2000);
+  });
+
+  test("a staged provider's release is recorded", () => {
+    const note = provenanceNote({
+      provider: "overture", externalId: "08f2", sourceUrl: null, query: null,
+      discoveredAt: new Date("2026-10-02T00:00:00Z"), candidateId: "c", runId: "r", release: "2026-09-23.0",
+    });
+    assert.match(note, /Release: 2026-09-23\.0\./);
   });
 
   test("a manual candidate without a source still records its provider", () => {

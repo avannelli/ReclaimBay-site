@@ -15,9 +15,11 @@ import {
   getCandidateDetail,
   listCandidates,
   recentRuns,
+  processDiscoveryRun,
   runDiscovery,
   updateCandidate,
 } from "../discovery/service.js";
+import { recentImports } from "../discovery/staging.js";
 import { ProspectError } from "../prospects.js";
 
 type Form = Record<string, string>;
@@ -45,8 +47,8 @@ const pick = (body: Form | undefined, keys: string[]): Values =>
  */
 export async function discoveryRoutes(app: FastifyInstance, opts: { config: Config; db: Db }) {
   const { config, db } = opts;
-  const providers = discoveryProviders(config);
-  const providerOptions = [...providers.values()].map((p) => ({ name: p.name, label: p.label }));
+  const providers = discoveryProviders(config, db);
+  const providerOptions = [...providers.values()].map((p) => ({ name: p.name, label: p.label, background: p.mode === "background" }));
 
   const html = (reply: FastifyReply, body: string) => reply.type("text/html; charset=utf-8").send(body);
   const notFound = (reply: FastifyReply) => reply.code(404).type("text/plain").send("Not found");
@@ -70,13 +72,14 @@ export async function discoveryRoutes(app: FastifyInstance, opts: { config: Conf
     filters: Values,
     extra: { notice?: string; errors?: string[]; values?: Values } = {},
   ) => {
-    const [list, runs, runCount, statusCounts] = await Promise.all([
+    const [list, runs, runCount, statusCounts, imports] = await Promise.all([
       listCandidates(db, filters),
       recentRuns(db),
       db.discoveryRun.count(),
       candidateStatusCounts(db),
+      recentImports(db),
     ]);
-    return html(reply, discoveryPage({ providers: providerOptions, list, runs, runCount, statusCounts, filters, ...extra }));
+    return html(reply, discoveryPage({ providers: providerOptions, list, runs, runCount, imports, statusCounts, filters, ...extra }));
   };
 
   const renderDetail = async (reply: FastifyReply, id: string, extra: { notice?: string; errors?: string[]; values?: Values } = {}) => {
@@ -97,6 +100,7 @@ export async function discoveryRoutes(app: FastifyInstance, opts: { config: Conf
       state: q.state,
       city: q.city,
       flagged: q.flagged,
+      tier: q.tier,
       provider: q.provider,
       run: q.run && UUID_RE.test(q.run) ? q.run : undefined,
       sort: q.sort,
@@ -106,6 +110,8 @@ export async function discoveryRoutes(app: FastifyInstance, opts: { config: Conf
       const run = await db.discoveryRun.findUnique({ where: { id: q.run } });
       if (run?.status === "completed") {
         notice = `Discovery finished: ${run.created} new candidate(s), ${run.duplicates} duplicate(s) skipped, ${run.flagged} flagged for review${run.invalid ? `, ${run.invalid} unusable record(s) ignored` : ""}.`;
+      } else if (run?.status === "queued" || run?.status === "running") {
+        notice = "Discovery run queued. It runs in the background; refresh to see progress under Discovery runs.";
       } else if (run?.status === "failed") {
         return renderOverview(reply.code(502), filters, { errors: [run.error ?? "The provider failed."] });
       }
@@ -119,11 +125,20 @@ export async function discoveryRoutes(app: FastifyInstance, opts: { config: Conf
     async (req, reply) => {
       try {
         const run = await runDiscovery(db, providers, req.body ?? {});
-        req.log.info({ runId: run.id, provider: run.provider, status: run.status }, "discovery run finished");
+        req.log.info({ runId: run.id, provider: run.provider, status: run.status }, "discovery run submitted");
+        if (run.status === "queued") {
+          // Processed after the response, in batches; never inside the request.
+          setImmediate(() => {
+            processDiscoveryRun(db, providers, run.id).then(
+              (done) => done && req.log.info({ runId: run.id, status: done.status }, "background discovery run finished"),
+              (err: unknown) => req.log.error({ err, runId: run.id }, "background discovery run crashed"),
+            );
+          });
+        }
         return reply.redirect(`/admin/discovery?done=run&run=${run.id}`, 303);
       } catch (err) {
         return handleError(err, reply, (errors) =>
-          renderOverview(reply, {}, { errors, values: pick(req.body, ["provider", "region", "city", "businessType"]) }),
+          renderOverview(reply, {}, { errors, values: pick(req.body, ["provider", "region", "city", "businessType", "tiers"]) }),
         );
       }
     },
@@ -152,7 +167,7 @@ export async function discoveryRoutes(app: FastifyInstance, opts: { config: Conf
     const c = await db.discoveryCandidate.findUnique({ where: { id: req.params.id }, include: { signals: true, evidence: true } });
     if (!c) return notFound(reply);
     if (c.status === "approved") return reply.redirect(`/admin/discovery/candidates/${c.id}`, 303);
-    return html(reply, candidateFormPage({ mode: "edit", id: c.id, name: c.businessName }, candidateFormValues(c)));
+    return html(reply, candidateFormPage({ mode: "edit", id: c.id, name: c.businessName, providerPhone: c.providerPhone }, candidateFormValues(c)));
   });
 
   app.post<{ Params: { id: string }; Body: Form }>("/admin/discovery/candidates/:id", writeLimit, async (req, reply) => {

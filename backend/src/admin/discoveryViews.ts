@@ -1,4 +1,5 @@
 import type { candidateStatusCounts, getCandidateDetail, listCandidates, recentRuns } from "../discovery/service.js";
+import type { recentImports } from "../discovery/staging.js";
 import { CANDIDATE_SORTS, DEFAULT_BUSINESS_TYPE } from "../discovery/service.js";
 import {
   CANDIDATE_REASON_REQUIRED,
@@ -10,6 +11,8 @@ import {
 } from "../discovery/candidateStatus.js";
 import { FIELD_LIMITS } from "../prospects.js";
 import { MAX_SCORE, QUALIFICATION_LABELS, SIGNALS, type SignalDefinition } from "../scoring.js";
+import { TIER_LABELS } from "../discovery/categories.js";
+import type { CategoryTier } from "../discovery/types.js";
 import { businessSections, criteriaNames, qualificationDetail, signalSections } from "./prospectViews.js";
 import { appPage } from "./views.js";
 import {
@@ -39,26 +42,68 @@ type Values = Record<string, string | undefined>;
 type ListResult = Awaited<ReturnType<typeof listCandidates>>;
 type Detail = NonNullable<Awaited<ReturnType<typeof getCandidateDetail>>>;
 type Runs = Awaited<ReturnType<typeof recentRuns>>;
+type Imports = Awaited<ReturnType<typeof recentImports>>;
 type StatusCounts = Awaited<ReturnType<typeof candidateStatusCounts>>;
 
 const SIGNAL_DEFS = SIGNALS as readonly SignalDefinition[];
 /** Short labels so the sort menu fits its column. */
 const SORT_LABELS: Record<string, string> = { score: "Score", discovered: "Newest", name: "Name" };
 
+/** What an import read and left out, from its stats (only counters that are present). */
+const IMPORT_COUNTERS: [string, string][] = [
+  ["read", "read"],
+  ["outside_area", "outside the area"],
+  ["excluded_automotive", "excluded automotive categories"],
+  ["alternate_only", "repair only as an alternate category"],
+  ["not_automotive", "not automotive"],
+  ["no_category", "no category"],
+  ["malformed", "malformed"],
+  ["repeatedId", "repeated IDs"],
+];
+
+const importRow = (providerLabel: (name: string) => string) => (i: Imports[number]) => {
+  const stats = (i.stats ?? {}) as Record<string, unknown>;
+  const counts = IMPORT_COUNTERS.filter(([k]) => typeof stats[k] === "number" && (k === "read" || (stats[k] as number) > 0)).map(
+    ([k, label]) => `${(stats[k] as number).toLocaleString("en-US")} ${label}`,
+  );
+  const status =
+    i.status === "failed"
+      ? `<span class="tag" style="border-color:var(--neg);color:var(--neg)">✕ Failed</span><div class="sub">${esc(i.error ?? "")}</div>`
+      : i.status === "running"
+        ? `<span class="tag">Running</span>`
+        : `<span class="tag">Completed</span>${i.recordCount > 0 && i._count.places === 0 ? `<div class="sub">rows pruned (only the newest imports keep their rows)</div>` : ""}`;
+  return `<tr>
+  <td><b>${esc(i.area ?? i.scope)}</b><div class="sub">release ${esc(i.release)}</div></td>
+  <td data-label="Provider">${esc(providerLabel(i.provider))}</td>
+  <td class="num" data-label="Staged"><b>${i.recordCount.toLocaleString("en-US")}</b>${counts.length ? `<div class="sub">${esc(counts.join(" · "))}</div>` : ""}</td>
+  <td data-label="Status">${status}</td>
+  <td class="small hide-md" data-label="Started">${fmtDate(i.startedAt)}${i.finishedAt ? `<div class="sub">finished ${fmtDate(i.finishedAt)}</div>` : ""}</td>
+</tr>`;
+};
+
+/** Provider category tier: a discovery filter, never a qualification verdict. */
+function tierTag(tier: CategoryTier | null, inline = false): string {
+  if (!tier) return "";
+  const tag = `<span class="tag" title="Discovery filter only, not qualification">${esc(TIER_LABELS[tier])}</span>`;
+  return inline ? ` ${tag}` : `<div class="sub">${tag}</div>`;
+}
+
 // ---------- overview ----------
 
 export function discoveryPage(opts: {
-  providers: { name: string; label: string }[];
+  providers: { name: string; label: string; background?: boolean }[];
   list: ListResult;
   runs: Runs;
   runCount: number;
+  imports: Imports;
   statusCounts: StatusCounts;
   filters: Values;
   values?: Values;
   notice?: string;
   errors?: string[];
 }): string {
-  const { providers, list, runs, runCount, statusCounts, filters: f, values = {} } = opts;
+  const { providers, list, runs, runCount, imports, statusCounts, filters: f, values = {} } = opts;
+  const providerLabel = (name: string) => providers.find((p) => p.name === name)?.label ?? name;
   const fe = fieldErrors(opts.errors);
   const totalCandidates = Object.values(statusCounts).reduce((n, v) => n + (v ?? 0), 0);
   const review = statusCounts.needs_review ?? 0;
@@ -74,8 +119,9 @@ export function discoveryPage(opts: {
     <div><label class="lbl" for="f-region">Region</label><input id="f-region" type="text" name="region" value="${esc(values.region)}" placeholder="Ventura County, CA" maxlength="${FIELD_LIMITS.city}" required></div>
     <div><label class="lbl" for="f-rcity">City <span class="muted" style="font-weight:400">(optional)</span></label><input id="f-rcity" type="text" name="city" value="${esc(values.city)}" placeholder="Thousand Oaks" maxlength="${FIELD_LIMITS.city}"></div>
     <div><label class="lbl" for="f-btype">Business type</label><input id="f-btype" type="text" name="businessType" value="${esc(values.businessType ?? DEFAULT_BUSINESS_TYPE)}" maxlength="100"></div>
+    <div><label class="lbl" for="f-tiers">Categories</label><select id="f-tiers" name="tiers">${options([["core", "Core repair categories"], ["core,adjacent", "Core + adjacent categories"]], values.tiers)}</select></div>
   </div>
-  <div class="row"><button type="submit">Run discovery</button><span class="small muted">Finds candidates for you to review. Nothing becomes a prospect on its own.</span></div>
+  <div class="row"><button type="submit">Run discovery</button><span class="small muted">Finds candidates for you to review. Nothing becomes a prospect on its own. Categories are a discovery filter, not qualification.${providers.some((p) => p.background) ? " Staged providers run in the background." : ""}</span></div>
 </form>`
       : `<p class="small" style="margin:0">No discovery provider is configured on this server, so there is nothing to run yet. You can still add candidates by hand. See <code>backend/DISCOVERY.md</code> for what a provider needs.</p>`
   }
@@ -100,7 +146,7 @@ export function discoveryPage(opts: {
       const loc = [c.city, c.state].filter(Boolean).join(", ");
       const flagged = c.possibleDuplicateCandidateId || c.possibleDuplicateProspectId;
       return `<tr${c.status === "needs_review" ? ' class="attn"' : ""}>
-  <td><a class="name" href="/admin/discovery/candidates/${esc(c.id)}">${esc(c.businessName)}</a>${c.website ? `<div class="sub">${extLink(c.website)}</div>` : ""}</td>
+  <td><a class="name" href="/admin/discovery/candidates/${esc(c.id)}">${esc(c.businessName)}</a>${c.website ? `<div class="sub">${extLink(c.website)}</div>` : ""}${tierTag(c.categoryTier)}${c.relatedCandidateId || c.relatedProspectId ? `<div class="sub"><span class="tag">Other location shares this website</span></div>` : ""}${c.providerStatus === "permanently_closed" ? `<div class="sub"><span class="tag" style="border-color:var(--neg);color:var(--neg)">Provider says closed</span></div>` : ""}</td>
   <td class="hide-md" data-label="Location">${loc ? esc(loc) : '<span class="muted">—</span>'}</td>
   <td data-label="Research status">${candidateBadge(c.status)}</td>
   <td data-label="Qualification">${qualificationBadge(result.qualification)}</td>
@@ -121,10 +167,10 @@ export function discoveryPage(opts: {
     .map(
       (r) => `<tr>
   <td><b>${esc([r.city, r.region].filter(Boolean).join(", "))}</b><div class="sub">${esc(r.businessType)}</div></td>
-  <td class="hide-md" data-label="Provider">${esc(r.provider)}</td>
+  <td class="hide-md" data-label="Provider">${esc(providerLabel(r.provider))}${r.import ? `<div class="sub">import: ${esc(r.import.area ?? r.import.scope)}</div>` : ""}</td>
   <td class="small" data-label="Created">${fmtDate(r.createdAt)}</td>
   <td class="num" data-label="New candidates"><b>${r.created}</b><div class="sub">${r.found} found · ${r.duplicates} skipped · ${r.flagged} flagged${r.invalid ? ` · ${r.invalid} unusable` : ""}</div></td>
-  <td data-label="Status">${r.status === "failed" ? `<span class="tag" style="border-color:var(--neg);color:var(--neg)">✕ Failed</span><div class="sub">${esc(r.error ?? "")}</div>` : r.status === "running" ? `<span class="tag">Running</span>` : `<span class="tag">Completed</span>`}</td>
+  <td data-label="Status">${r.status === "failed" ? `<span class="tag" style="border-color:var(--neg);color:var(--neg)">✕ Failed</span><div class="sub">${esc(r.error ?? "")}</div>` : r.status === "running" ? `<span class="tag">Running</span>` : r.status === "queued" ? `<span class="tag">Queued</span>` : `<span class="tag">Completed</span>`}${r.providerRelease ? `<div class="sub">release ${esc(r.providerRelease)}</div>` : ""}${r.tiers.length ? `<div class="sub">${esc(r.tiers.join(" + "))}</div>` : ""}</td>
   <td data-label="">${r.status === "completed" ? `<a href="/admin/discovery?run=${esc(r.id)}">Open candidates</a>` : '<span class="muted">—</span>'}</td>
 </tr>`,
     )
@@ -158,6 +204,7 @@ ${f.run ? `<div class="callout" style="margin-bottom:12px">Showing candidates fr
     <div><label class="lbl" for="f-cstate">State</label><input id="f-cstate" type="text" name="state" value="${esc(f.state)}" maxlength="50"></div>
     <div><label class="lbl" for="f-ccity">City</label><input id="f-ccity" type="text" name="city" value="${esc(f.city)}" maxlength="100"></div>
     <div><label class="lbl" for="f-cflag">Duplicate flag</label><select id="f-cflag" name="flagged">${options([["", "Any"], ["1", "Possible duplicate"]], f.flagged)}</select></div>
+    <div><label class="lbl" for="f-ctier">Category tier</label><select id="f-ctier" name="tier">${options([["", "Any"], ["core", "Core"], ["adjacent", "Adjacent"]], f.tier)}</select></div>
     <div><label class="lbl" for="f-csort">Sort by</label><select id="f-csort" name="sort">${options(Object.keys(CANDIDATE_SORTS).map((k): [string, string] => [k, SORT_LABELS[k] ?? k]), list.sort)}</select></div>
     <div class="filter-actions"><button type="submit">Apply filters</button><a class="btn btn-secondary" href="/admin/discovery">Reset</a></div>
   </div>
@@ -184,8 +231,21 @@ ${section(
 <thead><tr><th scope="col">Target</th><th scope="col" class="hide-md">Provider</th><th scope="col">Created</th><th scope="col" class="num">New candidates</th><th scope="col">Status</th><th scope="col"><span class="sr-only">Open</span></th></tr></thead>
 <tbody>${runRows}</tbody>
 </table></div>
-<p class="small muted" style="margin-top:8px">Skipped records matched a stored candidate or prospect by provider ID or website domain. Flagged records matched only by name and city, or phone, so they were kept for you to review.</p>`
+<p class="small muted" style="margin-top:8px">Skipped records were confident duplicates of a stored candidate or prospect (the same provider record, or the same business at the same place). Flagged records were possible duplicates, kept for you to review. Other locations of a business are kept and linked.</p>`
     : `<div class="card">${emptyState("No discovery runs yet.", providers.length ? "Use “New discovery run” to search a region for candidate businesses." : "When a provider is configured, runs will appear here. You can add candidates by hand meanwhile.")}</div>`,
+)}
+
+${section(
+  "imports",
+  "Provider imports",
+  imports.length
+    ? `<div class="scroll"><table class="tbl cards">
+<caption class="sr-only">Recent provider imports</caption>
+<thead><tr><th scope="col">Area</th><th scope="col">Provider</th><th scope="col" class="num">Staged</th><th scope="col">Status</th><th scope="col" class="hide-md">Started</th></tr></thead>
+<tbody>${imports.map(importRow(providerLabel)).join("")}</tbody>
+</table></div>
+<p class="small muted" style="margin-top:8px">Imports run in the background (<code>npm run discovery:import</code>) and stage a provider release for runs to read. Nothing here creates candidates or prospects.</p>`
+    : `<div class="card">${emptyState("No provider imports yet.", "Imports are run in the background with npm run discovery:import; see DISCOVERY.md.")}</div>`,
 )}`,
   );
 }
@@ -193,7 +253,7 @@ ${section(
 // ---------- add / edit form ----------
 
 export function candidateFormPage(
-  opts: { mode: "new" } | { mode: "edit"; id: string; name: string },
+  opts: { mode: "new" } | { mode: "edit"; id: string; name: string; providerPhone?: string | null },
   values: Values,
   errors?: string[],
 ): string {
@@ -208,6 +268,7 @@ export function candidateFormPage(
     `${crumbs([{ label: "Discovery", href: "/admin/discovery" }, ...(editing ? [{ label: opts.name, href: action }, { label: "Research" }] : [{ label: "Add candidate" }])])}
 ${pageHead({ title, lede: editing ? "Record only what a public source shows, then add evidence for each recorded signal." : "Adds one business by hand. It is checked against existing candidates and prospects, and is not a prospect until you approve it." })}
 ${errorSummary(errors, fe)}
+${editing && opts.providerPhone ? `<div class="callout warn" style="margin-bottom:14px">The provider reported <b>${esc(opts.providerPhone)}</b> (unverified). Enter it as the business phone only after you find it on the business's own website, and give that page as its source.</div>` : ""}
 <form method="post" action="${action}" class="stack" novalidate>
   ${businessSections(values, fe)}
   ${editing ? signalSections(values, fe) : ""}
@@ -222,7 +283,7 @@ const RESEARCH_PATH: CandidateStatus[] = ["discovered", "researching", "research
 
 export function candidateDetailPage(opts: { detail: Detail; notice?: string; errors?: string[]; values?: Values }): string {
   const { detail, values = {} } = opts;
-  const { candidate: c, result, dupCandidate, dupProspect, approvalBlockers } = detail;
+  const { candidate: c, result, dupCandidate, dupProspect, relCandidate, relProspect, approvalBlockers } = detail;
   const id = esc(c.id);
   const fe = fieldErrors(opts.errors);
   const none = '<span class="muted">—</span>';
@@ -304,7 +365,16 @@ export function candidateDetailPage(opts: { detail: Detail; notice?: string; err
     ? `<div class="card" style="border-left:4px solid var(--amber)"><b>! Possible duplicate</b>
 <p class="small" style="margin:6px 0">Matched only on: ${esc(c.duplicateReason ?? "partial overlap")}. That is not enough to skip it automatically, so it needs your decision. If it is the same business, mark it a duplicate.</p>
 <ul class="plain small">${dupItems.join("")}</ul></div>`
-    : `<div class="card"><b>No duplicate flags</b><p class="small muted" style="margin:6px 0 0">When this candidate was stored, nothing matched an existing candidate or prospect on provider ID, website domain, name and city, or phone.</p></div>`;
+    : `<div class="card"><b>No duplicate flags</b><p class="small muted" style="margin:6px 0 0">When this candidate was stored, nothing matched an existing candidate or prospect on provider ID, website and location, phone, or name and location.</p></div>`;
+  const relItems = [
+    relCandidate && `<li>Candidate <a href="/admin/discovery/candidates/${esc(relCandidate.id)}">${esc(relCandidate.businessName)}</a>${relCandidate.city ? ` in ${esc(relCandidate.city)}` : ""}</li>`,
+    relProspect && `<li>Prospect <a href="/admin/prospects/${esc(relProspect.id)}">${esc(relProspect.businessName ?? "Unnamed")}</a>${relProspect.city ? ` in ${esc(relProspect.city)}` : ""}</li>`,
+  ].filter(Boolean);
+  const relCard = relItems.length
+    ? `<div class="card" style="margin-top:12px"><b>Other location of the same business or chain</b>
+<p class="small" style="margin:6px 0">${esc(c.relationReason ?? "Shares this website")}. This is a separate location, so it was kept. It may mean a multi-location business or a chain; check ownership during research. It is not evidence either way on its own.</p>
+<ul class="plain small">${relItems.join("")}</ul></div>`
+    : "";
 
   // ----- research state + actions -----
   const allowed = CANDIDATE_TRANSITIONS[c.status];
@@ -354,25 +424,35 @@ ${pageHead({
   </div>
 </div>
 
-${section("duplicates", "Duplicate assessment", dupCard)}
+${section("duplicates", "Duplicate assessment", dupCard + relCard)}
 
 ${section(
   "know",
   "What we know",
   `<div class="grid-2">
   <div class="card"><div class="card-h">Identity</div><dl class="kv">
-    ${fact("Website", c.website ? extLink(c.website) : none)}
+    ${fact("Website", c.website ? `${extLink(c.website)}${c.provider !== "manual" ? `<div class="src">Reported by ${esc(c.provider)}, unverified. Research confirms whether it is the business&#39;s own site.</div>` : ""}` : none)}
+    ${fact("Street", c.streetAddress ? esc(c.streetAddress) : none)}
     ${fact("Location", place ? esc(place) : none)}
-    ${fact("Phone", c.phone ? esc(c.phone) : none, c.phone ? c.phoneSourceUrl : null)}
+    ${c.latitude !== null && c.longitude !== null ? fact("Position", `<span class="small">${c.latitude.toFixed(5)}, ${c.longitude.toFixed(5)}</span>`) : ""}
+    ${fact("Phone", c.phone ? `${esc(c.phone)} <span class="tag">Verified business contact</span>` : none, c.phone ? c.phoneSourceUrl : null)}
+    ${c.providerPhone ? fact("Provider phone", `${esc(c.providerPhone)} <span class="tag" style="border-color:var(--amber);color:var(--warn)">Unverified</span><div class="src">Reported by ${esc(c.provider)}. Not used for contact until research finds it on the business's own website.</div>`) : ""}
     ${fact("Email", c.email ? esc(c.email) : none, c.email ? c.emailSourceUrl : null)}
   </dl></div>
   <div class="card"><div class="card-h">Discovery provenance</div><dl class="kv">
-    ${fact("Provider", esc(c.provider))}
-    ${c.externalId ? fact("Provider ID", esc(c.externalId)) : ""}
+    ${fact("Provider", esc(c.provider === "overture" ? "Overture Maps Places" : c.provider))}
+    ${c.externalId ? fact(c.provider === "overture" ? "GERS ID" : "Provider ID", `${esc(c.externalId)}${c.provider === "overture" ? `<div class="src">Overture's stable place ID. It identifies the place; it says nothing about ownership or fit.</div>` : ""}`) : ""}
     ${fact("Source", c.sourceUrl ? extLink(c.sourceUrl) : none)}
     ${fact("Search", c.query ? esc(c.query) : none)}
     ${fact("Discovered", fmtDate(c.discoveredAt))}
     ${c.run ? fact("Run", esc([c.run.city, c.run.region].filter(Boolean).join(", "))) : ""}
+    ${c.providerRelease ? fact("Release", esc(c.providerRelease)) : ""}
+    ${c.providerCategory || c.categoryTier ? fact("Category", `${esc(c.providerCategory ?? "—")}${tierTag(c.categoryTier, true)}`) : ""}
+    ${c.providerBrand ? fact("Brand", `${esc(c.providerBrand)}<div class="src">As the provider reports it. A brand suggests a chain; missing brand data proves nothing.</div>`) : ""}
+    ${c.providerConfidence !== null ? fact("Confidence", `${Math.round(c.providerConfidence * 100)}% <span class="small muted">provider's own score</span>`) : ""}
+    ${c.providerStatus ? fact("Operating", `${esc(c.providerStatus.replace(/_/g, " "))} <span class="small muted">per provider, unverified</span>`) : ""}
+    ${c.providerRetrievedAt ? fact("Retrieved", fmtDate(c.providerRetrievedAt)) : ""}
+    ${c.providerSources ? fact("Upstream sources", `${esc(c.providerSources)}${c.provider === "overture" ? `<div class="src">Data: Overture Maps Foundation, overturemaps.org</div>` : ""}`) : ""}
   </dl></div>
 </div>
 <div class="scroll" style="margin-top:14px"><table class="tbl cards">

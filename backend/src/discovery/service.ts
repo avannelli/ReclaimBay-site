@@ -32,15 +32,36 @@ import {
   isFrozen,
   type CandidateStatus,
 } from "./candidateStatus.js";
-import { classifyMatch, flagReason, type IncomingKeys, type MatchKeys, type Verdict } from "./dedupe.js";
-import { cleanDiscovered, locationKey, normalizeDomain, normalizeName, phoneKey, type CleanedBusiness } from "./normalize.js";
-import type { DiscoveredBusiness, DiscoveryProvider, ResearchFindings } from "./types.js";
+import { MatchIndex, flagReason, relationReason, type IncomingKeys, type MatchKeys, type Verdict } from "./dedupe.js";
+import {
+  cleanDiscovered,
+  isOnBusinessSite,
+  locationKey,
+  normalizeDomain,
+  normalizeName,
+  phoneKey,
+  streetKey,
+  type CleanedBusiness,
+} from "./normalize.js";
+import {
+  CATEGORY_TIERS,
+  type CategoryTier,
+  type DiscoveredBusiness,
+  type DiscoveryProvider,
+  type DiscoveryTarget,
+  type ResearchFindings,
+} from "./types.js";
 
 /*
  * Candidate service. Discovery only ever creates candidates; the single way
  * to a Prospect is approveCandidate(), a human action that goes through the
  * same insert path, validators, and scoring as a prospect made by hand.
  * Existing prospects are read for duplicate checks and are never modified.
+ *
+ * Phones: a provider-reported phone is stored as `providerPhone`
+ * (unverified). Only a person or a research provider citing a page on the
+ * business's own website sets the verified `phone`, which is the only phone
+ * scoring, the Ready-to-contact gate, and approval ever read.
  */
 
 type Tx = Prisma.TransactionClient;
@@ -50,38 +71,79 @@ const notFound = () => new ProspectError(["Candidate not found."], "not_found");
 const frozenError = () =>
   new ProspectError(["This candidate is approved and is now a prospect; edit the prospect instead."], "conflict");
 
-/** Upper bound on records accepted from one provider call. */
+/** Upper bound on records accepted from one synchronous provider call. */
 export const MAX_RESULTS_PER_RUN = 200;
 const PROVIDER_TIMEOUT_MS = 30_000;
 export const DEFAULT_BUSINESS_TYPE = "Independent automotive repair";
+/** Tiers a run uses when none are chosen. */
+export const DEFAULT_TIERS: readonly CategoryTier[] = ["core"];
 
 // ---------- match keys ----------
 
-function keysOf(f: { businessName: string; website: string | null; city: string | null; state: string | null; phone: string | null }) {
+interface KeySource {
+  businessName: string;
+  website: string | null;
+  city: string | null;
+  state: string | null;
+  phone?: string | null;
+  providerPhone?: string | null;
+  streetAddress?: string | null;
+  latitude?: number | null;
+  longitude?: number | null;
+}
+
+/** Stored match keys (columns on the candidate). */
+function storedKeysOf(f: KeySource) {
   return {
     domainKey: normalizeDomain(f.website),
     nameKey: normalizeName(f.businessName),
     locationKey: locationKey(f.city, f.state),
-    phoneKey: phoneKey(f.phone),
+    // The verified phone wins; an unverified provider phone still helps find duplicates.
+    phoneKey: phoneKey(f.phone) ?? phoneKey(f.providerPhone),
+  };
+}
+
+/** Stored keys plus the location evidence dedupe compares. */
+function matchKeysOf(f: KeySource) {
+  return {
+    ...storedKeysOf(f),
+    streetKey: streetKey(f.streetAddress),
+    latitude: f.latitude ?? null,
+    longitude: f.longitude ?? null,
   };
 }
 
 /** Candidates first, then prospects, so candidate matches are preferred. */
-async function loadMatchKeys(db: Db | Tx): Promise<MatchKeys[]> {
+async function loadMatchIndex(db: Db | Tx, opts: { prospectsOnly?: boolean } = {}): Promise<MatchIndex> {
   const [candidates, prospects] = await Promise.all([
-    db.discoveryCandidate.findMany({
-      select: { id: true, provider: true, externalId: true, domainKey: true, nameKey: true, locationKey: true, phoneKey: true },
-    }),
+    opts.prospectsOnly
+      ? []
+      : db.discoveryCandidate.findMany({
+          select: {
+            id: true,
+            provider: true,
+            externalId: true,
+            domainKey: true,
+            nameKey: true,
+            locationKey: true,
+            phoneKey: true,
+            streetAddress: true,
+            latitude: true,
+            longitude: true,
+          },
+        }),
     db.prospect.findMany({ select: { id: true, businessName: true, website: true, city: true, state: true, phone: true } }),
   ]);
-  return [
-    ...candidates.map((c): MatchKeys => ({ ...c, kind: "candidate" })),
+  return new MatchIndex([
+    ...candidates.map(
+      ({ streetAddress, ...c }): MatchKeys => ({ ...c, kind: "candidate", streetKey: streetKey(streetAddress) }),
+    ),
     ...prospects.map((p): MatchKeys => ({
       id: p.id,
       kind: "prospect",
-      ...keysOf({ ...p, businessName: p.businessName ?? "" }),
+      ...matchKeysOf({ ...p, businessName: p.businessName ?? "" }),
     })),
-  ];
+  ]);
 }
 
 // ---------- creating candidates ----------
@@ -90,38 +152,56 @@ interface NewCandidate {
   runId: string | null;
   provider: string;
   query: string | null;
+  release?: string | null;
   business: CleanedBusiness;
-  email?: string | null;
-  emailSourceUrl?: string | null;
+  /** Verified contact: only from a person (manual add), never from a provider. */
+  verified?: { phone: string | null; phoneSourceUrl: string | null; email: string | null; emailSourceUrl: string | null };
   verdict: Verdict;
 }
 
 async function insertCandidate(db: Db | Tx, n: NewCandidate) {
   const b = n.business;
-  const flagged = n.verdict.outcome === "REVIEW_REQUIRED";
+  const v = n.verdict;
+  const flagged = v.outcome === "REVIEW_REQUIRED";
+  const related = v.relatedCandidate || v.relatedProspect;
   return db.discoveryCandidate.create({
     data: {
       runId: n.runId,
       businessName: b.businessName,
       website: b.website,
+      streetAddress: b.streetAddress,
+      latitude: b.latitude,
+      longitude: b.longitude,
       city: b.city,
       state: b.state,
       postalCode: b.postalCode,
       country: b.country,
-      phone: b.phone,
-      phoneSourceUrl: b.phoneSourceUrl,
-      email: n.email ?? null,
-      emailSourceUrl: n.emailSourceUrl ?? null,
-      ...keysOf({ ...b, phone: b.phone }),
+      phone: n.verified?.phone ?? null,
+      phoneSourceUrl: n.verified?.phoneSourceUrl ?? null,
+      email: n.verified?.email ?? null,
+      emailSourceUrl: n.verified?.emailSourceUrl ?? null,
+      providerPhone: b.providerPhone,
+      ...storedKeysOf({ ...b, phone: n.verified?.phone ?? null }),
       provider: n.provider,
       externalId: b.externalId,
       sourceUrl: b.sourceUrl,
       query: n.query,
+      providerRelease: b.release ?? n.release ?? null,
+      providerCategory: b.category,
+      categoryTier: b.categoryTier,
+      providerBrand: b.brand,
+      providerConfidence: b.confidence,
+      providerStatus: b.operatingStatus,
+      providerRetrievedAt: b.retrievedAt,
+      providerSources: b.sources,
       // Anything weakly matching waits for a human look.
       status: flagged ? "needs_review" : "discovered",
-      possibleDuplicateCandidateId: n.verdict.possibleCandidate?.id ?? null,
-      possibleDuplicateProspectId: n.verdict.possibleProspect?.id ?? null,
-      duplicateReason: flagged ? flagReason(n.verdict) : null,
+      possibleDuplicateCandidateId: v.possibleCandidate?.id ?? null,
+      possibleDuplicateProspectId: v.possibleProspect?.id ?? null,
+      duplicateReason: flagged ? flagReason(v) : null,
+      relatedCandidateId: v.relatedCandidate?.id ?? null,
+      relatedProspectId: v.relatedProspect?.id ?? null,
+      relationReason: related ? relationReason(v) : null,
     },
   });
 }
@@ -134,20 +214,28 @@ export interface IngestCounters {
   invalid: number;
 }
 
+export interface IngestContext {
+  runId: string | null;
+  provider: string;
+  query: string | null;
+  release?: string | null;
+}
+
 /**
  * Normalizes, deduplicates, and stores provider records as candidates.
  * Confident duplicates are skipped; weak matches are stored and flagged;
- * nothing existing is ever updated or merged.
+ * other locations of the same business are stored and linked; nothing
+ * existing is ever updated or merged. Pass `index` to reuse one match index
+ * across batches of a large run.
  */
 export async function ingestBusinesses(
   db: Db,
-  ctx: { runId: string | null; provider: string; query: string | null },
+  ctx: IngestContext,
   results: readonly DiscoveredBusiness[],
+  index?: MatchIndex,
 ): Promise<IngestCounters> {
   const counters: IngestCounters = { found: results.length, created: 0, duplicates: 0, flagged: 0, invalid: 0 };
-  const loaded = await loadMatchKeys(db);
-  const candidates = loaded.filter((k) => k.kind === "candidate");
-  const prospects = loaded.filter((k) => k.kind === "prospect");
+  const idx = index ?? (await loadMatchIndex(db));
 
   for (const raw of results) {
     const cleaned = cleanDiscovered(raw);
@@ -156,10 +244,10 @@ export async function ingestBusinesses(
       continue;
     }
     const business = cleaned.value;
-    const keys = keysOf(business);
+    const keys = matchKeysOf(business);
     const incoming: IncomingKeys = { provider: ctx.provider, externalId: business.externalId, ...keys };
-    // Candidates created earlier in this run count too. Candidates first.
-    const verdict = classifyMatch(incoming, [...candidates, ...prospects]);
+    // Candidates created earlier in this run count too.
+    const verdict = idx.classify(incoming);
     if (verdict.outcome === "CONFIDENT_DUPLICATE") {
       counters.duplicates++;
       continue;
@@ -168,13 +256,7 @@ export async function ingestBusinesses(
       const created = await insertCandidate(db, { ...ctx, business, verdict });
       counters.created++;
       if (verdict.outcome === "REVIEW_REQUIRED") counters.flagged++;
-      candidates.push({
-        id: created.id,
-        kind: "candidate",
-        provider: ctx.provider,
-        externalId: business.externalId,
-        ...keys,
-      });
+      idx.add({ id: created.id, kind: "candidate", provider: ctx.provider, externalId: business.externalId, ...keys });
     } catch (err) {
       // A concurrent run stored the same provider record first.
       if ((err as { code?: string }).code !== "P2002") throw err;
@@ -191,9 +273,18 @@ export interface DiscoveryRunInput {
   region: string;
   city?: string | null;
   businessType?: string | null;
+  /** "core" or "core,adjacent". */
+  tiers?: string | null;
 }
 
 const field = (v: unknown, max: number) => (typeof v === "string" ? v.replace(/\s+/g, " ").trim().slice(0, max) : "");
+
+/** "core", "core,adjacent", or an array of tiers; anything else is ignored. */
+export function parseTiers(v: unknown): CategoryTier[] {
+  const parts = Array.isArray(v) ? v : typeof v === "string" ? v.split(",") : [];
+  const tiers = CATEGORY_TIERS.filter((t) => parts.some((p) => typeof p === "string" && p.trim() === t));
+  return tiers.length ? tiers : [...DEFAULT_TIERS];
+}
 
 function redact(message: string): string {
   return message.replace(/https?:\/\/\S+/g, "[url]").slice(0, 200);
@@ -207,49 +298,184 @@ function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
   return Promise.race([p, timeout]).finally(() => clearTimeout(timer));
 }
 
-/**
- * Runs one provider for a target and stores the results as candidates. A
- * provider failure is recorded on the run (status failed), not thrown.
- */
-export async function runDiscovery(db: Db, providers: ReadonlyMap<string, DiscoveryProvider>, raw: Raw) {
+function parseRunInput(providers: ReadonlyMap<string, DiscoveryProvider>, raw: Raw) {
   const providerName = field(raw.provider, 40);
   const region = field(raw.region, FIELD_LIMITS.city);
   const city = field(raw.city, FIELD_LIMITS.city) || null;
   const businessType = field(raw.businessType, 100) || DEFAULT_BUSINESS_TYPE;
+  const tiers = parseTiers(raw.tiers);
 
   const errors: string[] = [];
   const provider = providers.get(providerName);
   if (!provider) errors.push("Choose an available discovery provider.");
   if (!region) errors.push("Region is required, e.g. Ventura County, CA.");
   if (errors.length || !provider) throw new ProspectError(errors);
-
+  const target: DiscoveryTarget = { region, city, businessType, tiers };
   const query = `${businessType} in ${city ? `${city}, ` : ""}${region}`.slice(0, 300);
-  const run = await db.discoveryRun.create({ data: { provider: provider.name, region, city, businessType } });
+  return { provider, target, query };
+}
+
+const isBackground = (p: DiscoveryProvider) => p.mode === "background";
+
+/**
+ * Runs a small synchronous provider for a target and stores the results as
+ * candidates. Background providers are queued instead (see queueDiscoveryRun).
+ * A provider failure is recorded on the run (status failed), not thrown.
+ */
+export async function runDiscovery(db: Db, providers: ReadonlyMap<string, DiscoveryProvider>, raw: Raw) {
+  const { provider, target, query } = parseRunInput(providers, raw);
+  if (isBackground(provider) || !provider.discover) {
+    return queueDiscoveryRun(db, providers, raw);
+  }
+  const run = await db.discoveryRun.create({
+    data: {
+      provider: provider.name,
+      region: target.region,
+      city: target.city,
+      businessType: target.businessType,
+      tiers: [...(target.tiers ?? [])],
+      startedAt: new Date(),
+    },
+  });
   try {
-    const results = (await withTimeout(provider.discover({ region, city, businessType }), PROVIDER_TIMEOUT_MS)).slice(
-      0,
-      MAX_RESULTS_PER_RUN,
-    );
+    const results = (await withTimeout(provider.discover(target), PROVIDER_TIMEOUT_MS)).slice(0, MAX_RESULTS_PER_RUN);
     const counters = await ingestBusinesses(db, { runId: run.id, provider: provider.name, query }, results);
     return db.discoveryRun.update({
       where: { id: run.id },
       data: { ...counters, status: "completed", finishedAt: new Date() },
     });
   } catch (err) {
-    return db.discoveryRun.update({
-      where: { id: run.id },
-      data: {
-        status: "failed",
-        error: `Provider error: ${redact(err instanceof Error ? err.message : "unknown")}`,
-        finishedAt: new Date(),
-      },
-    });
+    return failRun(db, run.id, err);
   }
+}
+
+function failRun(db: Db, runId: string, err: unknown) {
+  return db.discoveryRun.update({
+    where: { id: runId },
+    data: {
+      status: "failed",
+      error: `Provider error: ${redact(err instanceof Error ? err.message : "unknown")}`,
+      finishedAt: new Date(),
+    },
+  });
+}
+
+/**
+ * Creates a queued run for a background provider. The request returns at
+ * once; processDiscoveryRun (in-process, or the discovery:process script)
+ * does the work in batches. Nothing large is ever processed in a request.
+ */
+export async function queueDiscoveryRun(db: Db, providers: ReadonlyMap<string, DiscoveryProvider>, raw: Raw) {
+  const { provider, target } = parseRunInput(providers, raw);
+  if (!provider.discoverBatches) throw new ProspectError(["This provider can't run in the background."]);
+  return db.discoveryRun.create({
+    data: {
+      provider: provider.name,
+      region: target.region,
+      city: target.city,
+      businessType: target.businessType,
+      tiers: [...(target.tiers ?? [])],
+      status: "queued",
+    },
+  });
+}
+
+export interface ProcessOptions {
+  /** Called after every batch, e.g. for logging. */
+  onBatch?: (counters: IngestCounters) => void;
+}
+
+/**
+ * Processes one queued run: claims it (so two workers can't both run it),
+ * reads the provider in batches, and ingests each batch with one shared
+ * match index. Progress and a heartbeat are saved after every batch.
+ * Returns null when the run wasn't queued (already claimed or finished).
+ * Re-processing is safe: provider IDs and dedupe make ingest idempotent.
+ */
+export async function processDiscoveryRun(
+  db: Db,
+  providers: ReadonlyMap<string, DiscoveryProvider>,
+  runId: string,
+  opts: ProcessOptions = {},
+) {
+  const now = new Date();
+  const { count } = await db.discoveryRun.updateMany({
+    where: { id: runId, status: "queued" },
+    data: { status: "running", startedAt: now, heartbeatAt: now, found: 0, created: 0, duplicates: 0, flagged: 0, invalid: 0, error: null },
+  });
+  if (count !== 1) return null;
+  const run = await db.discoveryRun.findUniqueOrThrow({ where: { id: runId } });
+
+  try {
+    const provider = providers.get(run.provider);
+    if (!provider?.discoverBatches) throw new Error(`provider ${run.provider} is not available for background runs`);
+    const target: DiscoveryTarget = {
+      region: run.region,
+      city: run.city,
+      businessType: run.businessType,
+      tiers: run.tiers.length ? run.tiers : [...DEFAULT_TIERS],
+    };
+    const query = `${run.businessType} in ${run.city ? `${run.city}, ` : ""}${run.region}`.slice(0, 300);
+    // Record which staged import (and so which release) this run reads, before reading it.
+    if (provider.resolveImport) {
+      const imp = await provider.resolveImport(target);
+      await db.discoveryRun.update({ where: { id: runId }, data: { importId: imp.id, providerRelease: imp.release } });
+      run.providerRelease = imp.release;
+    }
+    const index = await loadMatchIndex(db);
+    const totals: IngestCounters = { found: 0, created: 0, duplicates: 0, flagged: 0, invalid: 0 };
+
+    for await (const batch of provider.discoverBatches(target)) {
+      const release = batch.find((b) => b.release)?.release ?? null;
+      const c = await ingestBusinesses(db, { runId, provider: provider.name, query, release }, batch, index);
+      for (const k of Object.keys(totals) as (keyof IngestCounters)[]) totals[k] += c[k];
+      await db.discoveryRun.update({
+        where: { id: runId },
+        data: { ...totals, heartbeatAt: new Date(), ...(release && !run.providerRelease ? { providerRelease: release } : {}) },
+      });
+      opts.onBatch?.(totals);
+    }
+    return db.discoveryRun.update({ where: { id: runId }, data: { ...totals, status: "completed", finishedAt: new Date() } });
+  } catch (err) {
+    return failRun(db, runId, err);
+  }
+}
+
+/** A running run whose worker hasn't reported for this long is reclaimed. */
+export const STALE_RUN_MS = 10 * 60 * 1000;
+
+/**
+ * Worker entry point: requeues runs whose worker died (stale heartbeat),
+ * then processes queued runs oldest first, one at a time.
+ */
+export async function processQueuedRuns(
+  db: Db,
+  providers: ReadonlyMap<string, DiscoveryProvider>,
+  opts: ProcessOptions & { staleAfterMs?: number; limit?: number } = {},
+) {
+  const staleBefore = new Date(Date.now() - (opts.staleAfterMs ?? STALE_RUN_MS));
+  const reclaimed = await db.discoveryRun.updateMany({
+    where: { status: "running", heartbeatAt: { lt: staleBefore } },
+    data: { status: "queued", error: "Reclaimed after the previous worker stopped responding." },
+  });
+  const queued = await db.discoveryRun.findMany({
+    where: { status: "queued" },
+    orderBy: { createdAt: "asc" },
+    take: opts.limit ?? 10,
+    select: { id: true },
+  });
+  const processed = [];
+  for (const { id } of queued) {
+    const run = await processDiscoveryRun(db, providers, id, opts);
+    if (run) processed.push(run);
+  }
+  return { reclaimed: reclaimed.count, processed };
 }
 
 /**
  * Adds one candidate by hand (provider "manual"), with the same validation,
- * normalization, and duplicate rules as a discovered one.
+ * normalization, and duplicate rules as a discovered one. A phone a person
+ * enters here, with the page where it is listed, is verified contact.
  */
 export async function addManualCandidate(db: Db, raw: Raw) {
   const { input, errors } = parseProspectInput(raw);
@@ -260,19 +486,30 @@ export async function addManualCandidate(db: Db, raw: Raw) {
   const business: CleanedBusiness = {
     businessName: f.businessName!,
     website: f.website,
+    streetAddress: null,
     city: f.city,
     state: f.state,
     postalCode: f.postalCode,
     country: f.country,
-    phone: f.phone,
-    phoneSourceUrl: f.phoneSourceUrl,
+    latitude: null,
+    longitude: null,
+    providerPhone: null,
     sourceUrl: null,
     externalId: null,
+    category: null,
+    categoryTier: null,
+    brand: null,
+    confidence: null,
+    operatingStatus: null,
+    retrievedAt: null,
+    release: null,
+    sources: null,
   };
-  const verdict = classifyMatch(
-    { provider: "manual", externalId: null, ...keysOf(business) },
-    await loadMatchKeys(db),
-  );
+  const verdict = (await loadMatchIndex(db)).classify({
+    provider: "manual",
+    externalId: null,
+    ...matchKeysOf({ ...business, phone: f.phone }),
+  });
   if (verdict.outcome === "CONFIDENT_DUPLICATE") {
     const of = verdict.duplicateOf!;
     throw new ProspectError([`Already a ${of.kind} (${of.reason}); not added.`], "conflict");
@@ -282,8 +519,7 @@ export async function addManualCandidate(db: Db, raw: Raw) {
     provider: "manual",
     query: null,
     business,
-    email: f.email,
-    emailSourceUrl: f.emailSourceUrl,
+    verified: { phone: f.phone, phoneSourceUrl: f.phoneSourceUrl, email: f.email, emailSourceUrl: f.emailSourceUrl },
     verdict,
   });
 }
@@ -326,9 +562,14 @@ export async function updateCandidate(db: Db, id: string, raw: Raw) {
       .map(([key, value]) => ({ candidateId: id, key, value: value!, observedAt: now }));
     if (added.length) await tx.candidateSignal.createMany({ data: added });
 
+    // Provider facts (street, position, provider phone) are kept as discovered.
     return tx.discoveryCandidate.update({
       where: { id },
-      data: { ...f, businessName: f.businessName!, ...keysOf({ ...f, businessName: f.businessName! }) },
+      data: {
+        ...f,
+        businessName: f.businessName!,
+        ...storedKeysOf({ ...f, businessName: f.businessName!, providerPhone: current.providerPhone }),
+      },
     });
   });
 }
@@ -448,6 +689,17 @@ export async function applyResearchFindings(db: Db, id: string, findings: Resear
     const allEvidence = [...c.evidence, ...good];
 
     const contact = findings.contact ?? {};
+    // Automated research may only verify contact from the business's own site.
+    // A missing source is reported by the normal contact validation below.
+    const offSite = [
+      contact.phone && contact.phoneSourceUrl && !c.phone && !isOnBusinessSite(contact.phoneSourceUrl, c.website) && "a phone",
+      contact.email && contact.emailSourceUrl && !c.email && !isOnBusinessSite(contact.emailSourceUrl, c.website) && "an email",
+    ].filter(Boolean);
+    if (offSite.length) {
+      throw new ProspectError([
+        `Research can only verify ${offSite.join(" or ")} found on the business's own website${c.website ? "" : " (none is stored)"}.`,
+      ]);
+    }
     const facts: CandidateFacts = {
       ...c,
       phone: c.phone ?? contact.phone ?? null,
@@ -485,7 +737,7 @@ export async function applyResearchFindings(db: Db, id: string, findings: Resear
         phoneSourceUrl: facts.phoneSourceUrl,
         email: facts.email,
         emailSourceUrl: facts.emailSourceUrl,
-        phoneKey: phoneKey(facts.phone),
+        phoneKey: phoneKey(facts.phone) ?? phoneKey(c.providerPhone),
         status: "researched",
         statusChangedAt: now,
         researchedAt: now,
@@ -522,13 +774,15 @@ export async function approveCandidate(db: Db, id: string) {
     errors.push(...inputErrors);
 
     // Existing prospects are authoritative: a confident match means this is a duplicate.
-    const prospectKeys = (await loadMatchKeys(tx)).filter((k) => k.kind === "prospect");
-    const verdict = classifyMatch(
-      { provider: c.provider, externalId: c.externalId, domainKey: c.domainKey, nameKey: c.nameKey, locationKey: c.locationKey, phoneKey: c.phoneKey },
-      prospectKeys,
-    );
+    const verdict = (await loadMatchIndex(tx, { prospectsOnly: true })).classify({
+      provider: c.provider,
+      externalId: c.externalId,
+      ...matchKeysOf(c),
+    });
     if (verdict.duplicateOf) {
-      errors.push(`A prospect with the same website domain already exists. Mark this candidate as a duplicate instead.`);
+      errors.push(
+        `An existing prospect matches this candidate (${verdict.duplicateOf.reason}). Mark this candidate as a duplicate instead.`,
+      );
     }
     if (errors.length) throw new ProspectError([...new Set(errors)]);
 
@@ -557,6 +811,7 @@ export async function approveCandidate(db: Db, id: string) {
           discoveredAt: c.discoveredAt,
           candidateId: c.id,
           runId: c.runId,
+          release: c.providerRelease,
         }),
       ],
     });
@@ -575,6 +830,7 @@ export interface CandidateFilters {
   state?: string;
   city?: string;
   flagged?: string;
+  tier?: string;
   provider?: string;
   /** Only candidates stored by this discovery run. */
   run?: string;
@@ -597,7 +853,9 @@ export async function listCandidates(db: Db, filters: CandidateFilters) {
   const q = filters.q?.trim().slice(0, 100);
   if (q) {
     const contains = { contains: q, mode: "insensitive" as const };
-    and.push({ OR: [{ businessName: contains }, { website: contains }, { city: contains }, { phone: contains }] });
+    and.push({
+      OR: [{ businessName: contains }, { website: contains }, { city: contains }, { phone: contains }, { providerPhone: contains }],
+    });
   }
   if (filters.status && isCandidateStatus(filters.status)) and.push({ status: filters.status });
   const state = filters.state?.trim();
@@ -606,6 +864,7 @@ export async function listCandidates(db: Db, filters: CandidateFilters) {
   if (city) and.push({ city: { contains: city, mode: "insensitive" } });
   if (filters.provider?.trim()) and.push({ provider: filters.provider.trim() });
   if (filters.run) and.push({ runId: filters.run });
+  if (filters.tier === "core" || filters.tier === "adjacent") and.push({ categoryTier: filters.tier });
   if (filters.flagged === "1") {
     and.push({ OR: [{ possibleDuplicateCandidateId: { not: null } }, { possibleDuplicateProspectId: { not: null } }] });
   }
@@ -637,7 +896,12 @@ export async function candidateStatusCounts(db: Db) {
   return counts;
 }
 
-export const recentRuns = (db: Db, take = 8) => db.discoveryRun.findMany({ orderBy: { createdAt: "desc" }, take });
+export const recentRuns = (db: Db, take = 8) =>
+  db.discoveryRun.findMany({
+    orderBy: { createdAt: "desc" },
+    take,
+    include: { import: { select: { area: true, scope: true, release: true } } },
+  });
 
 export async function getCandidateDetail(db: Db, id: string) {
   const candidate = await db.discoveryCandidate.findUnique({
@@ -651,7 +915,7 @@ export async function getCandidateDetail(db: Db, id: string) {
     },
   });
   if (!candidate) return null;
-  const [dupCandidate, dupProspect] = await Promise.all([
+  const [dupCandidate, dupProspect, relCandidate, relProspect] = await Promise.all([
     candidate.possibleDuplicateCandidateId
       ? db.discoveryCandidate.findUnique({
           where: { id: candidate.possibleDuplicateCandidateId },
@@ -664,6 +928,18 @@ export async function getCandidateDetail(db: Db, id: string) {
           select: { id: true, businessName: true, status: true },
         })
       : null,
+    candidate.relatedCandidateId
+      ? db.discoveryCandidate.findUnique({
+          where: { id: candidate.relatedCandidateId },
+          select: { id: true, businessName: true, status: true, city: true },
+        })
+      : null,
+    candidate.relatedProspectId
+      ? db.prospect.findUnique({
+          where: { id: candidate.relatedProspectId },
+          select: { id: true, businessName: true, status: true, city: true },
+        })
+      : null,
   ]);
   const result = scoreCandidate(candidate);
   const approvalBlockers = isFrozen(candidate.status)
@@ -674,7 +950,7 @@ export async function getCandidateDetail(db: Db, id: string) {
           : [`Status is ${CANDIDATE_STATUS_LABELS[candidate.status]}; only Researched or Needs review can be approved.`]),
         ...researchGateErrors(candidate.signals, candidate.evidence),
       ];
-  return { candidate, result, dupCandidate, dupProspect, approvalBlockers };
+  return { candidate, result, dupCandidate, dupProspect, relCandidate, relProspect, approvalBlockers };
 }
 
 /** Form values for editing a candidate (same field names as the prospect form). */

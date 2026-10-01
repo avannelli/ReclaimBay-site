@@ -124,6 +124,12 @@ export function normalizeUrl(value: string): string | null {
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const PHONE_RE = /^\+?[0-9().\-\s]+((x|ext\.?)\s*\d{1,6})?$/i;
 
+/** Whether a string is shaped like a phone number (the same rule everywhere). */
+export function isPhoneNumber(phone: string): boolean {
+  const digits = phone.replace(/\D/g, "").length;
+  return PHONE_RE.test(phone) && digits >= 7 && digits <= 21;
+}
+
 /**
  * Parses a create/edit form into a prospect input. Blank fields become null;
  * signals missing from the form are unknown.
@@ -153,10 +159,7 @@ export function parseProspectInput(raw: Raw): { input: ProspectInput; errors: st
   if (!/^[A-Z]{2}$/.test(country)) errors.push("Country must be a 2-letter code, e.g. US.");
 
   const phone = limit("Phone", text(raw, "phone"), FIELD_LIMITS.phone);
-  if (phone) {
-    const digits = phone.replace(/\D/g, "").length;
-    if (!PHONE_RE.test(phone) || digits < 7 || digits > 21) errors.push("Phone must be a phone number, e.g. (555) 010-0100.");
-  }
+  if (phone && !isPhoneNumber(phone)) errors.push("Phone must be a phone number, e.g. (555) 010-0100.");
   const phoneSourceUrl = url("Phone source URL", text(raw, "phoneSourceUrl"));
   if (phone && !phoneSourceUrl) errors.push("Phone needs the public URL where it is listed.");
   if (!phone && phoneSourceUrl) errors.push("Phone source URL is set without a phone number.");

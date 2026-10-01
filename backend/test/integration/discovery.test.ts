@@ -87,8 +87,10 @@ describe("discovery service", { skip: skipReason }, () => {
       assert.equal(c.domainKey, "conejoauto.example.com");
       assert.equal(c.nameKey, "conejo valley auto care");
       assert.equal(c.locationKey, "thousand oaks|CA");
-      assert.equal(c.phoneKey, "8055550101");
-      assert.equal(c.phoneSourceUrl, "https://directory.example.com/listing/fx-1001", "the listing is the phone's public source");
+      assert.equal(c.phoneKey, "8055550101", "the provider phone still helps find duplicates");
+      assert.equal(c.providerPhone, "(805) 555-0101");
+      assert.equal(c.phone, null, "a provider phone is unverified: it is never the business contact");
+      assert.equal(c.phoneSourceUrl, null);
       assert.equal(c.provider, "fixture");
       assert.equal(c.sourceUrl, "https://directory.example.com/listing/fx-1001");
       assert.equal(c.query, "Independent automotive repair in Ventura County, CA");
@@ -105,14 +107,16 @@ describe("discovery service", { skip: skipReason }, () => {
       assert.equal(await db.candidateEvidence.count(), 0);
     });
 
-    test("untrustworthy provider data is cleaned: social pages aren't websites; unsourced phones are dropped", async () => {
+    test("untrustworthy provider data is cleaned: social pages aren't websites; phones stay unverified provider data", async () => {
       await runDiscovery(db, fixtureOnly, VENTURA);
       const brake = await candidateByExternalId("fx-3001");
       assert.equal(brake.website, null);
       assert.equal(brake.domainKey, null);
       assert.equal(brake.phone, null);
       assert.equal(brake.phoneSourceUrl, null);
+      assert.equal(brake.providerPhone, "805-555-0301");
       assert.equal(scoreCandidate(brake).breakdown.find((s) => s.key === "has_website")!.state, "unknown");
+      assert.equal(scoreCandidate(brake).breakdown.find((s) => s.key === "public_business_contact")!.state, "unknown");
     });
 
     test("re-running the same discovery creates nothing new", async () => {
@@ -217,12 +221,32 @@ describe("discovery service", { skip: skipReason }, () => {
 
   describe("existing prospects are authoritative", () => {
     test("a confident match with a prospect is skipped, and the prospect is untouched", async () => {
-      const p = await createProspect(db, readyForm({ businessName: "Conejo Auto", website: "https://www.conejoauto.example.com" }));
+      const p = await createProspect(db, readyForm({ businessName: "Conejo Auto", city: "Thousand Oaks", state: "CA", website: "https://www.conejoauto.example.com" }));
       const before = await db.prospect.findUniqueOrThrow({ where: { id: p.id } });
       const run = await runDiscovery(db, fixtureOnly, VENTURA);
-      assert.equal(await db.discoveryCandidate.count({ where: { externalId: "fx-1001" } }), 0, "domain matches the prospect");
+      assert.equal(await db.discoveryCandidate.count({ where: { externalId: "fx-1001" } }), 0, "same website, name and city as the prospect");
       assert.ok(run.duplicates >= 1);
       assert.deepEqual(await db.prospect.findUniqueOrThrow({ where: { id: p.id } }), before);
+    });
+
+    test("a prospect sharing only the website in another city is another location: kept and linked, not skipped", async () => {
+      const p = await createProspect(db, readyForm({ businessName: "Conejo Auto", city: "Fresno", state: "CA", website: "https://www.conejoauto.example.com" }));
+      const before = await db.prospect.findUniqueOrThrow({ where: { id: p.id } });
+      await runDiscovery(db, fixtureOnly, VENTURA);
+      const c = await candidateByExternalId("fx-1001");
+      assert.equal(c.status, "discovered");
+      assert.equal(c.relatedProspectId, p.id);
+      assert.match(c.relationReason!, /same website, different location/);
+      assert.equal(c.possibleDuplicateProspectId, null);
+      assert.deepEqual(await db.prospect.findUniqueOrThrow({ where: { id: p.id } }), before);
+    });
+
+    test("a prospect sharing the website with no location to compare is flagged for review, not skipped", async () => {
+      const p = await createProspect(db, readyForm({ businessName: "Conejo Auto", city: "", state: "", postalCode: "", website: "https://www.conejoauto.example.com" }));
+      await runDiscovery(db, fixtureOnly, VENTURA);
+      const c = await candidateByExternalId("fx-1001");
+      assert.equal(c.status, "needs_review");
+      assert.equal(c.possibleDuplicateProspectId, p.id);
     });
 
     test("a weak match with a prospect creates a flagged candidate and changes nothing else", async () => {
@@ -263,10 +287,12 @@ describe("discovery service", { skip: skipReason }, () => {
     test("a confident duplicate is refused; a weak match is flagged", async () => {
       await addManualCandidate(db, { businessName: "Ojai Auto", city: "Ojai", state: "CA", website: "https://ojaiauto.example.com" });
       await rejects(
-        addManualCandidate(db, { businessName: "Ojai Automotive", website: "https://www.ojaiauto.example.com/x" }),
-        /Already a candidate \(same website domain\)/,
+        addManualCandidate(db, { businessName: "Ojai Automotive", city: "Ojai", state: "CA", website: "https://www.ojaiauto.example.com/x" }),
+        /Already a candidate \(same website, name and city\)/,
         "conflict",
       );
+      const noPlace = await addManualCandidate(db, { businessName: "Ojai Automotive", website: "https://www.ojaiauto.example.com/x" });
+      assert.equal(noPlace.status, "needs_review", "same website but no location to compare: flagged, not refused");
       const weak = await addManualCandidate(db, { businessName: "Ojai Auto", city: "Ojai", state: "CA", website: "https://another.example.com" });
       assert.equal(weak.status, "needs_review");
     });
@@ -409,7 +435,7 @@ describe("discovery service", { skip: skipReason }, () => {
       assert.equal((await db.discoveryCandidate.findUniqueOrThrow({ where: { id: c.id } })).phone, "(805) 555-0100");
       const d = await fresh();
       await rejects(applyResearchFindings(db, d.id, { ...good, contact: { email: "shop@smith.example.com" } }, "p"), /Email needs the public URL/);
-      await applyResearchFindings(db, d.id, { ...good, contact: { email: "shop@smith.example.com", emailSourceUrl: `${WEBSITE}/contact` } }, "p");
+      await applyResearchFindings(db, d.id, { ...good, contact: { email: "shop@smith.example.com", emailSourceUrl: new URL("/contact", d.website!).href } }, "p");
       assert.equal((await db.discoveryCandidate.findUniqueOrThrow({ where: { id: d.id } })).email, "shop@smith.example.com");
     });
 
@@ -562,10 +588,10 @@ describe("discovery service", { skip: skipReason }, () => {
       assert.equal(prospect.status, "new");
     });
 
-    test("an existing prospect with the same domain blocks approval: mark it a duplicate instead", async () => {
+    test("an existing prospect matching website, name and city blocks approval: mark it a duplicate instead", async () => {
       const c = await researchedCandidate({ businessName: "Smith Auto", website: "https://smithauto.example.com", city: "Springfield", state: "IL" });
-      await createProspect(db, { businessName: "Smith Automotive", website: "https://www.smithauto.example.com/home" });
-      await rejects(approveCandidate(db, c.id), /same website domain already exists.*duplicate/);
+      await createProspect(db, { businessName: "Smith Automotive", city: "Springfield", state: "IL", website: "https://www.smithauto.example.com/home" });
+      await rejects(approveCandidate(db, c.id), /An existing prospect matches this candidate \(same website, name and city\)\. Mark this candidate as a duplicate/);
       assert.equal(await db.prospect.count(), 1);
       assert.equal((await db.discoveryCandidate.findUniqueOrThrow({ where: { id: c.id } })).status, "researched", "unchanged after refusal");
       await changeCandidateStatus(db, c.id, "duplicate", "Already a prospect");

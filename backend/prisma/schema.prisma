@@ -60,6 +60,26 @@ enum CandidateStatus {
 }
 
 enum DiscoveryRunStatus {
+  queued
+  running
+  completed
+  failed
+}
+
+// Provider-neutral discovery filter. Never a qualification verdict.
+enum CategoryTier {
+  core
+  adjacent
+}
+
+// A provider's own claim about whether a place operates. Unverified.
+enum ProviderOperatingStatus {
+  open
+  temporarily_closed
+  permanently_closed
+}
+
+enum ProviderImportStatus {
   running
   completed
   failed
@@ -193,25 +213,37 @@ model ProductEvent {
 
 // One execution of a discovery provider for a target area.
 model DiscoveryRun {
-  id           String             @id @default(uuid()) @db.Uuid
-  provider     String             @db.VarChar(40)
-  region       String             @db.VarChar(100)
-  city         String?            @db.VarChar(100)
-  businessType String             @db.VarChar(100)
-  status       DiscoveryRunStatus @default(running)
+  id              String             @id @default(uuid()) @db.Uuid
+  provider        String             @db.VarChar(40)
+  region          String             @db.VarChar(100)
+  city            String?            @db.VarChar(100)
+  businessType    String             @db.VarChar(100)
+  // Category tiers this run selected (empty = provider default).
+  tiers           CategoryTier[]
+  // The provider release the run read, when the provider is versioned.
+  providerRelease String?            @db.VarChar(64)
+  // Staged import a background run read from, if any.
+  importId        String?            @db.Uuid
+  status          DiscoveryRunStatus @default(running)
   // Counters for the last finished run.
-  found        Int                @default(0)
-  created      Int                @default(0)
-  duplicates   Int                @default(0)
-  flagged      Int                @default(0)
-  invalid      Int                @default(0)
-  error        String?            @db.VarChar(300)
-  createdAt    DateTime           @default(now())
-  finishedAt   DateTime?
+  found           Int                @default(0)
+  created         Int                @default(0)
+  duplicates      Int                @default(0)
+  flagged         Int                @default(0)
+  invalid         Int                @default(0)
+  error           String?            @db.VarChar(300)
+  createdAt       DateTime           @default(now())
+  startedAt       DateTime?
+  // Updated as a background run makes progress; a stale value means the
+  // worker died and the run can be safely reclaimed.
+  heartbeatAt     DateTime?
+  finishedAt      DateTime?
 
+  import     ProviderImport?      @relation(fields: [importId], references: [id], onDelete: SetNull)
   candidates DiscoveryCandidate[]
 
   @@index([createdAt])
+  @@index([status, createdAt])
 }
 
 // A discovered business awaiting research and human review. Same public
@@ -223,18 +255,28 @@ model DiscoveryCandidate {
   runId String? @db.Uuid
 
   // Identity
-  businessName String  @db.VarChar(120)
-  website      String? @db.VarChar(200)
-  city         String? @db.VarChar(100)
-  state        String? @db.VarChar(50)
-  postalCode   String? @db.VarChar(20)
-  country      String  @default("US") @db.Char(2)
+  businessName  String  @db.VarChar(120)
+  website       String? @db.VarChar(200)
+  // Business street address and position: used to tell a second location
+  // of the same business from a duplicate record.
+  streetAddress String? @db.VarChar(200)
+  latitude      Float?
+  longitude     Float?
+  city          String? @db.VarChar(100)
+  state         String? @db.VarChar(50)
+  postalCode    String? @db.VarChar(20)
+  country       String  @default("US") @db.Char(2)
 
-  // Public business contact, each with where it was found.
+  // Verified public business contact, each with where it was found. Only
+  // a person or research sets these; a provider never does.
   phone          String? @db.VarChar(30)
   phoneSourceUrl String? @db.VarChar(500)
   email          String? @db.VarChar(254)
   emailSourceUrl String? @db.VarChar(500)
+
+  // A phone the provider reported. Unverified: it never counts as public
+  // contact, never satisfies Ready to contact, and is not copied on approval.
+  providerPhone String? @db.VarChar(30)
 
   // Normalized match keys, written by src/discovery/normalize.ts.
   domainKey   String? @db.VarChar(200)
@@ -249,6 +291,17 @@ model DiscoveryCandidate {
   query        String?  @db.VarChar(300)
   discoveredAt DateTime @default(now())
 
+  // Provider-reported data quality, kept as the provider stated it.
+  providerRelease     String?                  @db.VarChar(64)
+  providerCategory    String?                  @db.VarChar(100)
+  categoryTier        CategoryTier?
+  providerBrand       String?                  @db.VarChar(120)
+  providerConfidence  Float?
+  providerStatus      ProviderOperatingStatus?
+  providerRetrievedAt DateTime?
+  // Upstream datasets and licenses behind the provider record (attribution).
+  providerSources     String?                  @db.VarChar(200)
+
   // Review
   status          CandidateStatus @default(discovered)
   statusChangedAt DateTime        @default(now())
@@ -260,6 +313,12 @@ model DiscoveryCandidate {
   possibleDuplicateCandidateId String? @db.Uuid
   possibleDuplicateProspectId  String? @db.Uuid
   duplicateReason              String? @db.VarChar(120)
+
+  // Not a duplicate: another location sharing this business's website
+  // (a multi-location business or chain). A research hint only.
+  relatedCandidateId String? @db.Uuid
+  relatedProspectId  String? @db.Uuid
+  relationReason     String? @db.VarChar(120)
 
   // Set on approval; the candidate row stays as provenance.
   prospectId String?   @unique @db.Uuid
@@ -280,6 +339,7 @@ model DiscoveryCandidate {
   @@index([nameKey, locationKey])
   @@index([phoneKey])
   @@index([runId])
+  @@index([categoryTier])
 }
 
 // One recorded observation. No row means unknown (same as ProspectSignal).
@@ -318,4 +378,62 @@ model CandidateNote {
   candidate DiscoveryCandidate @relation(fields: [candidateId], references: [id], onDelete: Cascade)
 
   @@index([candidateId, createdAt])
+}
+
+// One import of a provider release into staging, for a geographic scope
+// (e.g. US-CA). Runs outside the web process; see src/discovery/staging.ts.
+model ProviderImport {
+  id          String               @id @default(uuid()) @db.Uuid
+  provider    String               @db.VarChar(40)
+  release     String               @db.VarChar(64)
+  // The import partition: "US-CA" for a state, "US-CA/ventura-county" for one county.
+  scope       String               @db.VarChar(40)
+  // Human-readable area, e.g. "Ventura County, CA".
+  area        String?              @db.VarChar(100)
+  status      ProviderImportStatus @default(running)
+  recordCount Int                  @default(0)
+  error       String?              @db.VarChar(300)
+  // Importer counters (rows scanned, outside the area, not automotive, malformed...).
+  stats       Json?
+  startedAt   DateTime             @default(now())
+  finishedAt  DateTime?
+
+  places ProviderPlace[]
+  runs   DiscoveryRun[]
+
+  @@index([provider, scope, status, startedAt])
+}
+
+// A staged provider record: only the minimized business fields discovery
+// needs. No raw payloads, emails, social handles, reviews, or people.
+model ProviderPlace {
+  id              String                   @id @default(uuid()) @db.Uuid
+  importId        String                   @db.Uuid
+  externalId      String                   @db.VarChar(200)
+  businessName    String                   @db.VarChar(120)
+  website         String?                  @db.VarChar(200)
+  phone           String?                  @db.VarChar(30)
+  streetAddress   String?                  @db.VarChar(200)
+  city            String?                  @db.VarChar(100)
+  county          String?                  @db.VarChar(100)
+  state           String?                  @db.VarChar(50)
+  postalCode      String?                  @db.VarChar(20)
+  country         String?                  @db.Char(2)
+  latitude        Float?
+  longitude       Float?
+  category        String?                  @db.VarChar(100)
+  categoryTier    CategoryTier?
+  brand           String?                  @db.VarChar(120)
+  confidence      Float?
+  operatingStatus ProviderOperatingStatus?
+  sourceUrl       String?                  @db.VarChar(500)
+  // Upstream datasets and licenses the provider assembled the record from, e.g. "meta (CDLA-Permissive-2.0)".
+  sources         String?                  @db.VarChar(200)
+  retrievedAt     DateTime                 @default(now())
+
+  import ProviderImport @relation(fields: [importId], references: [id], onDelete: Cascade)
+
+  @@unique([importId, externalId])
+  @@index([importId, state, county, city])
+  @@index([importId, categoryTier])
 }
