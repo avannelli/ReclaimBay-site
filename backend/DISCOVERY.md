@@ -313,7 +313,7 @@ verified website, always with the page and a quote as evidence):
 | No online booking | **no**: a service-booking link ("Book an appointment", a booking URL path) or a scheduling widget. **yes**: 2+ pages read with none (a test-drive, quote, or FAQ link is not booking) |
 | Website not on HTTPS | From the HTTPS check: loads with a valid certificate = no; fails, redirects to http, or a certificate error = yes |
 | No recent date on website | The newest copyright/updated/full date on the pages read: current or previous year = no; 2+ years old = yes; none = unknown |
-| 3+ bays or technicians | A stated count ("6 service bays", "4 ASE-certified technicians"): 3+ = yes, 1-2 = no |
+| 3+ bays or technicians | A stated count ("6 service bays", "4 ASE-certified technicians"): 3+ = yes, 1-2 = no. A zero-padded number ("03") or an item of a numbered feature list ("1 Locally Owned 2 Premium Parts 3 ASE Certified Technicians") is not a count; a later real count on the page still is |
 | Has a website, Public business contact | Unchanged: derived from the stored website and verified contact |
 
 **Reconciliation and idempotency.** A run replaces the previous run's
@@ -395,6 +395,15 @@ multi-location site's central toll-free number taken as the location's phone
 because it came first; and a site answering HTTP 403 reported as unreachable.
 Dealership now needs dealer activity, the phone follows the location rules
 above, and 401/403 is `access_blocked`.
+
+**Rules r3 (2026-10-01).** A third controlled batch of ten found one more
+defect: Ojai Valley Imports' numbered feature list ("01 Locally Owned … 02
+Premium Quality Automotive Parts … 03 ASE Certified Technicians") was read as
+three technicians, setting "3+ bays or technicians" to yes (score 85). In r3 a
+count has no leading zero, and a number in a run of three or more consecutive
+numbered headings is a list item, not a count; real count statements ("3
+service bays", "we have 4 technicians") still count. Re-researched, Ojai has
+the signal unknown, its evidence removed, and a score of 70.
 
 ## Approval
 

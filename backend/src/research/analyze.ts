@@ -327,9 +327,49 @@ const isBookingLink = (l: { href: string; text: string }) =>
 const BOOKING_WIDGETS = /(calendly\.com|setmore\.com|booksy\.com|squareup\.com\/appointments|autoops|shopmonkey\.io|tekmetric\.com|mechanicadvisor|myshopmanager|openbay\.com|xtime\.com|autoshopmanager|shop-ware\.com|steercrm)/i;
 
 const NUMBER_WORDS: Record<string, number> = { one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9, ten: 10, eleven: 11, twelve: 12 };
-const COUNT = "(\\d{1,2}|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)";
-const BAYS = new RegExp(`\\b${COUNT}\\s+(?:service\\s+|repair\\s+|work\\s+)?bays?\\b`, "i");
-const TECHS = new RegExp(`\\b${COUNT}\\s+(?:ase[- ]certified\\s+|certified\\s+|experienced\\s+|master\\s+|full[- ]time\\s+)?(?:technicians|mechanics|techs)\\b`, "i");
+// A count is 1-99 without a leading zero: "03" is a list number, not three.
+const COUNT = "([1-9]\\d?|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)";
+const BAYS = new RegExp(`\\b${COUNT}\\s+(?:service\\s+|repair\\s+|work\\s+)?bays?\\b`, "gi");
+const TECHS = new RegExp(`\\b${COUNT}\\s+(?:ase[- ]certified\\s+|certified\\s+|experienced\\s+|master\\s+|full[- ]time\\s+)?(?:technicians|mechanics|techs)\\b`, "gi");
+
+/** A standalone number used as a heading marker: "2 Premium Parts", "05 'Best of Ojai'". */
+const LIST_MARKER = /(?<![\w.,:/$#+-])(\d{1,2})(?=\s+[A-Z'"\u2018\u201c(])/g;
+/** How far apart consecutive items of a numbered list may be. */
+const LIST_GAP = 120;
+
+/**
+ * Whether the number n at `index` is one item of a numbered feature list
+ * ("1 Locally Owned 2 Premium Parts 3 ASE Certified Technicians 4 ..."):
+ * part of a run of 3+ consecutive numbers, in order, each close to the next.
+ */
+function isListNumber(text: string, index: number, n: number): boolean {
+  const from = Math.max(0, index - LIST_GAP * 3);
+  const markers = [...text.slice(from, index + LIST_GAP * 3).matchAll(LIST_MARKER)].map((m) => ({ at: from + m.index, value: Number(m[1]) }));
+  let run = 1;
+  for (const dir of [-1, 1]) {
+    let at = index;
+    for (let v = n + dir; ; v += dir) {
+      const next = markers.find((m) => m.value === v && (dir < 0 ? m.at < at && at - m.at <= LIST_GAP : m.at > at && m.at - at <= LIST_GAP));
+      if (!next) break;
+      run++;
+      at = next.at;
+    }
+  }
+  return run >= 3;
+}
+
+/** The first bay or technician count on the pages that is a statement, not a list number. */
+function countStatement(pages: Page[], re: RegExp) {
+  for (const p of pages) {
+    for (const m of p.parsed.text.matchAll(re)) {
+      const raw = m[1]!.toLowerCase();
+      const n = NUMBER_WORDS[raw] ?? Number(raw);
+      if (/^\d/.test(raw) && isListNumber(p.parsed.text, m.index, n)) continue;
+      return { page: p, index: m.index, match: m, n };
+    }
+  }
+  return null;
+}
 
 const CLOSED_WORDS = /\b(permanently closed|closed permanently|we (are|have) (now )?closed (our doors|for good)|out of business|has closed its doors)\b/i;
 
@@ -663,10 +703,9 @@ export function analyze(subject: Subject, pages: Page[], secureHttps: boolean | 
     }
 
     // 3+ bays or technicians.
-    const count = firstMatch(pages, BAYS) ?? firstMatch(pages, TECHS);
+    const count = countStatement(pages, BAYS) ?? countStatement(pages, TECHS);
     if (count) {
-      const raw = count.match[1]!.toLowerCase();
-      const n = NUMBER_WORDS[raw] ?? Number(raw);
+      const n = count.n;
       if (n >= 1) {
         signals.push({ key: "multiple_bays_or_staff", value: n >= 3 ? "yes" : "no", sourceUrl: count.page.url, excerpt: quote(count.page.parsed.text, count.index, count.match[0].length) });
       }

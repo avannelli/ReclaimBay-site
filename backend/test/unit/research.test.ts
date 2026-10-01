@@ -628,3 +628,50 @@ describe("blocked vs unreachable sites", () => {
     assert.ok(s.calls.includes("https://saviersauto.example.com/"));
   });
 });
+
+/* Batch #2 (2026-10-01): a numbered feature list read as a technician count. */
+describe("bay and technician counts vs. numbered lists", () => {
+  const run = async (body: string) => {
+    const s = server(siteWith(page("Saviers Road Auto Repair", `<h1>Saviers Road Auto Repair</h1><p>(805) 555-0101 · 5577 Saviers Rd, Oxnard</p>${body}`)));
+    const r = await researchCandidate(subject(), s.fetcher(), TODAY);
+    assert.equal(r.outcome, "website_verified");
+    return signal(r, "multiple_bays_or_staff");
+  };
+
+  test("Ojai Valley Imports: '03 ASE Certified Technicians' in a zero-padded list is not a count", async () => {
+    const list = ["01 Locally Owned &amp; Operated Since 1979", "02 Premium Quality Automotive Parts", "03 ASE Certified Technicians", "04 3 6-Month / 36k-Mile Warranty", "05 ' Best of Ojai' Winner for 9 Years Running", "06 R eliable &amp; Transparent"];
+    assert.equal(await run(`<p>Why choose a full-service Auto Repair Shop</p><ul>${list.map((x) => `<li>${x}</li>`).join("")}</ul>`), undefined);
+  });
+
+  test("a sequential numbered list without zero padding is not a count", async () => {
+    assert.equal(await run(`<ol><li>1 Locally Owned</li><li>2 Premium Quality Parts</li><li>3 ASE Certified Technicians</li><li>4 Nationwide Warranty</li></ol>`), undefined);
+    assert.equal(await run(`<h3>2 Honest Estimates</h3><h3>3 Certified Technicians</h3><h3>4 Fast Turnaround</h3>`), undefined, "a list starting mid-way");
+  });
+
+  for (const [text, quoted] of [
+    ["<p>Our 3 technicians handle every make.</p>", "3 technicians"],
+    ["<p>We have 4 ASE certified technicians on staff.</p>", "4 ASE certified technicians"],
+    ["<p>5 ASE-certified technicians, one shop.</p>", "5 ASE-certified technicians"],
+    ["<p>The shop has 3 service bays.</p>", "3 service bays"],
+    ["<p>Since 1988 our team includes 6 technicians who handle everything from brakes to engines.</p>", "6 technicians"],
+    ["<p>We run 3 service bays and 4 technicians, open 5 days a week.</p>", "3 service bays"],
+  ] as const) {
+    test(`a count statement still counts: "${quoted}"`, async () => {
+      const s = await run(text);
+      assert.equal(s?.value, "yes");
+      assert.match(s!.excerpt, new RegExp(quoted));
+      assert.equal(s!.sourceUrl, "https://saviersauto.example.com/");
+    });
+  }
+
+  test("a real count after a numbered list is still found", async () => {
+    const s = await run(`<ol><li>1 Honest Pricing</li><li>2 Certified Technicians</li><li>3 Fast Service</li></ol><p>Today our 7 technicians cover two shifts.</p>`);
+    assert.equal(s?.value, "yes");
+    assert.match(s!.excerpt, /7 technicians/);
+  });
+
+  test("a small count is still 'no', and number words still work", async () => {
+    assert.equal((await run("<p>Our 2 bays keep things personal.</p>"))?.value, "no");
+    assert.equal((await run("<p>Three master technicians on staff.</p>"))?.value, "yes");
+  });
+});
