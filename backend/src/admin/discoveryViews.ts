@@ -3,6 +3,7 @@ import type { recentImports } from "../discovery/staging.js";
 import { OUTCOME_LABELS, type ResearchOutcome } from "../research/researcher.js";
 import type { candidateResearch, researchQueue } from "../research/service.js";
 import { CANDIDATE_SORTS, DEFAULT_BUSINESS_TYPE } from "../discovery/service.js";
+import { AUTO_APPROVAL_LABELS, AUTO_APPROVAL_RULES, isAutoApproved } from "../discovery/autoApproval.js";
 import { CATEGORY_RULES } from "../discovery/categories.js";
 import { CATEGORY_SOURCE_LABELS, CATEGORY_VERDICTS, CATEGORY_VERDICT_LABELS, type CategorySource, type CategoryVerdict } from "../discovery/categoryCheck.js";
 import {
@@ -277,7 +278,7 @@ export function discoveryPage(opts: {
       return `<tr${c.status === "needs_review" ? ' class="attn"' : ""}>
   <td><a class="name" href="/admin/discovery/candidates/${esc(c.id)}">${esc(c.businessName)}</a>${c.website ? `<div class="sub">${extLink(c.website)}</div>` : ""}${tierTag(c.categoryTier)}${c.categoryVerdict && c.categoryVerdict !== "in_target" ? `<div class="sub">${categoryTag(c.categoryVerdict, c.categorySource)}</div>` : ""}${c.relatedCandidateId || c.relatedProspectId ? `<div class="sub"><span class="tag">Other location shares this website</span></div>` : ""}${c.providerStatus === "permanently_closed" ? `<div class="sub"><span class="tag" style="border-color:var(--neg);color:var(--neg)">Provider says closed</span></div>` : ""}${researchTag(c.research[0])}</td>
   <td class="hide-md" data-label="Location">${loc ? esc(loc) : '<span class="muted">—</span>'}</td>
-  <td data-label="Research status">${candidateBadge(c.status)}</td>
+  <td data-label="Research status">${candidateBadge(c.status)}${c.status === "approved" ? `<div class="sub"><span class="tag">${isAutoApproved(c) ? "Approved automatically" : "Approved by a person"}</span></div>` : ""}</td>
   <td data-label="Qualification">${outsideTarget ? '<span class="muted">Not assessed</span>' : qualificationBadge(result.qualification)}</td>
   <td class="num" data-label="Opportunity score">${outsideTarget ? `<span class="small muted">${NOT_SCORED}</span>` : `<span class="score-cell"><b>${result.score}</b><span class="of">/${MAX_SCORE}</span></span><div class="sub">${result.known}/${result.total} known · ${c._count.evidence} evidence</div>`}</td>
   <td class="hide-md" data-label="Duplicate check">${flagged ? `<span class="tag" style="border-color:var(--amber);color:var(--warn)">! Possible duplicate</span><div class="sub">${esc(c.duplicateReason ?? "")}</div>` : '<span class="muted">No flags</span>'}</td>
@@ -564,8 +565,21 @@ export function candidateDetailPage(opts: { detail: Detail; research?: ResearchV
 <p class="small muted" style="margin-top:10px">Researched needs at least one evidence item, and every yes/no signal needs its own. Rejecting or marking a duplicate keeps the record but can never create a prospect. Approval is separate, below.</p>`
     : `<p class="small">${frozen ? "Approved: this candidate is now a prospect." : ""}</p>`;
 
+  const auto = detail.autoApproval;
+  const autoColor = auto.decision === "approve" ? "var(--pos)" : auto.decision === "blocked" ? "var(--neg)" : "var(--amber)";
+  const autoCard = frozen
+    ? ""
+    : `<div class="card" style="border-left:4px solid ${autoColor};margin-bottom:12px"><b>Automatic approval (${esc(AUTO_APPROVAL_RULES)}): ${esc(AUTO_APPROVAL_LABELS[auto.decision])}</b>
+<ul class="plain small" style="margin:6px 0">${auto.reasons.map((r) => `<li>${esc(r)}</li>`).join("")}</ul>${auto.noted.length ? `<p class="small muted" style="margin:0 0 6px">Noted, not blocking: ${esc(auto.noted.join("; "))}.</p>` : ""}
+<p class="small muted" style="margin:0">${
+        auto.decision === "approve"
+          ? "Research approves a candidate like this automatically after its next completed run, or the auto-approve job does. You can also approve it below."
+          : auto.decision === "blocked"
+            ? "The rules never approve this candidate. A person can still change its category or status."
+            : "The rules leave this one to a person: approve it below if it meets the approval requirements, or change its status."
+      }</p></div>`;
   const approveCard = frozen
-    ? `<div class="card" style="border-left:4px solid var(--pos)"><b>✓ Approved</b> ${c.approvedAt ? `<span class="small muted">${fmtDate(c.approvedAt)}</span>` : ""}
+    ? `<div class="card" style="border-left:4px solid var(--pos)"><b>✓ ${isAutoApproved(c) ? "Approved automatically" : "Approved by a person"}</b> ${c.approvedAt ? `<span class="small muted">${fmtDate(c.approvedAt)}</span>` : ""}${isAutoApproved(c) ? `<p class="small" style="margin:6px 0 0">${esc(c.decisionReason ?? "")}</p>` : ""}
 <p class="small" style="margin:6px 0 0">${c.prospect ? `Prospect: <a href="/admin/prospects/${esc(c.prospect.id)}">${esc(c.prospect.businessName ?? "Unnamed")}</a> (${esc(c.prospect.status)}). Edit it there. This record is kept as its discovery history.` : "Linked prospect unavailable."}</p></div>`
     : approvalBlockers.length
       ? `<div class="card"><b>Approve candidate → create prospect</b><p class="small" style="margin:6px 0">Not ready to approve yet:</p><ul class="plain small">${approvalBlockers.map((b) => `<li>${esc(b)}</li>`).join("")}</ul></div>`
@@ -695,7 +709,7 @@ ${statusForm}
 ${c.decisionReason ? `<p class="small" style="margin-top:10px">Decision: ${esc(c.decisionReason)}${c.decidedAt ? ` <span class="muted">(${fmtDate(c.decidedAt)})</span>` : ""}</p>` : ""}${c.researchedAt ? `<p class="small muted" style="margin-top:6px">Researched ${fmtDate(c.researchedAt)}</p>` : ""}</div>`,
 )}
 
-${section("approval", "Approval", approveCard)}
+${section("approval", "Approval", autoCard + approveCard)}
 
 ${section(
   "notes",

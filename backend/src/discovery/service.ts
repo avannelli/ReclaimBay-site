@@ -32,6 +32,7 @@ import {
   isFrozen,
   type CandidateStatus,
 } from "./candidateStatus.js";
+import { AUTO_APPROVAL_RULES, assessAutoApproval, type AutoApprovalAssessment, type LatestResearch } from "./autoApproval.js";
 import { nameCategory } from "./categories.js";
 import {
   CATEGORY_VERDICT_LABELS,
@@ -888,11 +889,22 @@ export async function applyResearchFindings(db: Db, id: string, findings: Resear
  * contact, signals, and evidence are copied; a note records provenance. The
  * candidate is kept, linked to the prospect, as the discovery record.
  */
-export async function approveCandidate(db: Db, id: string) {
+/**
+ * Approves a candidate: creates the Prospect. A person's approval (the
+ * default) or, with `automatic`, the automatic-approval rule, re-checked
+ * here inside the same transaction so nothing can change in between, and
+ * claimed only from Researched (never from a person's Needs review).
+ */
+export async function approveCandidate(db: Db, id: string, opts: { automatic?: boolean } = {}) {
   return db.$transaction(async (tx) => {
     const c = await tx.discoveryCandidate.findUnique({ where: { id }, include: candidateInclude });
     if (!c) throw notFound();
     if (c.status === "approved" || c.prospectId) throw new ProspectError(["Already approved."], "conflict");
+    let automatic: AutoApprovalAssessment | null = null;
+    if (opts.automatic) {
+      automatic = assessAutoApproval({ ...c, latestRun: await latestResearch(tx, id) });
+      if (automatic.decision !== "approve") throw new ProspectError(automatic.reasons, "conflict");
+    }
 
     const errors: string[] = [];
     if (!APPROVABLE_FROM.includes(c.status)) {
@@ -921,8 +933,15 @@ export async function approveCandidate(db: Db, id: string) {
     const now = new Date();
     // Claim first: two simultaneous approvals can't both proceed.
     const { count } = await tx.discoveryCandidate.updateMany({
-      where: { id, status: { in: [...APPROVABLE_FROM] }, prospectId: null },
-      data: { status: "approved", statusChangedAt: now, approvedAt: now, decidedAt: now },
+      where: { id, status: { in: automatic ? ["researched"] : [...APPROVABLE_FROM] }, prospectId: null },
+      data: {
+        status: "approved",
+        statusChangedAt: now,
+        approvedAt: now,
+        decidedAt: now,
+        // An automatic approval records why; a person's approval has no reason, as before.
+        ...(automatic ? { decisionReason: automatic.approvalNote!.slice(0, 500) } : {}),
+      },
     });
     if (count !== 1) throw new ProspectError(["The candidate changed meanwhile. Reload and try again."], "conflict");
 
@@ -935,21 +954,95 @@ export async function approveCandidate(db: Db, id: string) {
         createdAt: e.createdAt,
       })),
       notes: [
-        provenanceNote({
-          provider: c.provider,
-          externalId: c.externalId,
-          sourceUrl: c.sourceUrl,
-          query: c.query,
-          discoveredAt: c.discoveredAt,
-          candidateId: c.id,
-          runId: c.runId,
-          release: c.providerRelease,
-        }),
+        provenanceNote(
+          {
+            provider: c.provider,
+            externalId: c.externalId,
+            sourceUrl: c.sourceUrl,
+            query: c.query,
+            discoveredAt: c.discoveredAt,
+            candidateId: c.id,
+            runId: c.runId,
+            release: c.providerRelease,
+          },
+          automatic ? { automatic: AUTO_APPROVAL_RULES } : {},
+        ),
+        ...(automatic ? [automatic.approvalNote!] : []),
       ],
     });
     await tx.discoveryCandidate.update({ where: { id }, data: { prospectId: prospect.id } });
+    if (automatic) await tx.candidateNote.create({ data: { candidateId: id, body: automatic.approvalNote!.slice(0, 2000) } });
     return { prospect, candidateId: id };
   });
+}
+
+// ---------- automatic approval (rules in autoApproval.ts) ----------
+
+/** The candidate's most recent research run, as the automatic-approval rule reads it. */
+async function latestResearch(db: Db | Tx, candidateId: string): Promise<LatestResearch | null> {
+  const run = await db.candidateResearch.findFirst({
+    where: { candidateId },
+    orderBy: { queuedAt: "desc" },
+    include: { facts: { where: { field: "business_type" }, take: 1 } },
+  });
+  if (!run) return null;
+  const type = run.facts[0];
+  return { status: run.status, outcome: run.outcome, version: run.version, warnings: run.warnings, businessType: type ? { value: type.value, note: type.note } : null };
+}
+
+/** What the automatic-approval rule says about a candidate now (read-only). */
+export async function assessCandidateApproval(db: Db, id: string): Promise<AutoApprovalAssessment | null> {
+  const c = await db.discoveryCandidate.findUnique({ where: { id }, include: candidateInclude });
+  return c ? assessAutoApproval({ ...c, latestRun: await latestResearch(db, id) }) : null;
+}
+
+export interface AutoApprovalOutcome {
+  candidateId: string;
+  businessName: string;
+  assessment: AutoApprovalAssessment;
+  /** Set when this call created the prospect. */
+  prospectId?: string;
+}
+
+/**
+ * Approves the candidate if, and only if, the automatic-approval rule says
+ * so. Never throws for a candidate that doesn't qualify: it reports why it
+ * was held. Safe to repeat: an approved candidate is never approved twice.
+ */
+export async function autoApproveCandidate(db: Db, id: string): Promise<AutoApprovalOutcome | null> {
+  const c = await db.discoveryCandidate.findUnique({ where: { id }, select: { businessName: true } });
+  if (!c) return null;
+  const assessment = (await assessCandidateApproval(db, id))!;
+  if (assessment.decision !== "approve") return { candidateId: id, businessName: c.businessName, assessment };
+  try {
+    const { prospect } = await approveCandidate(db, id, { automatic: true });
+    return { candidateId: id, businessName: c.businessName, assessment, prospectId: prospect.id };
+  } catch (err) {
+    if (!(err instanceof ProspectError)) throw err;
+    // Something an approval checks changed, or an existing prospect matches: a person decides.
+    return { candidateId: id, businessName: c.businessName, assessment: { ...assessment, decision: "review", reasons: err.messages, approvalNote: null } };
+  }
+}
+
+/**
+ * The automatic-approval rule over researched candidates (or the given ones):
+ * a dry run reports what would happen; `apply` approves the eligible ones.
+ */
+export async function runAutoApproval(db: Db, opts: { apply: boolean; candidateIds?: readonly string[] }): Promise<AutoApprovalOutcome[]> {
+  const rows = await db.discoveryCandidate.findMany({
+    where: opts.candidateIds ? { id: { in: [...opts.candidateIds] } } : { status: "researched" },
+    select: { id: true },
+    orderBy: { discoveredAt: "asc" },
+  });
+  const out: AutoApprovalOutcome[] = [];
+  for (const { id } of rows) {
+    const r = opts.apply ? await autoApproveCandidate(db, id) : await (async () => {
+      const c = await db.discoveryCandidate.findUniqueOrThrow({ where: { id }, select: { businessName: true } });
+      return { candidateId: id, businessName: c.businessName, assessment: (await assessCandidateApproval(db, id))! };
+    })();
+    if (r) out.push(r);
+  }
+  return out;
 }
 
 // ---------- reads ----------
@@ -1095,7 +1188,8 @@ export async function getCandidateDetail(db: Db, id: string) {
         ...researchGateErrors(candidate.signals, candidate.evidence),
         ...categoryApprovalErrors(candidate),
       ];
-  return { candidate, result, outsideTarget: isOutsideTarget(candidate), dupCandidate, dupProspect, relCandidate, relProspect, approvalBlockers };
+  const autoApproval = assessAutoApproval({ ...candidate, latestRun: await latestResearch(db, id) });
+  return { candidate, result, outsideTarget: isOutsideTarget(candidate), autoApproval, dupCandidate, dupProspect, relCandidate, relProspect, approvalBlockers };
 }
 
 /** Form values for editing a candidate (same field names as the prospect form). */

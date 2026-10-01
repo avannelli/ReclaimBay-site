@@ -10,7 +10,10 @@
  *     research disagrees with a person, it says so in a warning.
  *   - Contact (phone, email) is set only from the business's own, verified
  *     website, and only when none is stored yet. It is never removed.
- *   - A run never approves anything or creates a prospect.
+ *   - A run never approves anything or creates a prospect itself. After a
+ *     completed run, the automatic-approval rule (discovery/autoApproval.ts)
+ *     decides separately whether the candidate is a clean enough lead to
+ *     become a Prospect without a click; anything less waits for a person.
  *   - Re-running is safe: each run replaces the previous run's research
  *     signals and evidence instead of adding to them. Runs are kept as
  *     history (the newest RESEARCH_HISTORY per candidate).
@@ -19,6 +22,7 @@
  */
 import type { Db } from "../db.js";
 import { researchGateErrors } from "../discovery/approval.js";
+import { autoApproveCandidate } from "../discovery/service.js";
 import { CATEGORY_VERDICT_LABELS, automatedMayReplace, categoryFields, isOutsideTarget } from "../discovery/categoryCheck.js";
 import { phoneKey } from "../discovery/normalize.js";
 import type { Prisma } from "../generated/prisma/client.js";
@@ -64,6 +68,8 @@ export async function enqueueResearch(db: Db, candidateIds: readonly string[], t
 export interface ProcessDeps {
   /** A fresh fetcher per run (tests inject one that never touches the network). */
   makeFetcher?: () => PoliteFetcher;
+  /** Apply the automatic-approval rule after a completed run (default true). */
+  autoApprove?: boolean;
   today?: Date;
   sleep?: (ms: number) => Promise<void>;
 }
@@ -96,6 +102,7 @@ export async function processResearch(db: Db, researchId: string, deps: ProcessD
     await db.discoveryCandidate.update({ where: { id: c.id }, data: { status: "researching", statusChangedAt: now } });
   }
 
+  let stored;
   try {
     const fetcher = deps.makeFetcher?.() ?? new PoliteFetcher();
     const result = await researchCandidate(
@@ -114,7 +121,7 @@ export async function processResearch(db: Db, researchId: string, deps: ProcessD
       fetcher,
       deps.today ?? new Date(),
     );
-    return await store(db, researchId, c.id, result, movedToResearching);
+    stored = await store(db, researchId, c.id, result, movedToResearching);
   } catch (err) {
     if (movedToResearching) await db.discoveryCandidate.update({ where: { id: c.id }, data: { status: "discovered", statusChangedAt: new Date() } });
     return db.candidateResearch.update({
@@ -122,6 +129,9 @@ export async function processResearch(db: Db, researchId: string, deps: ProcessD
       data: { status: "failed", error: redact(`Research error: ${err instanceof Error ? err.message : "unknown"}`), finishedAt: new Date() },
     });
   }
+  // Separate from the run: the run is stored whatever the approval decides.
+  if (deps.autoApprove !== false && stored.status === "completed") await autoApproveCandidate(db, c.id);
+  return stored;
 }
 
 type Tx = Prisma.TransactionClient;

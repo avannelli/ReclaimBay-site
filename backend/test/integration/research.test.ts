@@ -61,7 +61,8 @@ describe("automated research (service)", { skip: skipReason }, () => {
   async function research(id: string, web = fixtureWeb(independentShop())) {
     const q = await enqueueResearch(db, [id], "admin");
     assert.equal(q.queued.length, 1, JSON.stringify(q.skipped));
-    return processResearch(db, q.queued[0]!.researchId, { makeFetcher: web.makeFetcher, today: TODAY });
+    // These tests are about research itself; automatic approval has its own tests (discovery.autoApproval.test.ts).
+    return processResearch(db, q.queued[0]!.researchId, { makeFetcher: web.makeFetcher, today: TODAY, autoApprove: false });
   }
 
   test("a successful run verifies the website and contact, records evidence-backed signals, and leaves approval to a person", async () => {
@@ -323,7 +324,8 @@ describe("automated research in the admin (HTTP)", { skip: skipReason }, () => {
       loadConfig({ DATABASE_URL: TEST_DATABASE_URL, ALLOWED_ORIGIN: "https://reclaimbay.com", ADMIN_SECRET: SECRET, TRUST_PROXY_HOPS: "0" }),
       db,
       false,
-      { research: { makeFetcher: web.makeFetcher, today: TODAY, sleep: async () => undefined } },
+      // Research in the admin, without the automatic-approval step (tested in discovery.autoApproval.test.ts).
+      { research: { makeFetcher: web.makeFetcher, today: TODAY, sleep: async () => undefined, autoApprove: false } },
     );
     const login = await app.inject({ method: "POST", url: "/admin/login", headers: FORM, payload: new URLSearchParams({ secret: SECRET }).toString() });
     cookie = String(login.headers["set-cookie"]).split(";")[0]!;

@@ -7,6 +7,9 @@
  *   npm run discovery:research -- --limit 5 [--tier core] [--city Oxnard] [--status discovered]
  *   npm run discovery:research -- --process        (only process what is already queued)
  *
+ * After each completed run the automatic-approval rule may approve a clean,
+ * high-confidence lead; the output says which.
+ *
  * --limit picks candidates that have never been researched, newest first,
  * skips any the category check puts outside the target category, and is
  * capped at 25 so a run stays a small, observable batch. --candidate
@@ -15,6 +18,7 @@
 import { parseArgs } from "node:util";
 import { loadConfig } from "../config.js";
 import { createDb } from "../db.js";
+import { isAutoApproved } from "../discovery/autoApproval.js";
 import { listCandidates } from "../discovery/service.js";
 import { autoResearchIds, enqueueResearch, processQueuedResearch } from "../research/service.js";
 
@@ -51,7 +55,9 @@ try {
   if (reclaimed) console.log(`Marked ${reclaimed} interrupted run(s) as failed.`);
   for (const r of processed) {
     if (!r) continue;
-    console.log(`  ${r.candidateId} ${r.status}: ${r.outcome ?? "-"} (${r.pagesFetched} page(s))${r.error ? ` ${r.error}` : ""}`);
+    const c = await db.discoveryCandidate.findUnique({ where: { id: r.candidateId }, select: { status: true, decisionReason: true } });
+    const approval = c && isAutoApproved(c) ? " -> approved automatically" : "";
+    console.log(`  ${r.candidateId} ${r.status}: ${r.outcome ?? "-"} (${r.pagesFetched} page(s))${r.error ? ` ${r.error}` : ""}${approval}`);
   }
 } finally {
   await db.$disconnect();

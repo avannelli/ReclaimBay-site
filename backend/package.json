@@ -21,7 +21,8 @@
     "discovery:import": "node --env-file-if-exists=.env dist/scripts/importProvider.js",
     "discovery:process": "node --env-file-if-exists=.env dist/scripts/processDiscoveryRuns.js",
     "discovery:research": "node --env-file-if-exists=.env dist/scripts/researchCandidates.js",
-    "discovery:check-categories": "node --env-file-if-exists=.env dist/scripts/checkCategories.js"
+    "discovery:check-categories": "node --env-file-if-exists=.env dist/scripts/checkCategories.js",
+    "discovery:auto-approve": "node --env-file-if-exists=.env dist/scripts/autoApprove.js"
   },
   "dependencies": {
     "@duckdb/node-api": "1.5.6-r.1",

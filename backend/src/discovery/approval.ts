@@ -91,9 +91,9 @@ export interface Provenance {
 }
 
 /** The note written on the new Prospect so its origin is never lost. */
-export function provenanceNote(p: Provenance): string {
+export function provenanceNote(p: Provenance, opts: { automatic?: string } = {}): string {
   const parts = [
-    "Approved by a human from a discovery candidate.",
+    opts.automatic ? `Approved automatically (${opts.automatic}) from a discovery candidate.` : "Approved by a human from a discovery candidate.",
     `Provider: ${p.provider}.`,
     p.externalId && `Provider ID: ${p.externalId}.`,
     p.sourceUrl && `Discovery source: ${p.sourceUrl}.`,

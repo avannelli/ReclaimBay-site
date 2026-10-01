@@ -90,7 +90,7 @@ URLs plus the discovery record URL. The detail page lists them together under
 | `researching` | Being researched. |
 | `researched` | Research recorded, and every recorded fact has a public source. |
 | `needs_review` | Waiting for a human look. Every possible duplicate enters here. |
-| `approved` | A human approved it. It is now a Prospect (status New). Terminal. |
+| `approved` | Approved by a person, or automatically as a clean, high-confidence lead (see "Automatic approval"). It is now a Prospect (status New). Terminal. |
 | `rejected` | A human decided it should not enter the pipeline (reason required). |
 | `duplicate` | The same business as another candidate or prospect (reason required). |
 
@@ -472,7 +472,8 @@ Shop's site lists the provider's number as "805 388 - 0700", which was missed.
 
 ## Approval
 
-Approval is an explicit human POST from the candidate page. It:
+Approval is an explicit human POST from the candidate page, or the automatic
+approval rule below. It:
 
 1. Checks the candidate is `researched` or `needs_review`, every recorded signal
    has evidence, the facts pass the **same validators as creating a prospect by
@@ -497,6 +498,61 @@ Ready to contact, a public phone or email with its source), exactly as before.
 A disqualified or unverified candidate can be approved into the pipeline and
 still can never be qualified until its facts change. Candidate notes are not
 copied; they stay on the candidate.
+
+### Automatic approval (rules `approval@a1`)
+
+A clean, high-confidence lead becomes a Prospect without a click; anything less
+waits for a person in the existing workflow. The rule
+(`src/discovery/autoApproval.ts`) adds no criteria, signals, or weights: it
+reads the existing qualification, category check, research outcome, and
+approval gates, and decides one of three outcomes.
+
+**Approve automatically** only when all of these hold:
+- status is **Researched** (never "Needs review": that is a person's, or the
+  duplicate check's, request for a human look);
+- the category check is **in target** (from the rules or a person);
+- website ownership is **confirmed** (`websiteVerifiedAt`) and the latest
+  research run **completed** with the website verified;
+- qualification is **Meets criteria**, with Independent shop = yes and Offers
+  general repair = yes;
+- the latest run's business type doesn't contradict an independent shop
+  (dealership, chain or franchise, possibly a chain, or independent-plus-dealer
+  activity);
+- the latest run has **no blocking warning**: a different address on the
+  website, the website saying it has closed, research disagreeing with
+  something a person recorded (a signal or the category), the website's phone
+  differing from the stored phone, or no phone tied to this location. Any
+  warning research may add later that isn't listed also blocks. Only "the
+  provider's phone is not on the website" is not blocking (ownership was
+  confirmed by name and address, and the provider phone is never contact); it
+  is repeated in the approval note;
+- every existing approval requirement passes (evidence for every signal, the
+  prospect validators, no confident duplicate of an existing prospect).
+
+**Blocked:** wrong category, or a person rejected it or marked it a duplicate.
+**Held for human review:** everything else, with the reasons listed.
+
+**When it runs.** After each completed research run (the run is stored first;
+the approval is a separate, atomic step that re-checks the rule inside its own
+transaction and claims only from Researched). For candidates researched before
+this rule existed: `npm run discovery:auto-approve` (dry run; `-- --apply` to
+approve; `-- --candidate <id>` for specific candidates). Repeating it never
+creates a second prospect.
+
+**Audit.** An automatic approval records why: the candidate's decision reason
+and a candidate note ("Automatically approved (approval@a1): target category
+confirmed (in target, from the business name), website ownership verified
+(research r11), independent shop confirmed, general repair confirmed,
+qualification meets criteria, no blocking warnings."), and on the prospect the
+provenance note ("Approved automatically (approval@a1) from a discovery
+candidate. …") plus the same reason. The admin shows "Approved automatically"
+or "Approved by a person", and on every other candidate the rule's current
+verdict with its reasons.
+
+**People stay in charge.** Manual approval works as before (from Researched or
+Needs review). A person can hold a candidate by moving it to Needs review,
+reject it, or change its category; the rule never overrides any of that, and it
+never runs on approved, rejected, or duplicate candidates. It sends nothing.
 
 ## Scoring and qualification
 
