@@ -17,10 +17,11 @@ import {
   recentRuns,
   processDiscoveryRun,
   runDiscovery,
+  setCandidateCategory,
   updateCandidate,
 } from "../discovery/service.js";
 import { recentImports } from "../discovery/staging.js";
-import { MAX_BATCH, candidateResearch, enqueueResearch, processQueuedResearch, researchQueue, type ProcessDeps } from "../research/service.js";
+import { MAX_BATCH, autoResearchIds, candidateResearch, enqueueResearch, processQueuedResearch, researchQueue, type ProcessDeps } from "../research/service.js";
 import { ProspectError } from "../prospects.js";
 
 type Form = Record<string, string>;
@@ -37,6 +38,7 @@ const NOTICES: Record<string, string> = {
   evidence: "Evidence added.",
   evidence_removed: "Evidence removed.",
   research: "Research queued. It runs in the background (about 10 seconds per website); refresh to see the results.",
+  category: "Category check updated. This is not qualification and did not change the status.",
 };
 
 const pick = (body: Form | undefined, keys: string[]): Values =>
@@ -113,6 +115,7 @@ export async function discoveryRoutes(app: FastifyInstance, opts: { config: Conf
       city: q.city,
       flagged: q.flagged,
       tier: q.tier,
+      category: q.category,
       provider: q.provider,
       run: q.run && UUID_RE.test(q.run) ? q.run : undefined,
       sort: q.sort,
@@ -121,7 +124,7 @@ export async function discoveryRoutes(app: FastifyInstance, opts: { config: Conf
     if (q.done === "research_batch") {
       notice = "Research queued for up to 10 candidates in this view. It runs in the background, one website at a time; refresh to see progress.";
     } else if (q.done === "research_none") {
-      notice = "Nothing to research in this view: every candidate here has been researched, has research queued, or can't be researched.";
+      notice = "Nothing to research in this view: every candidate here has been researched, has research queued, can't be researched, or is outside the target category.";
     }
     if (q.done === "run" && q.run && UUID_RE.test(q.run)) {
       const run = await db.discoveryRun.findUnique({ where: { id: q.run } });
@@ -213,6 +216,19 @@ export async function discoveryRoutes(app: FastifyInstance, opts: { config: Conf
     }
   });
 
+  // A person's category decision: not qualification, and never a status change.
+  app.post<{ Params: { id: string }; Body: Form }>("/admin/discovery/candidates/:id/category", writeLimit, async (req, reply) => {
+    const { id } = req.params;
+    if (!validId(id, reply)) return reply;
+    try {
+      const r = await setCandidateCategory(db, id, req.body?.categoryVerdict ?? "", req.body?.categoryReason);
+      req.log.info({ candidateId: id, verdict: r.verdict, source: r.source }, "candidate category set");
+      return reply.redirect(`/admin/discovery/candidates/${id}?done=category`, 303);
+    } catch (err) {
+      return handleError(err, reply, (errors) => renderDetail(reply, id, { errors, values: pick(req.body, ["categoryVerdict", "categoryReason"]) }));
+    }
+  });
+
   app.post<{ Params: { id: string }; Body: Form }>("/admin/discovery/candidates/:id/notes", writeLimit, async (req, reply) => {
     const { id } = req.params;
     if (!validId(id, reply)) return reply;
@@ -270,12 +286,13 @@ export async function discoveryRoutes(app: FastifyInstance, opts: { config: Conf
     { config: { rateLimit: { max: 10, timeWindow: "1 minute" } } },
     async (req, reply) => {
       const b = req.body ?? {};
-      const filters = pick(b, ["q", "status", "qualification", "band", "state", "city", "flagged", "tier", "provider", "sort"]);
+      const filters = pick(b, ["q", "status", "qualification", "band", "state", "city", "flagged", "tier", "category", "provider", "sort"]);
       const run = typeof b.run === "string" && UUID_RE.test(b.run) ? b.run : undefined;
       const list = await listCandidates(db, { ...filters, run });
-      // Only candidates never researched, so a batch moves through the list.
-      const ids = list.rows.filter((r) => !r.candidate.research.length && !["approved", "rejected", "duplicate"].includes(r.candidate.status)).map((r) => r.candidate.id);
-      const r = await enqueueResearch(db, ids.slice(0, MAX_BATCH), "batch");
+      // Only candidates never researched (so a batch moves through the list),
+      // and never one outside the target category.
+      const ids = autoResearchIds(list.rows, MAX_BATCH);
+      const r = await enqueueResearch(db, ids, "batch");
       if (!r.queued.length) return reply.redirect("/admin/discovery?done=research_none", 303);
       startResearch();
       return reply.redirect("/admin/discovery?done=research_batch", 303);

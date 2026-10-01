@@ -10,12 +10,13 @@
  * person searches by hand.
  */
 import { isOwnWebsiteHost } from "../discovery/normalize.js";
+import type { CategoryResult } from "../discovery/categoryCheck.js";
 import { analyze, type Fact, type Page, type PageRole, type SignalProposal, type Subject, type ContactProposal } from "./analyze.js";
 import { RESEARCH_LIMITS, type PoliteFetcher, type SourceRecord } from "./fetcher.js";
 import { parseHtml } from "./html.js";
 
 /** Bumped whenever a rule changes, so runs say which rules produced them. */
-export const RESEARCH_VERSION = "r10";
+export const RESEARCH_VERSION = "r11";
 
 export type ResearchOutcome =
   | "website_verified"
@@ -58,6 +59,8 @@ export interface ResearchResult {
   /** Pages of the business's site that loaded. */
   pagesFetched: number;
   websiteVerified: boolean;
+  /** Website-stage category check (only for a verified website), or null. */
+  category: CategoryResult | null;
 }
 
 const ROLE_PATTERNS: [PageRole, RegExp][] = [
@@ -112,6 +115,7 @@ export async function researchCandidate(subject: Subject, fetcher: PoliteFetcher
     contact: {} as ContactProposal,
     sources: fetcher.sources,
     websiteVerified: false,
+    category: null as CategoryResult | null,
   };
 
   if (!subject.website || !isOwnWebsiteHost(subject.website)) {
@@ -197,5 +201,6 @@ export async function researchCandidate(subject: Subject, fetcher: PoliteFetcher
     warnings: a.warnings,
     pagesFetched: pages.length,
     websiteVerified: a.ownership === "verified",
+    category: a.category,
   };
 }

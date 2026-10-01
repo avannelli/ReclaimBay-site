@@ -32,6 +32,16 @@ import {
   isFrozen,
   type CandidateStatus,
 } from "./candidateStatus.js";
+import { nameCategory } from "./categories.js";
+import {
+  CATEGORY_VERDICT_LABELS,
+  automatedMayReplace,
+  categoryFields,
+  isCategoryVerdict,
+  isOutsideTarget,
+  type CategoryResult,
+  type CategoryVerdict,
+} from "./categoryCheck.js";
 import { MatchIndex, flagReason, relationReason, type IncomingKeys, type MatchKeys, type Verdict } from "./dedupe.js";
 import {
   cleanDiscovered,
@@ -164,6 +174,8 @@ async function insertCandidate(db: Db | Tx, n: NewCandidate) {
   const v = n.verdict;
   const flagged = v.outcome === "REVIEW_REQUIRED";
   const related = v.relatedCandidate || v.relatedProspect;
+  // The category check annotates the candidate; it never stops it being stored.
+  const category = nameCategory({ businessName: b.businessName, category: b.category, categoryTier: b.categoryTier });
   return db.discoveryCandidate.create({
     data: {
       runId: n.runId,
@@ -202,6 +214,7 @@ async function insertCandidate(db: Db | Tx, n: NewCandidate) {
       relatedCandidateId: v.relatedCandidate?.id ?? null,
       relatedProspectId: v.relatedProspect?.id ?? null,
       relationReason: related ? relationReason(v) : null,
+      ...categoryFields(category, new Date()),
     },
   });
 }
@@ -562,6 +575,12 @@ export async function updateCandidate(db: Db, id: string, raw: Raw) {
       .map(([key, value]) => ({ candidateId: id, key, value: value!, observedAt: now }));
     if (added.length) await tx.candidateSignal.createMany({ data: added });
 
+    // A new name gets a new name check, unless a person or the website decided.
+    const renamed = f.businessName !== current.businessName;
+    const category = renamed ? nameCategory({ businessName: f.businessName!, category: current.providerCategory, categoryTier: current.categoryTier }) : null;
+    const recheck =
+      category && automatedMayReplace({ verdict: current.categoryVerdict, source: current.categorySource }, category) ? categoryFields(category, now) : {};
+
     // Provider facts (street, position, provider phone) are kept as discovered.
     return tx.discoveryCandidate.update({
       where: { id },
@@ -571,6 +590,7 @@ export async function updateCandidate(db: Db, id: string, raw: Raw) {
         ...storedKeysOf({ ...f, businessName: f.businessName!, providerPhone: current.providerPhone }),
         // A different website is no longer the one research verified.
         ...((f.website ?? null) !== current.website ? { websiteVerifiedAt: null } : {}),
+        ...recheck,
       },
     });
   });
@@ -613,6 +633,115 @@ export async function changeCandidateStatus(db: Db, id: string, toRaw: string, r
     if (count !== 1) throw new ProspectError(["The status changed meanwhile. Reload and try again."], "conflict");
     return { from: current.status, to };
   });
+}
+
+// ---------- category check (not qualification, not a status) ----------
+
+/** Why the category check stops approval (empty when it doesn't). */
+export function categoryApprovalErrors(c: { categoryVerdict: string | null; categoryReason: string | null }): string[] {
+  if (!isOutsideTarget(c)) return [];
+  const why = c.categoryReason ? ` (${c.categoryReason.replace(/\.$/, "")})` : "";
+  return [`The category check says this business is outside the target category${why}. Reject it, or override the category check if it is a target business.`];
+}
+
+/** What a person may choose: a verdict, or "automatic" to hand the decision back to the rules. */
+export const CATEGORY_OVERRIDES = ["in_target", "wrong_category", "unclear", "automatic"] as const;
+
+/**
+ * A person's category decision. Needs a reason, is stored as "manual" so no
+ * automated check replaces it, and never changes the candidate's status.
+ * "automatic" clears the decision and re-runs the name check.
+ */
+export async function setCandidateCategory(db: Db, id: string, verdictRaw: string, reasonRaw: string | null | undefined) {
+  const reason = reasonRaw?.replace(/\s+/g, " ").trim() || "";
+  const errors: string[] = [];
+  if (!(CATEGORY_OVERRIDES as readonly string[]).includes(verdictRaw)) errors.push("Choose a category decision.");
+  if (!reason) errors.push("A category decision needs a reason.");
+  if (reason.length > 280) errors.push("Category reason is too long (max 280).");
+  if (errors.length) throw new ProspectError(errors);
+
+  return db.$transaction(async (tx) => {
+    const c = await tx.discoveryCandidate.findUnique({ where: { id } });
+    if (!c) throw notFound();
+    if (isFrozen(c.status)) throw frozenError();
+    const now = new Date();
+    const next: CategoryResult =
+      verdictRaw === "automatic"
+        ? nameCategory({ businessName: c.businessName, category: c.providerCategory, categoryTier: c.categoryTier })
+        : { verdict: verdictRaw as CategoryResult["verdict"], source: "manual", reason, sourceUrl: null, rules: "" };
+    await tx.discoveryCandidate.update({ where: { id }, data: categoryFields(next, now) });
+    const body =
+      verdictRaw === "automatic"
+        ? `Category check handed back to the rules: ${CATEGORY_VERDICT_LABELS[next.verdict]} (${next.reason}) Reason: ${reason}`
+        : `Category check set by a person to ${CATEGORY_VERDICT_LABELS[next.verdict]}. Reason: ${reason}`;
+    await tx.candidateNote.create({ data: { candidateId: id, body: body.slice(0, 2000) } });
+    return next;
+  });
+}
+
+export interface CategoryBackfill {
+  checked: number;
+  /** Records whose name-stage result differs from what is stored (written only with apply). */
+  changes: { id: string; name: string; city: string | null; from: CategoryVerdict | null; to: CategoryVerdict; reason: string }[];
+  skipped: { manual: number; website: number; approved: number };
+  /** Every candidate's verdict after the backfill (or after it would run). */
+  verdicts: Record<CategoryVerdict, number>;
+}
+
+/**
+ * The name-stage category check over existing candidates (the backfill).
+ * Writes only the category fields and only when `apply`; never a status,
+ * research history, signals, evidence, or scores. Leaves a person's decision,
+ * a verdict from the business's own website, and approved candidates alone,
+ * and doesn't rewrite a record whose result is unchanged.
+ */
+export async function backfillCategoryCheck(db: Db, opts: { apply: boolean }): Promise<CategoryBackfill> {
+  const out: CategoryBackfill = {
+    checked: 0,
+    changes: [],
+    skipped: { manual: 0, website: 0, approved: 0 },
+    verdicts: { in_target: 0, wrong_category: 0, unclear: 0 },
+  };
+  let cursor: string | undefined;
+  for (;;) {
+    const rows = await db.discoveryCandidate.findMany({
+      orderBy: { id: "asc" },
+      take: 500,
+      ...(cursor ? { cursor: { id: cursor }, skip: 1 } : {}),
+      select: {
+        id: true,
+        businessName: true,
+        city: true,
+        status: true,
+        providerCategory: true,
+        categoryTier: true,
+        categoryVerdict: true,
+        categorySource: true,
+        categoryReason: true,
+        categoryRules: true,
+      },
+    });
+    if (!rows.length) return out;
+    cursor = rows.at(-1)!.id;
+    for (const c of rows) {
+      out.checked++;
+      const next = nameCategory({ businessName: c.businessName, category: c.providerCategory, categoryTier: c.categoryTier });
+      const keep = c.status === "approved" || !automatedMayReplace({ verdict: c.categoryVerdict, source: c.categorySource }, next);
+      if (keep) {
+        if (c.status === "approved") out.skipped.approved++;
+        else if (c.categorySource === "manual") out.skipped.manual++;
+        else out.skipped.website++;
+        if (c.categoryVerdict) out.verdicts[c.categoryVerdict]++;
+        continue;
+      }
+      out.verdicts[next.verdict]++;
+      const unchanged =
+        c.categoryVerdict === next.verdict && c.categorySource === next.source && c.categoryReason === next.reason && c.categoryRules === next.rules;
+      if (unchanged) continue;
+      out.changes.push({ id: c.id, name: c.businessName, city: c.city, from: c.categoryVerdict, to: next.verdict, reason: next.reason });
+      if (opts.apply) await db.discoveryCandidate.update({ where: { id: c.id }, data: categoryFields(next, new Date()) });
+    }
+  }
 }
 
 /** Recorded signals without evidence, for the transition rules. */
@@ -772,6 +901,7 @@ export async function approveCandidate(db: Db, id: string) {
       );
     }
     errors.push(...researchGateErrors(c.signals, c.evidence));
+    errors.push(...categoryApprovalErrors(c));
     const { input, errors: inputErrors } = candidateToProspectInput(c);
     errors.push(...inputErrors);
 
@@ -836,6 +966,8 @@ export interface CandidateFilters {
   provider?: string;
   /** Only candidates stored by this discovery run. */
   run?: string;
+  /** Category check verdict. */
+  category?: string;
   sort?: string;
 }
 
@@ -867,6 +999,7 @@ export async function listCandidates(db: Db, filters: CandidateFilters) {
   if (filters.provider?.trim()) and.push({ provider: filters.provider.trim() });
   if (filters.run) and.push({ runId: filters.run });
   if (filters.tier === "core" || filters.tier === "adjacent") and.push({ categoryTier: filters.tier });
+  if (filters.category && isCategoryVerdict(filters.category)) and.push({ categoryVerdict: filters.category });
   if (filters.flagged === "1") {
     and.push({ OR: [{ possibleDuplicateCandidateId: { not: null } }, { possibleDuplicateProspectId: { not: null } }] });
   }
@@ -881,18 +1014,23 @@ export async function listCandidates(db: Db, filters: CandidateFilters) {
     orderBy: { discoveredAt: "desc" },
     take: CANDIDATE_FETCH_CAP,
   });
-  let scored = rows.map((candidate) => ({ candidate, result: scoreCandidate(candidate) }));
+  // Outside the target category: not scored, not qualified, not ranked.
+  let scored = rows.map((candidate) => ({ candidate, result: scoreCandidate(candidate), outsideTarget: isOutsideTarget(candidate) }));
 
   const qualification = filters.qualification as Qualification | undefined;
-  if (qualification) scored = scored.filter((r) => r.result.qualification === qualification);
+  if (qualification) scored = scored.filter((r) => !r.outsideTarget && r.result.qualification === qualification);
   const band = filters.band as ScoreBand | undefined;
-  if (band === "high" || band === "medium" || band === "low") scored = scored.filter((r) => r.result.band === band);
+  if (band === "high" || band === "medium" || band === "low") scored = scored.filter((r) => !r.outsideTarget && r.result.band === band);
 
   const sort: CandidateSort = filters.sort && filters.sort in CANDIDATE_SORTS ? (filters.sort as CandidateSort) : "discovered";
-  if (sort === "score") scored.sort((a, b) => b.result.score - a.result.score);
+  let notRanked = 0;
+  if (sort === "score") {
+    notRanked = scored.filter((r) => r.outsideTarget).length;
+    scored = scored.filter((r) => !r.outsideTarget).sort((a, b) => b.result.score - a.result.score);
+  }
   if (sort === "name") scored.sort((a, b) => a.candidate.nameKey.localeCompare(b.candidate.nameKey));
 
-  return { total: scored.length, sort, rows: scored.slice(0, CANDIDATE_LIST_LIMIT) };
+  return { total: scored.length, sort, notRanked, rows: scored.slice(0, CANDIDATE_LIST_LIMIT) };
 }
 
 export async function candidateStatusCounts(db: Db) {
@@ -955,8 +1093,9 @@ export async function getCandidateDetail(db: Db, id: string) {
           ? []
           : [`Status is ${CANDIDATE_STATUS_LABELS[candidate.status]}; only Researched or Needs review can be approved.`]),
         ...researchGateErrors(candidate.signals, candidate.evidence),
+        ...categoryApprovalErrors(candidate),
       ];
-  return { candidate, result, dupCandidate, dupProspect, relCandidate, relProspect, approvalBlockers };
+  return { candidate, result, outsideTarget: isOutsideTarget(candidate), dupCandidate, dupProspect, relCandidate, relProspect, approvalBlockers };
 }
 
 /** Form values for editing a candidate (same field names as the prospect form). */

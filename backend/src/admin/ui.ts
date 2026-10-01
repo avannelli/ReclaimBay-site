@@ -107,6 +107,8 @@ const FIELD_PATTERNS: [string, RegExp][] = [
   ["sourceUrl", /^Source URL/],
   ["excerpt", /^Excerpt/],
   ["body", /^Note /],
+  ["categoryVerdict", /^Choose a category decision/],
+  ["categoryReason", /^(A category decision needs a reason|Category reason is too long)/],
   ["status", /^(Unknown status|Already |Can't move|Do not contact is permanent|Moving to|Qualified requires|Ready to contact requires|Researched requires|Every recorded signal|Use Approve|The status changed|Reason is too long)/],
 ];
 

@@ -1041,3 +1041,69 @@ describe("phone numbers written with spaced separators", () => {
     assert.equal(signal(r, "general_repair_services"), undefined, "no automotive signal is invented");
   });
 });
+
+/* Category Validation v1 (r11): the website-stage category check, on the business's own website only. */
+describe("category check on the business's own website", () => {
+  const run = async (title: string, body: string, over: Partial<Subject> = {}, head = "") => {
+    const s = server(siteWith(page(title, body, head)));
+    return researchCandidate(subject(over), s.fetcher(), TODAY);
+  };
+
+  test("Pops One Stop Repair Shop: a shoe and vacuum repair site is wrong category, quoting the site", async () => {
+    const r = await run(
+      "POPS ONE STOP REPAIR SHOP | HOME",
+      "<h1>Pops One Stop Repair Shop</h1><p>SHOE REPAIR BOOT REPAIR VACUUM REPAIR LAMP REPAIR SHARPENING SERVICE</p><p>Pop's Camarillo 805 388 - 0700</p>",
+      { businessName: "Pops One Stop Repair Shop", providerPhone: "+18053880700" },
+    );
+    assert.equal(r.outcome, "website_verified", "the category check never decides ownership");
+    assert.equal(r.category!.verdict, "wrong_category");
+    assert.equal(r.category!.source, "website");
+    assert.equal(r.category!.sourceUrl, "https://saviersauto.example.com/");
+    assert.match(r.category!.reason, /^Website describes shoe repair, boot repair, vacuum repair, lamp repair and sharpening; no automotive services or vocabulary on the \d pages? read\.$/);
+    const f = fact(r, "business_category")!;
+    assert.deepEqual([f.value, f.state, f.sourceUrl], ["Wrong category", "verified", "https://saviersauto.example.com/"]);
+    assert.equal(signal(r, "general_repair_services"), undefined, "no automotive signal is invented or changed");
+  });
+
+  test("a script-rendered site with nothing readable says nothing about the category", async () => {
+    const ld = `<script type="application/ld+json">{"@type":"AutoRepair","name":"Saviers Road Auto Repair","telephone":"(805) 555-0101","address":{"streetAddress":"5577 Saviers Rd"}}</script>`;
+    const s = server(siteWith(`<!doctype html><html><head><title>Saviers Road Auto Repair</title>${ld}</head><body><div id="root"></div></body></html>`));
+    const r = await researchCandidate(subject(), s.fetcher(), TODAY);
+    assert.equal(r.outcome, "website_verified");
+    assert.equal(r.category, null);
+    assert.equal(fact(r, "business_category"), undefined);
+  });
+
+  test("a clear general repair site is in target, citing the services", async () => {
+    const s = server(goodSite());
+    const r = await researchCandidate(subject(), s.fetcher(), TODAY);
+    assert.equal(r.category!.verdict, "in_target");
+    assert.match(r.category!.reason, /^The website names general repair services \(/);
+    assert.ok(r.category!.sourceUrl?.startsWith("https://saviersauto.example.com/"));
+  });
+
+  test("a Spanish-language repair site is not wrong category", async () => {
+    const r = await run(
+      "Taller Mecánico Saviers",
+      "<h1>Saviers Road Auto Repair</h1><p>(805) 555-0101</p><p>Taller mecánico. Reparamos frenos, motores y transmisiones de su vehículo. También afilado de cuchillos y reparación de zapatos y botas.</p>",
+    );
+    assert.equal(r.outcome, "website_verified");
+    assert.notEqual(r.category?.verdict, "wrong_category");
+  });
+
+  test("an auto-glass-only site keeps the existing general-repair result and isn't also a category error", async () => {
+    const r = await run(
+      "Saviers Road Auto Repair",
+      "<h1>Saviers Road Auto Repair</h1><p>(805) 555-0101</p><p>Auto glass and windshield replacement, and window tint, for every car and truck.</p>",
+    );
+    assert.equal(signal(r, "general_repair_services")!.value, "no", "the existing qualification rule is unchanged");
+    assert.equal(r.category, null, "no double report as a category error");
+  });
+
+  test("a website that isn't confirmed as the business's own is never category-checked", async () => {
+    const r = await run("Pops Shoe Repair", "<h1>Pops Shoe Repair</h1><p>Shoe repair, boot repair, vacuum repair, sharpening.</p>", { providerPhone: "+18059990000" });
+    assert.equal(r.outcome, "website_mismatch");
+    assert.equal(r.category, null);
+    assert.equal(fact(r, "business_category"), undefined);
+  });
+});

@@ -38,14 +38,15 @@ codes, and analytics attribution are unchanged; discovery only feeds them.
 | Duplicate detection (pure) | `src/discovery/dedupe.ts` |
 | Candidate lifecycle (pure) | `src/discovery/candidateStatus.ts` |
 | Candidate to Prospect mapping (pure) | `src/discovery/approval.ts` |
-| Provider category codes and tiers (incl. the Overture classifier) | `src/discovery/categories.ts` |
+| Provider category codes and tiers (incl. the Overture classifier), and the ReclaimBay category check rules | `src/discovery/categories.ts` |
+| Category check engine (pure, no industry built in) | `src/discovery/categoryCheck.ts` |
 | Overture Places: release lookup, record mapping, importer | `src/discovery/overture.ts` |
 | Overture Places: reading the release (DuckDB, background only) | `src/discovery/overtureSource.ts` |
 | County boundaries for scoped imports (US Census TIGERweb) | `src/discovery/boundaries.ts` |
 | Provider registry (Overture, fixtures), fixture importer | `src/discovery/providers.ts` |
 | Release import, staging, and the staged (background) provider | `src/discovery/staging.ts` |
 | Persistence, runs (sync and queued), research, approval | `src/discovery/service.ts` |
-| Background job entry points | `src/scripts/importProvider.ts`, `src/scripts/processDiscoveryRuns.ts`, `src/scripts/researchCandidates.ts` |
+| Background job entry points | `src/scripts/importProvider.ts`, `src/scripts/processDiscoveryRuns.ts`, `src/scripts/researchCandidates.ts`, `src/scripts/checkCategories.ts` |
 | Automated research: polite fetching, robots.txt, HTML reading | `src/research/fetcher.ts`, `robots.ts`, `html.ts` |
 | Automated research: verification rules (pure) | `src/research/analyze.ts` |
 | Automated research: one candidate, page selection | `src/research/researcher.ts` |
@@ -451,6 +452,18 @@ widget (`mygarage.kukui.com`) is a recognized scheduling widget. Schneider's
 Automotive had been marked "no online booking" although its header has a
 "Make an appointment" button that opens MyGarage.
 
+**Rules r11 (2026-10-01).** The website-stage **category check** (see "Category
+check (not qualification)" below): on a website confirmed as the business's
+own, research records a `business_category` fact. The site is wrong category
+only with positive evidence, 2+ other-trade terms and no automotive vocabulary
+(English or Spanish); confirmed general repair is in target; a readable site
+naming neither is unclear; a site with too little readable text, or automotive
+vocabulary without confirmed general repair (a glass or tint shop), changes
+nothing, so specialties stay with the existing "Offers general repair" rule.
+Found on Pops One Stop Repair Shop (supplied as `automotive_repair`; the site
+is shoe, boot, vacuum and lamp repair and sharpening). Signal extraction is
+unchanged.
+
 **Rules r10 (2026-10-01).** Phone numbers in page text may have spaces around
 their separators ("805 388 - 0700", "805 - 388 - 0700"), as well as the
 hyphens, dots, spaces, and parentheses already read. A run of digits with no
@@ -505,6 +518,82 @@ service). Unlisted categories have no tier and are not discovered. A run picks
 "Core" (the default) or "Core + adjacent". **The tier is a discovery filter
 only**: it decides which staged records a run reads, and the list can filter by
 it. It is never a qualification input or a score signal.
+
+## Category check (not qualification)
+
+**Is this the kind of business ReclaimBay serves (general automotive repair)?**
+A provider's category can be wrong: Overture listed a shoe and vacuum repair
+shop as `automotive_repair`, and in Ventura County the name check put 94 of 701
+candidates outside the target (auto glass, body shops, test-only smog, garage
+doors, parts, sales) and 53 more as unclear (mostly tire shops), 2026-10-01.
+The category check answers that question separately from everything else:
+
+| Verdict | Means |
+| ------- | ----- |
+| **In target category** | Nothing points outside the target, or the business's own website names general repair services |
+| **Wrong category** | Positive evidence of a business outside the target |
+| **Category unclear** | Mixed or too little evidence: a person should look |
+
+It is **not qualification** (a business can be in target and still
+unqualified), **not the score**, and **not a status**. It never deletes or
+rejects a candidate: a wrong-category candidate is stored, kept in the
+duplicate index (so a re-import still skips it), and keeps its history.
+Rejecting it is still a person's decision, with a reason.
+
+**Where it runs.** The engine (`categoryCheck.ts`) knows no industry; the
+rules are `AUTOMOTIVE_CATEGORY_RULES` in `categories.ts` (`automotive@c1`).
+1. **Name**, when a candidate is created (discovery ingest, after the duplicate
+   verdict; or added by hand) and when a person renames it. Wrong category
+   needs strong out-of-scope evidence and no in-scope term (repair, service,
+   mechanic, auto/car care, brakes, transmission, engine, tune-up,
+   maintenance, diagnostics, muffler/exhaust, radiator, alignment, or Spanish
+   equivalents), or an exclusive term that no repair word changes. "Auto"
+   alone is not in-scope evidence.
+2. **Website**, during research (rules r11), only on the business's own
+   website.
+3. **A person**, on the candidate page: a verdict and a required reason.
+
+**ReclaimBay policy, v1.**
+
+| Name says | Verdict |
+| --------- | ------- |
+| RV, heavy-duty or semi trucks, test-only smog, garage doors, yachts, boats | Wrong category, even with "repair" |
+| Glass, windshield, body, dent, collision, paint, tint, wraps, detailing, car wash, towing, upholstery, interlocks, stereo/audio, sales, parts, machine shop, carburetors | Wrong category, unless the name also names repair or service (then unclear) |
+| Tires or wheels only | Unclear (a name can't prove tire-only); tires + repair or service is in target |
+| Light-duty truck repair, smog + repair, mobile mechanics | In target |
+| Nothing out of scope | In target (the provider's category stands) |
+
+**What a verdict does.** Only **wrong category** gates anything:
+- not approvable (the approval page says why);
+- not scored or ranked: the list and detail page show "Not scored: outside
+  the target category" and "Not assessed" instead of the opportunity score and
+  qualification, sorting by score leaves it out (with a count and a link to
+  them), and the qualification and band filters skip it. The scoring formula
+  and `SCORING_VERSION` are unchanged; website signals are still recorded;
+- skipped by **automatic** research selection (the admin's "Research up to 10
+  in this view" and the CLI's `--limit`). Researching one candidate on purpose
+  (the candidate page, or `--candidate`) still works.
+
+Unclear and in-target candidates are researched, scored, and approved as
+before. A candidate stored before the check existed has no verdict yet and is
+not gated.
+
+**Which evidence wins.** A person's decision is never overwritten by an
+automated check (research records a warning when the website disagrees).
+Website evidence replaces name evidence; name evidence never replaces website
+evidence; a website "unclear" never clears positive name evidence of wrong
+category. A person can hand the decision back to the rules ("Hand back to the
+automated check"), which re-runs the name check. Every decision is recorded as
+a note.
+
+**Backfill.** `npm run discovery:check-categories` runs the name check over
+existing candidates as a dry run (what would change, and the wrong-category and
+unclear list with reasons); add `-- --apply` to write. It writes only the
+category fields, never a status, research, signals, or scores; leaves a
+person's decision, a website verdict, and approved candidates alone; and
+doesn't rewrite unchanged records, so a second run changes nothing. Website
+checks for already-researched candidates happen only when they are researched
+again, deliberately.
 
 ## Providers
 

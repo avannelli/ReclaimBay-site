@@ -3,6 +3,8 @@ import type { recentImports } from "../discovery/staging.js";
 import { OUTCOME_LABELS, type ResearchOutcome } from "../research/researcher.js";
 import type { candidateResearch, researchQueue } from "../research/service.js";
 import { CANDIDATE_SORTS, DEFAULT_BUSINESS_TYPE } from "../discovery/service.js";
+import { CATEGORY_RULES } from "../discovery/categories.js";
+import { CATEGORY_SOURCE_LABELS, CATEGORY_VERDICTS, CATEGORY_VERDICT_LABELS, type CategorySource, type CategoryVerdict } from "../discovery/categoryCheck.js";
 import {
   CANDIDATE_REASON_REQUIRED,
   CANDIDATE_STATUSES,
@@ -81,6 +83,7 @@ const FACT_LABELS: Record<string, string> = {
   performs_repair: "Performs repair",
   business_type: "Business type",
   operating_status: "Operating status",
+  business_category: "Category check (website)",
 };
 
 /** Verification state, in words and shape as well as colour. */
@@ -194,6 +197,25 @@ function tierTag(tier: CategoryTier | null, inline = false): string {
   return inline ? ` ${tag}` : `<div class="sub">${tag}</div>`;
 }
 
+// ---------- category check (not qualification) ----------
+
+const CATEGORY_STYLE: Record<CategoryVerdict, string> = {
+  in_target: "border-color:var(--pos);color:var(--pos)",
+  wrong_category: "border-color:var(--neg);color:var(--neg)",
+  unclear: "border-color:var(--amber);color:var(--warn)",
+};
+const CATEGORY_MARK: Record<CategoryVerdict, string> = { in_target: "✓", wrong_category: "✕", unclear: "?" };
+
+/** The category check in one tag: words and a mark, not colour alone. */
+function categoryTag(verdict: string | null, source?: string | null): string {
+  if (!verdict) return `<span class="tag" title="Category check: not run yet">Category not checked</span>`;
+  const v = verdict as CategoryVerdict;
+  const by = source === "manual" ? " · set by a person" : "";
+  return `<span class="tag" style="${CATEGORY_STYLE[v]}" title="Category check, not qualification">${CATEGORY_MARK[v]} ${esc(CATEGORY_VERDICT_LABELS[v])}${by}</span>`;
+}
+
+const NOT_SCORED = "Not scored: outside the target category";
+
 // ---------- overview ----------
 
 export function discoveryPage(opts: {
@@ -214,7 +236,7 @@ export function discoveryPage(opts: {
   const fe = fieldErrors(opts.errors);
   const totalCandidates = Object.values(statusCounts).reduce((n, v) => n + (v ?? 0), 0);
   const review = statusCounts.needs_review ?? 0;
-  const anyFilter = Boolean(f.q || f.status || f.qualification || f.band || f.state || f.city || f.flagged || f.run);
+  const anyFilter = Boolean(f.q || f.status || f.qualification || f.band || f.state || f.city || f.flagged || f.category || f.run);
 
   const runCard = `<section class="card" id="new-run" aria-labelledby="new-run-h">
   <h2 class="card-h" id="new-run-h">New discovery run</h2>
@@ -249,15 +271,15 @@ export function discoveryPage(opts: {
   ].join("");
 
   const rows = list.rows
-    .map(({ candidate: c, result }) => {
+    .map(({ candidate: c, result, outsideTarget }) => {
       const loc = [c.city, c.state].filter(Boolean).join(", ");
       const flagged = c.possibleDuplicateCandidateId || c.possibleDuplicateProspectId;
       return `<tr${c.status === "needs_review" ? ' class="attn"' : ""}>
-  <td><a class="name" href="/admin/discovery/candidates/${esc(c.id)}">${esc(c.businessName)}</a>${c.website ? `<div class="sub">${extLink(c.website)}</div>` : ""}${tierTag(c.categoryTier)}${c.relatedCandidateId || c.relatedProspectId ? `<div class="sub"><span class="tag">Other location shares this website</span></div>` : ""}${c.providerStatus === "permanently_closed" ? `<div class="sub"><span class="tag" style="border-color:var(--neg);color:var(--neg)">Provider says closed</span></div>` : ""}${researchTag(c.research[0])}</td>
+  <td><a class="name" href="/admin/discovery/candidates/${esc(c.id)}">${esc(c.businessName)}</a>${c.website ? `<div class="sub">${extLink(c.website)}</div>` : ""}${tierTag(c.categoryTier)}${c.categoryVerdict && c.categoryVerdict !== "in_target" ? `<div class="sub">${categoryTag(c.categoryVerdict, c.categorySource)}</div>` : ""}${c.relatedCandidateId || c.relatedProspectId ? `<div class="sub"><span class="tag">Other location shares this website</span></div>` : ""}${c.providerStatus === "permanently_closed" ? `<div class="sub"><span class="tag" style="border-color:var(--neg);color:var(--neg)">Provider says closed</span></div>` : ""}${researchTag(c.research[0])}</td>
   <td class="hide-md" data-label="Location">${loc ? esc(loc) : '<span class="muted">—</span>'}</td>
   <td data-label="Research status">${candidateBadge(c.status)}</td>
-  <td data-label="Qualification">${qualificationBadge(result.qualification)}</td>
-  <td class="num" data-label="Opportunity score"><span class="score-cell"><b>${result.score}</b><span class="of">/${MAX_SCORE}</span></span><div class="sub">${result.known}/${result.total} known · ${c._count.evidence} evidence</div></td>
+  <td data-label="Qualification">${outsideTarget ? '<span class="muted">Not assessed</span>' : qualificationBadge(result.qualification)}</td>
+  <td class="num" data-label="Opportunity score">${outsideTarget ? `<span class="small muted">${NOT_SCORED}</span>` : `<span class="score-cell"><b>${result.score}</b><span class="of">/${MAX_SCORE}</span></span><div class="sub">${result.known}/${result.total} known · ${c._count.evidence} evidence</div>`}</td>
   <td class="hide-md" data-label="Duplicate check">${flagged ? `<span class="tag" style="border-color:var(--amber);color:var(--warn)">! Possible duplicate</span><div class="sub">${esc(c.duplicateReason ?? "")}</div>` : '<span class="muted">No flags</span>'}</td>
   <td class="hide-lg small muted" data-label="Discovered">${fmtDay(c.discoveredAt)}<div class="sub">${esc(c.provider)}</div></td>
   <td data-label=""><a class="btn btn-secondary" href="/admin/discovery/candidates/${esc(c.id)}" style="min-height:30px;padding:3px 10px">${c.status === "needs_review" || c.status === "discovered" ? "Review" : "Open"}</a></td>
@@ -312,19 +334,20 @@ ${f.run ? `<div class="callout" style="margin-bottom:12px">Showing candidates fr
     <div><label class="lbl" for="f-ccity">City</label><input id="f-ccity" type="text" name="city" value="${esc(f.city)}" maxlength="100"></div>
     <div><label class="lbl" for="f-cflag">Duplicate flag</label><select id="f-cflag" name="flagged">${options([["", "Any"], ["1", "Possible duplicate"]], f.flagged)}</select></div>
     <div><label class="lbl" for="f-ctier">Category tier</label><select id="f-ctier" name="tier">${options([["", "Any"], ["core", "Core"], ["adjacent", "Adjacent"]], f.tier)}</select></div>
+    <div><label class="lbl" for="f-ccat">Category check</label><select id="f-ccat" name="category">${options([["", "Any"], ...CATEGORY_VERDICTS.map((v): [string, string] => [v, CATEGORY_VERDICT_LABELS[v]])], f.category)}</select></div>
     <div><label class="lbl" for="f-csort">Sort by</label><select id="f-csort" name="sort">${options(Object.keys(CANDIDATE_SORTS).map((k): [string, string] => [k, SORT_LABELS[k] ?? k]), list.sort)}</select></div>
     <div class="filter-actions"><button type="submit">Apply filters</button><a class="btn btn-secondary" href="/admin/discovery">Reset</a></div>
   </div>
   ${f.run ? `<input type="hidden" name="run" value="${esc(f.run)}">` : ""}
 </form>
 <form method="post" action="/admin/discovery/research" class="card row spread" style="margin-bottom:12px">
-  ${(["q", "status", "qualification", "band", "state", "city", "flagged", "tier", "provider", "sort", "run"] as const)
+  ${(["q", "status", "qualification", "band", "state", "city", "flagged", "tier", "category", "provider", "sort", "run"] as const)
     .map((k) => (f[k] ? `<input type="hidden" name="${k}" value="${esc(f[k])}">` : ""))
     .join("")}
-  <span class="small"><b>Automated research</b>${opts.research ? ` · ${opts.research.queued} queued · ${opts.research.running} running · ${opts.research.completed} completed · ${opts.research.failed} failed` : ""}<br><span class="muted">Reads each business's own website and records verified facts with sources. Use filters to choose, then research up to 10 not-yet-researched candidates from this view.</span></span>
+  <span class="small"><b>Automated research</b>${opts.research ? ` · ${opts.research.queued} queued · ${opts.research.running} running · ${opts.research.completed} completed · ${opts.research.failed} failed` : ""}<br><span class="muted">Reads each business's own website and records verified facts with sources. Use filters to choose, then research up to 10 not-yet-researched candidates from this view. Candidates outside the target category are skipped.</span></span>
   <button type="submit" class="btn-secondary">Research up to 10 in this view</button>
 </form>
-<div class="result-line"><span><b>${esc(shown)}</b>${anyFilter ? " match" : ""}</span><span><b>Qualification</b> (${esc(criteriaNames)}) and the <b>opportunity score</b> (ranking only) are worked out from recorded signals and are independent.</span></div>
+<div class="result-line"><span><b>${esc(shown)}</b>${anyFilter ? " match" : ""}${list.notRanked ? ` · ${list.notRanked} outside the target category not ranked (<a href="/admin/discovery?category=wrong_category">show them</a>)` : ""}</span><span><b>Qualification</b> (${esc(criteriaNames)}) and the <b>opportunity score</b> (ranking only) are worked out from recorded signals and are independent.</span></div>
 ${
   list.rows.length
     ? `<div class="scroll"><table class="tbl cards">
@@ -395,9 +418,47 @@ ${editing && opts.providerPhone ? `<div class="callout warn" style="margin-botto
 
 const RESEARCH_PATH: CandidateStatus[] = ["discovered", "researching", "researched", "approved"];
 
+/** The category check card: what it says, why, from where, and a person's override. */
+function categoryCard(
+  c: Detail["candidate"],
+  frozen: boolean,
+  values: Values,
+  verdictErrs: string[],
+  reasonErrs: string[],
+): string {
+  const v = c.categoryVerdict as CategoryVerdict | null;
+  const source = c.categorySource as CategorySource | null;
+  const border = v === "wrong_category" ? "var(--neg)" : v === "unclear" ? "var(--amber)" : v === "in_target" ? "var(--pos)" : "var(--line-2)";
+  const provenance = v
+    ? `From the ${esc(CATEGORY_SOURCE_LABELS[source ?? "name"])}${c.categorySourceUrl ? ` (${extLink(c.categorySourceUrl)})` : ""}${c.categoryRules ? ` · rules ${esc(c.categoryRules)}` : ""}${c.categoryCheckedAt ? ` · ${fmtDate(c.categoryCheckedAt)}` : ""}. ${
+        source === "manual"
+          ? "<b>A person's decision</b>: automated checks won't change it."
+          : "<b>Automated</b>: a person can override it below."
+      }`
+    : "The category check hasn't run for this candidate yet. It runs when a candidate is added, when its website is researched, and in the backfill.";
+  const errs = [...verdictErrs, ...reasonErrs].map((e) => `<div class="ferr">${esc(e)}</div>`).join("");
+  const form = frozen
+    ? ""
+    : `<form method="post" action="/admin/discovery/candidates/${esc(c.id)}/category" class="row" style="align-items:flex-end;margin-top:12px" novalidate>
+  <div style="min-width:220px"><label class="lbl" for="f-categoryVerdict">Override the category check</label><select id="f-categoryVerdict" name="categoryVerdict"${verdictErrs.length ? ' aria-invalid="true"' : ""}>${options(
+    [["", "Choose…"], ...CATEGORY_VERDICTS.map((x): [string, string] => [x, CATEGORY_VERDICT_LABELS[x]]), ["automatic", "Hand back to the automated check"]],
+    values.categoryVerdict,
+  )}</select></div>
+  <div style="flex:1;min-width:240px"><label class="lbl" for="f-categoryReason">Reason <span class="muted" style="font-weight:400">(required)</span></label><input id="f-categoryReason" type="text" name="categoryReason" value="${esc(values.categoryReason)}" maxlength="280"${reasonErrs.length ? ' aria-invalid="true"' : ""}></div>
+  <button type="submit" class="btn-secondary">Save category decision</button>
+</form>${errs}`;
+  return `<section class="card" style="border-left:4px solid ${border};margin-bottom:12px" aria-labelledby="category-h">
+  <div class="row spread"><b id="category-h">Category check</b>${categoryTag(v, source)}</div>
+  <p class="small muted" style="margin:4px 0 8px">Is this the kind of business ${esc(CATEGORY_RULES.target)} covers? This is <b>not qualification</b> and not a status: it never rejects or deletes anything. A business outside the target category can't be approved and isn't ranked by score.</p>
+  ${v ? `<p style="margin:0 0 6px">${esc(c.categoryReason ?? "")}</p>` : ""}
+  <div class="small muted">${provenance}</div>
+  ${form}
+</section>`;
+}
+
 export function candidateDetailPage(opts: { detail: Detail; research?: ResearchView; notice?: string; errors?: string[]; values?: Values }): string {
   const { detail, values = {} } = opts;
-  const { candidate: c, result, dupCandidate, dupProspect, relCandidate, relProspect, approvalBlockers } = detail;
+  const { candidate: c, result, outsideTarget, dupCandidate, dupProspect, relCandidate, relProspect, approvalBlockers } = detail;
   const id = esc(c.id);
   const fe = fieldErrors(opts.errors);
   const none = '<span class="muted">—</span>';
@@ -524,8 +585,24 @@ ${pageHead({
   actions: frozen ? "" : `<a class="btn" href="/admin/discovery/candidates/${id}/edit">Edit research</a>`,
 })}
 
+${categoryCard(c, frozen, values, fe.byField.get("categoryVerdict") ?? [], fe.byField.get("categoryReason") ?? [])}
+
 <div class="grid-2">
-  <div class="card verdict v-${result.qualification}">
+  ${
+    outsideTarget
+      ? `<div class="card verdict">
+    <div class="v-label">Qualification</div>
+    <div class="v-sub">Required criteria: ${esc(criteriaNames)}</div>
+    <div class="v-big"><span class="muted">Not assessed</span></div>
+    <div class="small">Qualification applies only to businesses in the target category. Override the category check above if this is one.</div>
+  </div>
+  <div class="card verdict v-score">
+    <div class="v-label">Opportunity score</div>
+    <div class="v-sub">Opportunity score · ranking only, not a verdict</div>
+    <div class="v-big"><span class="muted">${NOT_SCORED}</span></div>
+    <div class="small">Website signals are still recorded below, but they don't rank a business outside the target category.</div>
+  </div>`
+      : `<div class="card verdict v-${result.qualification}">
     <div class="v-label">Qualification</div>
     <div class="v-sub">Required criteria: ${esc(criteriaNames)}</div>
     <div class="v-big">${qualificationBadge(result.qualification, "q-big")}</div>
@@ -536,7 +613,8 @@ ${pageHead({
     <div class="v-sub">Opportunity score · ranking only, not a verdict</div>
     <div class="v-big"><span><span class="big">${result.score}</span><span class="muted">/${MAX_SCORE}</span> ${bandBadge(result.band)}</span></div>
     <div class="small">${result.known} of ${result.total} signals known. A high score does not mean the business is qualified.</div>
-  </div>
+  </div>`
+  }
 </div>
 
 ${section("research", "Automated research", researchSection(opts.research, c.id, !["approved", "rejected", "duplicate"].includes(c.status)))}

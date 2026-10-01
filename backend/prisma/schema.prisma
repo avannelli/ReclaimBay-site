@@ -98,6 +98,23 @@ enum CategoryTier {
   adjacent
 }
 
+// Category check: is this the kind of business the target serves?
+// Not qualification, not a score, and not a candidate status.
+enum CategoryVerdict {
+  in_target
+  wrong_category
+  unclear
+}
+
+// Where a category verdict came from. "manual" is a person's decision,
+// which the automated checks never overwrite.
+enum CategorySource {
+  provider
+  name
+  website
+  manual
+}
+
 // A provider's own claim about whether a place operates. Unverified.
 enum ProviderOperatingStatus {
   open
@@ -338,6 +355,18 @@ model DiscoveryCandidate {
   decisionReason    String?         @db.VarChar(500)
   decidedAt         DateTime?
 
+  // Category check (src/discovery/categoryCheck.ts): the business's name,
+  // then its own website, or a person. Never deletes or rejects anything; a
+  // wrong-category candidate can't be approved and isn't ranked by score.
+  // Null: not checked yet.
+  categoryVerdict   CategoryVerdict?
+  categoryReason    String?          @db.VarChar(300)
+  categorySource    CategorySource?
+  categorySourceUrl String?          @db.VarChar(500)
+  // The rule set that decided, e.g. "automotive@c1" (null for a person).
+  categoryRules     String?          @db.VarChar(40)
+  categoryCheckedAt DateTime?
+
   // Possible (not confident) duplicates, flagged for a human.
   possibleDuplicateCandidateId String? @db.Uuid
   possibleDuplicateProspectId  String? @db.Uuid
@@ -370,6 +399,7 @@ model DiscoveryCandidate {
   @@index([phoneKey])
   @@index([runId])
   @@index([categoryTier])
+  @@index([categoryVerdict])
 }
 
 // One recorded observation. No row means unknown (same as ProspectSignal).

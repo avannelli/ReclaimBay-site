@@ -11,6 +11,8 @@
  */
 import { addressMatchKey, namesMatchStrongly, namesSimilar, normalizeName, phoneKey, streetWordPattern } from "../discovery/normalize.js";
 import type { SignalKey, StoredSignalValue } from "../scoring.js";
+import { CATEGORY_RULES } from "../discovery/categories.js";
+import { CATEGORY_VERDICT_LABELS, checkWebsite, type CategoryResult } from "../discovery/categoryCheck.js";
 import type { ParsedPage } from "./html.js";
 
 export type FactState = "verified" | "unverified" | "uncertain" | "not_found";
@@ -71,6 +73,8 @@ export interface Analysis {
   signals: SignalProposal[];
   contact: ContactProposal;
   warnings: string[];
+  /** The website-stage category check: only for the business's own website, null when it says nothing either way. */
+  category: CategoryResult | null;
 }
 
 const EXCERPT_MAX = 280;
@@ -786,5 +790,25 @@ export function analyze(subject: Subject, pages: Page[], secureHttps: boolean | 
     facts.push({ field: "business_type", value: null, state: "uncertain", note: "Not assessed: the website isn't confirmed as the business's own." });
   }
 
-  return { ownership, facts, signals, contact, warnings };
+  // ----- category check (separate from qualification; never on someone else's website) -----
+  let category: CategoryResult | null = null;
+  if (ownership === "verified") {
+    const confirmed = general.length >= 2 ? { url: general[0]!.page.url, what: `general repair services (${general.map((h) => h.label).join(", ")})` } : null;
+    category = checkWebsite(
+      CATEGORY_RULES,
+      pages.map((p) => ({ url: p.url, text: p.parsed.text })),
+      confirmed,
+    );
+    if (category) {
+      facts.push({
+        field: "business_category",
+        value: CATEGORY_VERDICT_LABELS[category.verdict],
+        state: category.verdict === "unclear" ? "uncertain" : "verified",
+        sourceUrl: category.sourceUrl,
+        note: category.reason,
+      });
+    }
+  }
+
+  return { ownership, facts, signals, contact, warnings, category };
 }

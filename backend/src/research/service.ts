@@ -19,6 +19,7 @@
  */
 import type { Db } from "../db.js";
 import { researchGateErrors } from "../discovery/approval.js";
+import { CATEGORY_VERDICT_LABELS, automatedMayReplace, categoryFields, isOutsideTarget } from "../discovery/categoryCheck.js";
 import { phoneKey } from "../discovery/normalize.js";
 import type { Prisma } from "../generated/prisma/client.js";
 import { isPhoneNumber, parseProspectInput } from "../prospects.js";
@@ -155,9 +156,11 @@ async function store(db: Db, researchId: string, candidateId: string, r: Researc
     let applied = 0;
     const c = await tx.discoveryCandidate.findUniqueOrThrow({ where: { id: candidateId }, include: { signals: true } });
 
+    let categoryNote = "";
     if (r.status === "completed") {
       applied = await reconcileSignals(tx, researchId, c, r, warnings);
       await applyContact(tx, c, r, warnings);
+      categoryNote = await applyCategory(tx, c, r, warnings);
     }
 
     // The candidate's place in the lifecycle follows the evidence-backed rule.
@@ -178,7 +181,7 @@ async function store(db: Db, researchId: string, candidateId: string, r: Researc
     await tx.candidateNote.create({
       data: {
         candidateId,
-        body: `Automated research (${RESEARCH_VERSION}): ${r.outcome.replace(/_/g, " ")}. ${applied} signal(s) recorded with evidence${r.contact.phone && !c.phone ? `; phone verified at ${r.contact.phoneSourceUrl}` : ""}${r.contact.email && !c.email ? `; email verified at ${r.contact.emailSourceUrl}` : ""}.`.slice(0, 2000),
+        body: `Automated research (${RESEARCH_VERSION}): ${r.outcome.replace(/_/g, " ")}. ${applied} signal(s) recorded with evidence${r.contact.phone && !c.phone ? `; phone verified at ${r.contact.phoneSourceUrl}` : ""}${r.contact.email && !c.email ? `; email verified at ${r.contact.emailSourceUrl}` : ""}.${categoryNote}`.slice(0, 2000),
       },
     });
 
@@ -234,6 +237,31 @@ async function reconcileSignals(
     applied++;
   }
   return applied;
+}
+
+/**
+ * The website's category result, where an automated result may replace the
+ * stored one: never a person's decision (that disagreement becomes a
+ * warning), never positive name evidence of wrong category with "unclear".
+ * Returns a sentence for the run's note.
+ */
+async function applyCategory(
+  tx: Tx,
+  c: { id: string; categoryVerdict: string | null; categorySource: string | null },
+  r: ResearchResult,
+  warnings: string[],
+): Promise<string> {
+  const next = r.category;
+  if (!next) return "";
+  const current = { verdict: c.categoryVerdict as never, source: c.categorySource as never };
+  if (!automatedMayReplace(current, next)) {
+    if (c.categorySource === "manual" && c.categoryVerdict !== next.verdict) {
+      warnings.push(`The website suggests "${CATEGORY_VERDICT_LABELS[next.verdict]}" (${next.reason}), but a person set the category; the person's decision was kept.`);
+    }
+    return "";
+  }
+  await tx.discoveryCandidate.update({ where: { id: c.id }, data: categoryFields(next, new Date()) });
+  return ` Category check: ${CATEGORY_VERDICT_LABELS[next.verdict]} (from the website).`;
 }
 
 /** Verified contact from the business's own website, only where none is stored. */
@@ -344,6 +372,18 @@ export async function researchQueue(db: Db) {
 }
 
 /** Candidates in a list that research could run on (for the batch action). */
-export const researchableIds = (rows: { candidate: { id: string; status: string } }[], max = MAX_BATCH) =>
-  rows.filter((r) => !NOT_RESEARCHABLE.has(r.candidate.status)).slice(0, max).map((r) => r.candidate.id);
+/**
+ * Candidates an AUTOMATIC selection (the admin's "research up to 10", the
+ * CLI's --limit) may research: never researched, still researchable, and not
+ * outside the target category. Explicit requests for one candidate don't use
+ * this, so a person can still research anything.
+ */
+export const autoResearchIds = (
+  rows: { candidate: { id: string; status: string; categoryVerdict: string | null; research: readonly unknown[] } }[],
+  max = MAX_BATCH,
+) =>
+  rows
+    .filter((r) => !r.candidate.research.length && !NOT_RESEARCHABLE.has(r.candidate.status) && !isOutsideTarget(r.candidate))
+    .slice(0, max)
+    .map((r) => r.candidate.id);
 

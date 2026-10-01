@@ -8,13 +8,15 @@
  *   npm run discovery:research -- --process        (only process what is already queued)
  *
  * --limit picks candidates that have never been researched, newest first,
- * and is capped at 25 so a run stays a small, observable batch.
+ * skips any the category check puts outside the target category, and is
+ * capped at 25 so a run stays a small, observable batch. --candidate
+ * researches exactly the candidates named, whatever their category.
  */
 import { parseArgs } from "node:util";
 import { loadConfig } from "../config.js";
 import { createDb } from "../db.js";
 import { listCandidates } from "../discovery/service.js";
-import { enqueueResearch, processQueuedResearch } from "../research/service.js";
+import { autoResearchIds, enqueueResearch, processQueuedResearch } from "../research/service.js";
 
 const MAX_CLI = 25;
 
@@ -36,10 +38,7 @@ try {
   if (!ids.length && values.limit) {
     const limit = Math.min(MAX_CLI, Math.max(1, Number(values.limit) || 1));
     const list = await listCandidates(db, { tier: values.tier, city: values.city, status: values.status, sort: "discovered" });
-    ids = list.rows
-      .filter((r) => !r.candidate.research.length && !["approved", "rejected", "duplicate"].includes(r.candidate.status))
-      .slice(0, limit)
-      .map((r) => r.candidate.id);
+    ids = autoResearchIds(list.rows, limit);
   }
   if (ids.length) {
     const q = await enqueueResearch(db, ids, "cli", MAX_CLI);
