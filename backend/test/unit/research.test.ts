@@ -675,3 +675,43 @@ describe("bay and technician counts vs. numbered lists", () => {
     assert.equal((await run("<p>Three master technicians on staff.</p>"))?.value, "yes");
   });
 });
+
+/* Production batch #1 (2026-10-01): "2180 1st St" (provider) vs "2180 First St" (website). */
+describe("ordinal street names on the website", () => {
+  const run = async (providerStreet: string, footer: string, name = "Saviers Road Auto Repair") => {
+    const s = server(siteWith(page(name, `<h1>${name}</h1><p>Honest repairs since 1997.</p><footer>${footer}</footer>`)));
+    return researchCandidate(subject({ businessName: name, streetAddress: providerStreet, providerPhone: null }), s.fetcher(), TODAY);
+  };
+
+  test("Perry's Quality Auto Repair: provider '2180 1st St', site '2180 First St, Suite C-10' match", async () => {
+    const r = await run("2180 1st St", "2180 First St, Suite C-10, Simi Valley, CA 93065", "Perry's Quality Auto Repair");
+    assert.equal(fact(r, "address")!.state, "verified");
+    assert.match(fact(r, "address")!.excerpt!, /2180 First St/);
+    assert.equal(r.outcome, "website_verified", "name + address now confirms the site");
+  });
+
+  test("the reverse: provider 'First', site '1st'", async () => {
+    const r = await run("2180 First St", "2180 1st St, Simi Valley, CA 93065");
+    assert.equal(fact(r, "address")!.state, "verified");
+  });
+
+  test("'123 12th Street' and '123 Twelfth Street' match", async () => {
+    const r = await run("123 12th Street", "123 Twelfth Street, Oxnard, CA");
+    assert.equal(fact(r, "address")!.state, "verified");
+  });
+
+  test("a different ordinal or house number still does not match", async () => {
+    for (const footer of ["2180 Second St, Simi Valley", "2181 First St, Simi Valley"]) {
+      const r = await run("2180 1st St", footer);
+      assert.notEqual(fact(r, "address")!.state, "verified", footer);
+      assert.equal(r.outcome, "website_unconfirmed", footer);
+    }
+  });
+
+  test("structured data with an ordinal written as a word matches too", async () => {
+    const ld = `<script type="application/ld+json">{"@type":"AutoRepair","name":"Saviers Road Auto Repair","telephone":"(805) 555-0505","address":{"streetAddress":"2180 First Street","addressLocality":"Simi Valley"}}</script>`;
+    const s = server(siteWith(page("Saviers Road Auto Repair", "<h1>Saviers Road Auto Repair</h1><p>Call (805) 555-0505 or (805) 555-0606.</p>", ld)));
+    const r = await researchCandidate(subject({ streetAddress: "2180 1st St", providerPhone: null }), s.fetcher(), TODAY);
+    assert.equal(fact(r, "address")!.state, "verified");
+  });
+});

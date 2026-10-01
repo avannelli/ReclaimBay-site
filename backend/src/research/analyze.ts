@@ -9,7 +9,7 @@
  * is reported as uncertain instead. Each signal follows its published rule
  * in src/scoring.ts, and every value carries a public URL and a short quote.
  */
-import { namesMatchStrongly, namesSimilar, normalizeName, phoneKey, streetKey } from "../discovery/normalize.js";
+import { addressMatchKey, namesMatchStrongly, namesSimilar, normalizeName, phoneKey, streetWordPattern } from "../discovery/normalize.js";
 import type { SignalKey, StoredSignalValue } from "../scoring.js";
 import type { ParsedPage } from "./html.js";
 
@@ -171,15 +171,15 @@ export function findName(subject: Subject, pages: Page[]): { url: string; excerp
 
 /** Where the street address appears: house number and street name close together. */
 export function findAddress(subject: Subject, pages: Page[]): { url: string; excerpt: string; index: number } | null {
-  const key = streetKey(subject.streetAddress);
+  const key = addressMatchKey(subject.streetAddress);
   if (!key) return null;
   const [number, ...rest] = key.split(" ");
   const word = rest.find((w) => w.length > 2 && !["n", "s", "e", "w"].includes(w)) ?? rest[0];
   if (!number || !word) return null;
   for (const p of pages) {
-    for (const s of p.parsed.structured) if (streetKey(s.streetAddress) === key) return { url: p.url, excerpt: clip(`${s.streetAddress}${s.locality ? `, ${s.locality}` : ""}`), index: -1 };
+    for (const s of p.parsed.structured) if (addressMatchKey(s.streetAddress) === key) return { url: p.url, excerpt: clip(`${s.streetAddress}${s.locality ? `, ${s.locality}` : ""}`), index: -1 };
     const lower = p.parsed.text.toLowerCase();
-    const re = new RegExp(`\\b${number}\\b[^\\d]{1,40}?\\b${word.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`, "i");
+    const re = new RegExp(`\\b${number}\\b[^\\d]{1,40}?\\b${streetWordPattern(word)}`, "i");
     const m = re.exec(lower);
     if (m) return { url: p.url, excerpt: quote(p.parsed.text, m.index, m[0].length), index: m.index };
   }
@@ -217,11 +217,11 @@ export function choosePhone(
   if (providerKey && phones.has(providerKey)) {
     return { key: providerKey, url: phones.get(providerKey)!, how: "the provider-reported number, listed on the business's own website" };
   }
-  const street = streetKey(subject.streetAddress);
+  const street = addressMatchKey(subject.streetAddress);
   for (const p of pages) {
     for (const s of p.parsed.structured) {
       const k = phoneKey(s.telephone);
-      if (k && street && streetKey(s.streetAddress) === street) return { key: k, url: p.url, how: "listed with this location's address in the site's business data" };
+      if (k && street && addressMatchKey(s.streetAddress) === street) return { key: k, url: p.url, how: "listed with this location's address in the site's business data" };
     }
   }
   if (address && address.index >= 0) {

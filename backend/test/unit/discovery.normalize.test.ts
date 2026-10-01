@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
-import { cleanDiscovered, isOnBusinessSite, locationKey, namesSimilar, normalizeDomain, normalizeName, phoneKey, streetKey } from "../../src/discovery/normalize.js";
+import { addressMatchKey, cleanDiscovered, isOnBusinessSite, locationKey, namesSimilar, normalizeDomain, normalizeName, phoneKey, streetKey, streetWordPattern } from "../../src/discovery/normalize.js";
 import type { DiscoveredBusiness } from "../../src/discovery/types.js";
 
 describe("normalizeDomain", () => {
@@ -269,5 +269,49 @@ describe("location and name helpers", () => {
     assert.ok(!isOnBusinessSite("https://smithauto.example.com.evil.example/x", "https://smithauto.example.com"));
     assert.ok(!isOnBusinessSite("https://smithauto.example.com/x", null), "no website stored: nothing can be on it");
     assert.ok(!isOnBusinessSite("https://locations.autovalue.com/x", "https://locations.autovalue.com/y"), "shared domains never count");
+  });
+});
+
+describe("ordinal street names in address matching", () => {
+  const same = (a: string, b: string) => addressMatchKey(a) !== null && addressMatchKey(a) === addressMatchKey(b);
+
+  test("1st matches First, in either direction", () => {
+    assert.ok(same("2180 1st St", "2180 First St"));
+    assert.ok(same("2180 First Street", "2180 1st St"));
+    assert.equal(addressMatchKey("2180 First St, Suite C-10"), "2180 1st st");
+  });
+
+  test("2nd/Second, 3rd/Third, 12th/Twelfth, 20th/Twentieth", () => {
+    assert.ok(same("45 2nd Ave", "45 Second Avenue"));
+    assert.ok(same("45 Third St", "45 3rd St"));
+    assert.ok(same("123 12th Street", "123 Twelfth Street"));
+    assert.ok(same("9 W Twentieth St", "9 West 20th Street"));
+  });
+
+  test("every ordinal from first to twentieth has its numeric form", () => {
+    const words = ["first", "second", "third", "fourth", "fifth", "sixth", "seventh", "eighth", "ninth", "tenth", "eleventh", "twelfth", "thirteenth", "fourteenth", "fifteenth", "sixteenth", "seventeenth", "eighteenth", "nineteenth", "twentieth"];
+    const numbers = ["1st", "2nd", "3rd", "4th", "5th", "6th", "7th", "8th", "9th", "10th", "11th", "12th", "13th", "14th", "15th", "16th", "17th", "18th", "19th", "20th"];
+    words.forEach((w, i) => assert.ok(same(`100 ${w} St`, `100 ${numbers[i]} St`), w));
+  });
+
+  test("ordinary addresses still match, and different addresses still don't", () => {
+    assert.ok(same("1200 East Thousand Oaks Boulevard, Suite 4", "1200 E Thousand Oaks Blvd"));
+    assert.ok(!same("2180 1st St", "2180 2nd St"));
+    assert.ok(!same("2180 First St", "2181 First St"), "the house number must agree");
+    assert.ok(!same("2180 First St", "2180 First Ave"));
+    assert.ok(!same("First Street", "First Street"), "no house number: unusable, as before");
+  });
+
+  test("duplicate detection's streetKey is unchanged", () => {
+    assert.equal(streetKey("2180 First St"), "2180 first st");
+    assert.equal(streetKey("2180 1st St"), "2180 1st st");
+  });
+
+  test("streetWordPattern accepts either form of an ordinal, and escapes other words", () => {
+    const re = new RegExp(`^${streetWordPattern("1st")}$`, "i");
+    assert.ok(re.test("1st") && re.test("First") && !re.test("2nd"));
+    assert.ok(new RegExp(`^${streetWordPattern("twelfth")}$`, "i").test("12th"));
+    assert.equal(streetWordPattern("saviers"), "saviers");
+    assert.equal(streetWordPattern("st.john"), "st\\.john");
   });
 });

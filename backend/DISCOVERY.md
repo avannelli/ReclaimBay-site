@@ -405,6 +405,12 @@ numbered headings is a list item, not a count; real count statements ("3
 service bays", "we have 4 technicians") still count. Re-researched, Ojai has
 the signal unknown, its evidence removed, and a score of 70.
 
+**Rules r4 (2026-10-01).** Address matching treats an ordinal street name
+written as a word as its numeric form, first through twentieth ("2180 First
+St" = "2180 1st St"), in either direction, on the page text and in structured
+data. Found on Perry's Quality Auto Repair (provider "2180 1st St", website
+"2180 First St, Suite C-10"). Duplicate detection's street key is unchanged.
+
 ## Approval
 
 Approval is an explicit human POST from the candidate page. It:

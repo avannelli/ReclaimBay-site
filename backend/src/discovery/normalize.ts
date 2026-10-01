@@ -199,6 +199,34 @@ export function streetKey(street: string | null | undefined): string | null {
   return words.join(" ");
 }
 
+/** Ordinal street names written as words, and their numeric forms ("first" = "1st"). */
+const ORDINAL_WORDS: Record<string, string> = {
+  first: "1st", second: "2nd", third: "3rd", fourth: "4th", fifth: "5th", sixth: "6th", seventh: "7th", eighth: "8th", ninth: "9th", tenth: "10th",
+  eleventh: "11th", twelfth: "12th", thirteenth: "13th", fourteenth: "14th", fifteenth: "15th", sixteenth: "16th", seventeenth: "17th",
+  eighteenth: "18th", nineteenth: "19th", twentieth: "20th",
+};
+const ORDINAL_NUMBERS: Record<string, string> = Object.fromEntries(Object.entries(ORDINAL_WORDS).map(([w, n]) => [n, w]));
+
+/**
+ * streetKey for matching one address against another written differently:
+ * an ordinal street name written as a word becomes its numeric form, so
+ * "2180 First St" and "2180 1st St" match. The house number is unchanged.
+ * (Duplicate detection keeps using streetKey.)
+ */
+export function addressMatchKey(street: string | null | undefined): string | null {
+  const key = streetKey(street);
+  if (!key) return null;
+  const [number, ...rest] = key.split(" ");
+  return [number, ...rest.map((w) => ORDINAL_WORDS[w] ?? w)].join(" ");
+}
+
+/** A street word as a regex source matching either form of an ordinal ("1st" -> "(?:1st|first)"). */
+export function streetWordPattern(word: string): string {
+  const escaped = word.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const other = ORDINAL_NUMBERS[word] ?? ORDINAL_WORDS[word];
+  return other ? `(?:${escaped}|${other})` : escaped;
+}
+
 /** Ten digits, or null when the number isn't a complete US-style number. */
 export function phoneKey(phone: string | null | undefined): string | null {
   if (!phone) return null;
