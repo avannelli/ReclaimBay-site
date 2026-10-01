@@ -15,7 +15,7 @@ import { RESEARCH_LIMITS, type PoliteFetcher, type SourceRecord } from "./fetche
 import { parseHtml } from "./html.js";
 
 /** Bumped whenever a rule changes, so runs say which rules produced them. */
-export const RESEARCH_VERSION = "r6";
+export const RESEARCH_VERSION = "r7";
 
 export type ResearchOutcome =
   | "website_verified"

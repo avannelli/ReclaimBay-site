@@ -431,6 +431,11 @@ reported as "HTTPS unreachable" and left the signal unknown (S P Tune Up
 Center: certificate issued for another name). DNS, connection, and timeout
 failures still leave it unknown; no HTTP fallback is tried.
 
+**Rules r7 (2026-10-01).** A copyright range with a two-digit end year is read
+as its end year, in the start year's century: "© 2000-26" is 2026 (it was
+read as 2000, so Sharp's Auto Services was wrongly flagged as having no recent
+date). "© 2000-2026" and "© 2026" are read as before.
+
 ## Approval
 
 Approval is an explicit human POST from the candidate page. It:

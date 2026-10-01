@@ -404,9 +404,23 @@ function countStatement(pages: Page[], re: RegExp) {
 
 const CLOSED_WORDS = /\b(permanently closed|closed permanently|we (are|have) (now )?closed (our doors|for good)|out of business|has closed its doors)\b/i;
 
+/**
+ * The year a date match stands for: the end of a copyright range, a two-digit
+ * end taking the start year's century ("2000-26" = 2026, "1998-05" = 2005).
+ */
+function matchYear(m: RegExpMatchArray): number {
+  const start = Number(m[1]);
+  const end = m[2];
+  if (!end) return start;
+  if (end.length === 4) return Number(end);
+  const year = Math.floor(start / 100) * 100 + Number(end);
+  return year < start ? year + 100 : year;
+}
+
 const MONTHS = "(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)";
 const DATE_PATTERNS = [
-  /(?:©|&copy;|\(c\)|copyright)\s*(?:\d{4}\s*[-–]\s*)?((?:19|20)\d{2})/gi,
+  // A copyright year, or a range: "© 2020", "© 2000-2026", "© 2000-26".
+  /(?:©|&copy;|\(c\)|copyright)\s*((?:19|20)\d{2})(?:\s*[-–]\s*((?:19|20)\d{2}|\d{2})\b)?/gi,
   new RegExp(`\\b${MONTHS}\\.?\\s+\\d{1,2},?\\s+((?:19|20)\\d{2})\\b`, "gi"),
   /\b(?:updated|posted|published)[^.\d]{0,20}((?:19|20)\d{2})\b/gi,
 ];
@@ -733,7 +747,7 @@ export function analyze(subject: Subject, pages: Page[], secureHttps: boolean | 
     for (const p of pages) {
       for (const re of DATE_PATTERNS) {
         for (const m of p.parsed.text.matchAll(re)) {
-          const year = Number(m[1]);
+          const year = matchYear(m);
           if (year > today.getFullYear()) continue;
           if (!newest || year > newest.year) newest = { year, page: p, index: m.index ?? 0, length: m[0].length };
         }

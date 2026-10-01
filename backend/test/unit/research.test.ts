@@ -871,3 +871,40 @@ describe("HTTPS check when https://…/robots.txt fails", () => {
     assert.equal(check.note, "loads over HTTPS");
   });
 });
+
+/* Production batch #4 (2026-10-01): "© 2000-26" means 2000 through 2026. */
+describe("copyright year ranges", () => {
+  const newest = async (footer: string) => {
+    const s = server(goodSite({ "https://saviersauto.example.com/": { body: HOME.replace("© 2025 Saviers Road Auto Repair", footer) } }));
+    const r = await researchCandidate(subject(), s.fetcher(), TODAY);
+    const sig = signal(r, "website_no_recent_date")!;
+    return { value: sig.value, year: Number(/Newest date on the site: (\d{4})/.exec(sig.excerpt)![1]) };
+  };
+
+  test("Sharp's Auto Services: 'Copyright © 2000-26 MechanicNet Group, Inc.' is 2026", async () => {
+    assert.deepEqual(await newest("Copyright &copy; 2000-26 MechanicNet Group, Inc. All Rights Reserved."), { value: "no", year: 2026 });
+  });
+
+  test("a four-digit range still uses its end year", async () => {
+    assert.deepEqual(await newest("Copyright © 2000-2026 Saviers Road Auto Repair"), { value: "no", year: 2026 });
+    assert.deepEqual(await newest("© 2012 – 2016 Saviers Road Auto Repair"), { value: "yes", year: 2016 });
+  });
+
+  test("a single copyright year still works", async () => {
+    assert.deepEqual(await newest("Copyright © 2026 Saviers Road Auto Repair"), { value: "no", year: 2026 });
+    assert.deepEqual(await newest("© 2019 Saviers Road Auto Repair"), { value: "yes", year: 2019 });
+  });
+
+  test("other two-digit ranges: '© 2015-19' is 2019, '© 2010-25' is 2025", async () => {
+    assert.deepEqual(await newest("© 2015-19 Saviers Road Auto Repair"), { value: "yes", year: 2019 });
+    assert.deepEqual(await newest("(c) 2010-25 Saviers Road Auto Repair"), { value: "no", year: 2025 });
+  });
+
+  test("a two-digit end crossing a century: '© 1998-05' is 2005", async () => {
+    assert.deepEqual(await newest("© 1998-05 Saviers Road Auto Repair"), { value: "yes", year: 2005 });
+  });
+
+  test("digits after a year that aren't a range end are ignored", async () => {
+    assert.deepEqual(await newest("© 2019-555-0101 Saviers Road Auto Repair"), { value: "yes", year: 2019 });
+  });
+});
