@@ -908,3 +908,54 @@ describe("copyright year ranges", () => {
     assert.deepEqual(await newest("© 2019-555-0101 Saviers Road Auto Repair"), { value: "yes", year: 2019 });
   });
 });
+
+/* Production batch #5 (2026-10-01): "We are the dealership alternative" is not a dealership. */
+describe("comparison wording right after 'dealership'", () => {
+  const run = async (body: string, name = "Saviers Road Auto Repair") => {
+    const s = server(siteWith(page(name, `<h1>${name}</h1><p>(805) 555-0101 · 5577 Saviers Rd, Oxnard</p>${body}`)));
+    return researchCandidate(subject({ businessName: name }), s.fetcher(), TODAY);
+  };
+  const isDealer = (r: Awaited<ReturnType<typeof run>>) => signal(r, "independent_shop")?.value === "no" || fact(r, "business_type")!.value === "dealership" || /also shows dealership activity/.test(fact(r, "business_type")!.note ?? "");
+
+  for (const text of [
+    "<p>Audi. We are the dealership alternative for Audi repair in the Thousand Oaks area.</p>",
+    "<h2>Mercedes-Benz Repair Specialists — An Alternative To Dealership Service &amp; Maintenance</h2>",
+    "<p>We offer dealership-level service. Ours is a dealership-level service at independent prices.</p>",
+    "<p>This is a dealership-quality service without the wait.</p>",
+    "<p>Why pay dealership prices? We are the dealership alternatives drivers trust.</p>",
+  ]) {
+    test(`not dealership evidence: ${text.replace(/<[^>]+>/g, "").replace("&amp;", "&")}`, async () => {
+      assert.equal(isDealer(await run(text)), false);
+    });
+  }
+
+  for (const text of [
+    "<p>We are your local Chevrolet dealership.</p>",
+    "<p>We are an authorized Toyota dealer.</p>",
+    "<p>We are the dealership for all your Subaru needs in Ventura.</p>",
+  ]) {
+    test(`still dealership evidence: ${text.replace(/<[^>]+>/g, "")}`, async () => {
+      const r = await run(text);
+      assert.equal(signal(r, "independent_shop")?.value, "no");
+      assert.equal(fact(r, "business_type")!.value, "dealership");
+    });
+  }
+
+  test("Exclusive Auto Service: 'the dealership alternative' + 'Family-owned and operated since 1992' is independent", async () => {
+    const r = await run(
+      "<p>Family-owned and operated since 1992, we combine cutting-edge diagnostics with honest service.</p>" +
+        "<p>Audi. We are the dealership alternative for Audi repair in the Thousand Oaks area.</p>" +
+        "<p>At Exclusive Auto, you will experience all the trained technicians and diagnostic equipment found at auto dealerships, without the cost of the dealerships.</p>",
+      "Exclusive Auto Service",
+    );
+    assert.equal(signal(r, "independent_shop")!.value, "yes");
+    assert.match(signal(r, "independent_shop")!.excerpt, /Family-owned and operated since 1992/);
+    assert.equal(fact(r, "business_type")!.value, "independent");
+  });
+
+  test("genuine dealer activity plus an independence statement is still uncertain", async () => {
+    const r = await run("<p>Family-owned and operated since 1992.</p><p>We are your local Chevrolet dealership.</p>");
+    assert.equal(signal(r, "independent_shop"), undefined);
+    assert.equal(fact(r, "business_type")!.state, "uncertain");
+  });
+});

@@ -342,6 +342,8 @@ const DEALER_ACTIVITY = new RegExp(
 
 /** Words that turn a dealer mention into a comparison ("better than the dealership"). */
 const CONTRAST = /\b(than|unlike|instead of|without|vs\.?|versus|not|alternative to|compared (to|with)|like|of)\s+(a |an |the |your |any )?$/i;
+/** Words right after "dealer(ship)" that make it a comparison ("the dealership alternative", "dealership-level service"). */
+const CONTRAST_AFTER = /^\s*-?\s*(alternatives?|level|quality|caliber|grade|prices?|pricing|costs?|rates?)\b/i;
 
 const INDEPENDENT_WORDS =
   /\b(family[- ]owned|locally[- ]owned|independently[- ]owned|owner[- ]operated|privately[- ]owned|independent(?:\s+[a-z0-9&'.-]+){0,3}?\s+(?:repair|service|shop|garage|mechanic|specialist|centre|center)s?)\b/i;
@@ -432,7 +434,8 @@ function dealerActivity(pages: Page[]) {
       DEALER_ACTIVITY.lastIndex = 0;
       for (const m of source.matchAll(DEALER_ACTIVITY)) {
         const before = source.slice(Math.max(0, (m.index ?? 0) - 30), m.index);
-        if (CONTRAST.test(before)) continue;
+        const after = source.slice((m.index ?? 0) + m[0].length, (m.index ?? 0) + m[0].length + 30);
+        if (CONTRAST.test(before) || CONTRAST_AFTER.test(after)) continue;
         return { page: p, text: source, index: m.index ?? 0, match: m };
       }
     }

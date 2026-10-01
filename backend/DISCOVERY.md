@@ -436,6 +436,14 @@ as its end year, in the start year's century: "© 2000-26" is 2026 (it was
 read as 2000, so Sharp's Auto Services was wrongly flagged as having no recent
 date). "© 2000-2026" and "© 2026" are read as before.
 
+**Rules r8 (2026-10-01).** Comparison wording right after "dealer(ship)" also
+stops it counting as dealership evidence, as wording before it already did:
+"We are the dealership alternative for Audi repair", "a dealership-level
+service", "dealership-quality", "dealership prices". Exclusive Auto Service, a
+family-owned repair shop, had been left "uncertain" (independent and dealer)
+by "We are the dealership alternative". Genuine evidence ("We are your local
+Chevrolet dealership", "an authorized Toyota dealer") is unchanged.
+
 ## Approval
 
 Approval is an explicit human POST from the candidate page. It:
