@@ -839,3 +839,35 @@ describe("a confirmed website that gives a different address", () => {
     assert.deepEqual(discrepancy((await researchCandidate(POPS, agency.fetcher(), TODAY)).warnings), [], "the site builder's address is not the business's");
   });
 });
+
+/* Production batch #3 (2026-10-01): the HTTPS robots.txt itself fails the certificate check. */
+describe("HTTPS check when https://…/robots.txt fails", () => {
+  const httpSite = () => Object.fromEntries(Object.entries(goodSite()).map(([k, v]) => [k.replace("https://", "http://"), v]));
+  const run = async (httpsRobots: Fixture, httpsHome?: Fixture) => {
+    const s = server({ ...httpSite(), "https://saviersauto.example.com/robots.txt": httpsRobots, ...(httpsHome ? { "https://saviersauto.example.com/": httpsHome } : {}) });
+    const r = await researchCandidate(subject({ website: "http://saviersauto.example.com/" }), s.fetcher(), TODAY);
+    return { r, s, check: r.sources.find((x) => x.kind === "https_check")! };
+  };
+
+  test("S P Tune Up Center: a certificate error on HTTPS robots.txt means website_not_https 'yes'", async () => {
+    const { r, s, check } = await run({ error: "tls" });
+    assert.equal(r.outcome, "website_verified", "ownership is unaffected");
+    assert.equal(signal(r, "website_not_https")!.value, "yes");
+    assert.deepEqual([check.ok, check.note], [false, "certificate error over HTTPS"]);
+    assert.ok(!s.calls.includes("https://saviersauto.example.com/"), "the certificate already failed: no second HTTPS request");
+  });
+
+  for (const error of ["dns", "connection", "timeout"]) {
+    test(`a ${error} failure on HTTPS robots.txt stays 'HTTPS unreachable' (unknown)`, async () => {
+      const { r, check } = await run({ error });
+      assert.equal(signal(r, "website_not_https"), undefined);
+      assert.equal(check.note, "HTTPS unreachable");
+    });
+  }
+
+  test("HTTPS robots.txt 404 with a valid HTTPS home page: secure ('no')", async () => {
+    const { r, check } = await run({ status: 404 }, { body: HOME });
+    assert.equal(signal(r, "website_not_https")!.value, "no");
+    assert.equal(check.note, "loads over HTTPS");
+  });
+});

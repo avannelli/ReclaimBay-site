@@ -424,6 +424,13 @@ data. Found on Perry's Quality Auto Repair (provider "2180 1st St", website
   Pops Auto Repair (provider 17958 E Telegraph Rd, Santa Paula; website 665
   Ventura St, Fillmore).
 
+**Rules r6 (2026-10-01).** The HTTPS check reads `https://…/robots.txt`
+first; a certificate (TLS) error there now counts as a certificate error over
+HTTPS (Website not on HTTPS = yes), as one on the page already did. It was
+reported as "HTTPS unreachable" and left the signal unknown (S P Tune Up
+Center: certificate issued for another name). DNS, connection, and timeout
+failures still leave it unknown; no HTTP fallback is tried.
+
 ## Approval
 
 Approval is an explicit human POST from the candidate page. It:

@@ -123,6 +123,8 @@ export class PoliteFetcher {
   private readonly now: () => number;
   private readonly userAgent: string;
   private readonly robots = new Map<string, RobotsRules | "unavailable" | "unreachable">();
+  /** Why an origin's robots.txt couldn't be fetched ("tls", "dns", ...), when it couldn't. */
+  private readonly robotsErrors = new Map<string, string>();
   private readonly lastHit = new Map<string, number>();
 
   constructor(opts: PoliteFetcherOptions = {}) {
@@ -193,6 +195,7 @@ export class PoliteFetcher {
     } else if (r.error) {
       rules = "unreachable";
       note = `site unreachable (${r.error})`;
+      this.robotsErrors.set(origin, r.error);
     } else {
       // A server error on robots.txt: treat the whole site as disallowed.
       rules = "unavailable";
@@ -238,6 +241,11 @@ export class PoliteFetcher {
   async httpsCheck(host: string): Promise<{ source: SourceRecord; secure: boolean | null }> {
     const url = `https://${host}/`;
     const rules = await this.rulesFor(`https://${host}`);
+    // A certificate error on robots.txt is the site's certificate failing:
+    // not secure, as for the page itself.
+    if (rules === "unreachable" && this.robotsErrors.get(`https://${host}`) === "tls") {
+      return { source: this.record("https_check", url, null, false, "certificate error over HTTPS"), secure: false };
+    }
     if (rules === "unreachable") return { source: this.record("https_check", url, null, false, "HTTPS unreachable"), secure: null };
     if (rules === "unavailable" || !robotsAllows(rules, "/")) {
       return { source: this.record("https_check", url, null, false, "skipped: robots.txt"), secure: null };
