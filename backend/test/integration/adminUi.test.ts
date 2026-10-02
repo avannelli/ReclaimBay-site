@@ -287,13 +287,17 @@ describe("admin UI structure (HTTP)", { skip: skipReason }, () => {
       assert.match(body, />Review<\/a>/);
     });
 
-    test("candidate detail is organized by the research questions, and says it is not a prospect", async () => {
+    test("candidate detail leads with identity, qualification, and decision; research details follow, collapsed", async () => {
       await post("/admin/discovery/runs", { provider: "fixture", region: "Ventura County, CA" });
       const c = await db.discoveryCandidate.findFirstOrThrow({ where: { externalId: "fx-1001" } });
       const body = (await get(`/admin/discovery/candidates/${c.id}`)).body;
-      const order = ["duplicates", "know", "dont-know", "evidence", "state", "approval", "notes"].map((id) => body.indexOf(`id="${id}-h"`));
-      assert.ok(order.every((i) => i > 0), "every section is present");
+      const primary = ['class="rv-id"', 'id="qual-h"', 'id="dec-h"', 'class="rv-strip"'].map((s) => body.indexOf(s));
+      assert.ok(primary.every((i) => i > 0), "identity, qualification, decision, and the research summary are present");
+      assert.deepEqual([...primary].sort((a, b) => a - b), primary, "in reading order");
+      const order = ["research", "evidence", "score", "know", "dont-know", "duplicates", "category", "provenance", "approval", "state", "notes"].map((id) => body.indexOf(`id="${id}-h"`));
+      assert.ok(order.every((i) => i > primary[3]!), "every research section is present, after the decision");
       assert.deepEqual([...order].sort((a, b) => a - b), order, "sections appear in order");
+      assert.doesNotMatch(body, /<details class="disc" id="(research|evidence|score|know|dont-know|duplicates|provenance|approval|state|notes)" open>/, "collapsed unless relevant");
       assert.match(body, /Candidate, not a prospect/);
       assert.match(body, /class="st cs-discovered">Discovered/);
       assert.match(body, /<span class="obs obs-unknown">Unknown<\/span>/);
@@ -310,7 +314,7 @@ describe("admin UI structure (HTTP)", { skip: skipReason }, () => {
       }
       await post(`/admin/discovery/candidates/${id}/status`, { status: "researched" });
       const body = (await get(`/admin/discovery/candidates/${id}`)).body;
-      assert.match(body, /Approve candidate → create prospect/);
+      assert.match(body, /✓ Approve as prospect/);
       assert.match(body, /Approval adds this business to the prospect pipeline\. It does not automatically qualify the business or mark it ready to contact\./);
     });
   });

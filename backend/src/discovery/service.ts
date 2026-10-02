@@ -30,8 +30,10 @@ import {
   candidateTransitionErrors,
   isCandidateStatus,
   isFrozen,
+  researchedErrors,
   type CandidateStatus,
 } from "./candidateStatus.js";
+import { isDuplicateAnswer, isFlagged, matchReasons, type DuplicateAnswer } from "./duplicateReview.js";
 import { AUTO_APPROVAL_RULES, assessAutoApproval, type AutoApprovalAssessment, type LatestResearch } from "./autoApproval.js";
 import { nameCategory } from "./categories.js";
 import {
@@ -207,8 +209,9 @@ async function insertCandidate(db: Db | Tx, n: NewCandidate) {
       providerStatus: b.operatingStatus,
       providerRetrievedAt: b.retrievedAt,
       providerSources: b.sources,
-      // Anything weakly matching waits for a human look.
+      // Anything weakly matching waits for a human look; the hold is the duplicate check's.
       status: flagged ? "needs_review" : "discovered",
+      duplicateHold: flagged,
       possibleDuplicateCandidateId: v.possibleCandidate?.id ?? null,
       possibleDuplicateProspectId: v.possibleProspect?.id ?? null,
       duplicateReason: flagged ? flagReason(v) : null,
@@ -625,6 +628,8 @@ export async function changeCandidateStatus(db: Db, id: string, toRaw: string, r
       data: {
         status: to,
         statusChangedAt: now,
+        // From here on the status is a person's: a later duplicate answer won't lift it.
+        duplicateHold: false,
         ...(to === "researched" ? { researchedAt: now } : {}),
         ...(closing ? { decisionReason: reason, decidedAt: now } : {}),
         // Reopening clears the earlier decision.
@@ -633,6 +638,78 @@ export async function changeCandidateStatus(db: Db, id: string, toRaw: string, r
     });
     if (count !== 1) throw new ProspectError(["The status changed meanwhile. Reload and try again."], "conflict");
     return { from: current.status, to };
+  });
+}
+
+/**
+ * A person's answer to a possible-duplicate flag (rules in duplicateReview.ts).
+ * Detection is unchanged and the flag is kept; this records the decision, with
+ * a note, and moves the candidate only as the answer requires:
+ *
+ *   not_duplicate  lifts the duplicate hold: a candidate waiting in the Needs
+ *                  review the duplicate check placed (duplicateHold) returns to
+ *                  Researched when its evidence allows, otherwise to Discovered
+ *                  so research can run. A hold a person set stays: `kept` says so
+ *   duplicate      the existing move to Duplicate, with the match as the reason
+ *   unresolved     records that a person looked; nothing else changes
+ */
+export async function resolveDuplicate(db: Db, id: string, answerRaw: string) {
+  if (!isDuplicateAnswer(answerRaw)) throw new ProspectError(["Choose a duplicate decision."]);
+  const answer: DuplicateAnswer = answerRaw;
+
+  return db.$transaction(async (tx) => {
+    const c = await tx.discoveryCandidate.findUnique({ where: { id }, include: candidateInclude });
+    if (!c) throw notFound();
+    if (isFrozen(c.status)) throw frozenError();
+    if (!isFlagged(c)) throw new ProspectError(["This candidate has no possible-duplicate flag to resolve."]);
+
+    const [matchCandidate, matchProspect] = await Promise.all([
+      c.possibleDuplicateCandidateId
+        ? tx.discoveryCandidate.findUnique({ where: { id: c.possibleDuplicateCandidateId }, select: { businessName: true } })
+        : null,
+      c.possibleDuplicateProspectId ? tx.prospect.findUnique({ where: { id: c.possibleDuplicateProspectId }, select: { businessName: true } }) : null,
+    ]);
+    const matchName = matchCandidate?.businessName ?? matchProspect?.businessName ?? "the flagged record";
+    const why = matchReasons(c.duplicateReason).map((r) => r.text.toLowerCase()).join("; ") || "possible match";
+    const now = new Date();
+
+    let to: CandidateStatus = c.status;
+    let note: string;
+    if (answer === "duplicate") {
+      to = "duplicate";
+      const reason = `Duplicate of ${matchName} (${why}).`.slice(0, FIELD_LIMITS.reason);
+      const errors = candidateTransitionErrors(c.status, to, { evidenceCount: c.evidence.length, unevidencedSignals: gatedSignals(c) }, reason);
+      if (errors.length) throw new ProspectError(errors);
+      const { count } = await tx.discoveryCandidate.updateMany({
+        where: { id, status: c.status },
+        data: { status: to, statusChangedAt: now, decisionReason: reason, decidedAt: now, duplicateDecision: null, duplicateDecidedAt: now, duplicateHold: false },
+      });
+      if (count !== 1) throw new ProspectError(["The candidate changed meanwhile. Reload and try again."], "conflict");
+      note = `Marked a duplicate of ${matchName} by a person (${why}).`;
+    } else {
+      if (c.status === "duplicate") throw new ProspectError(["This candidate is already marked a duplicate. Reopen it first."]);
+      // Only the duplicate check's own hold is lifted; research decides between Researched and Discovered as always.
+      const lift = answer === "not_duplicate" && c.status === "needs_review" && c.duplicateHold;
+      if (lift) to = researchedErrors({ evidenceCount: c.evidence.length, unevidencedSignals: gatedSignals(c) }).length ? "discovered" : "researched";
+      const { count } = await tx.discoveryCandidate.updateMany({
+        where: { id, status: c.status, duplicateHold: c.duplicateHold },
+        data: {
+          duplicateDecision: answer,
+          duplicateDecidedAt: now,
+          ...(answer === "not_duplicate" ? { duplicateHold: false } : {}),
+          ...(lift ? { status: to, statusChangedAt: now, ...(to === "researched" && !c.researchedAt ? { researchedAt: now } : {}) } : {}),
+        },
+      });
+      if (count !== 1) throw new ProspectError(["The candidate changed meanwhile. Reload and try again."], "conflict");
+      note =
+        answer === "not_duplicate"
+          ? `Not a duplicate of ${matchName}: a person checked the possible match (${why}).${c.status === "needs_review" && !lift ? " It stays in Needs review, where a person put it." : ""}`
+          : `Possible duplicate of ${matchName} (${why}) left unresolved by a person.`;
+    }
+    await tx.candidateNote.create({ data: { candidateId: id, body: note.slice(0, FIELD_LIMITS.note) } });
+    // A person's own hold that the answer deliberately left in place.
+    const kept = answer === "not_duplicate" && to === "needs_review";
+    return { answer, from: c.status, to, kept, businessName: c.businessName, matchName };
   });
 }
 
@@ -872,6 +949,7 @@ export async function applyResearchFindings(db: Db, id: string, findings: Resear
         phoneKey: phoneKey(facts.phone) ?? phoneKey(c.providerPhone),
         status: "researched",
         statusChangedAt: now,
+        duplicateHold: false,
         researchedAt: now,
       },
     });
@@ -1094,7 +1172,9 @@ export async function listCandidates(db: Db, filters: CandidateFilters) {
   if (filters.tier === "core" || filters.tier === "adjacent") and.push({ categoryTier: filters.tier });
   if (filters.category && isCategoryVerdict(filters.category)) and.push({ categoryVerdict: filters.category });
   if (filters.flagged === "1") {
+    // Flags a person hasn't settled: a resolved "not a duplicate" no longer needs review.
     and.push({ OR: [{ possibleDuplicateCandidateId: { not: null } }, { possibleDuplicateProspectId: { not: null } }] });
+    and.push({ OR: [{ duplicateDecision: null }, { duplicateDecision: "unresolved" }] });
   }
 
   const rows = await db.discoveryCandidate.findMany({
@@ -1153,16 +1233,29 @@ export async function getCandidateDetail(db: Db, id: string) {
   });
   if (!candidate) return null;
   const [dupCandidate, dupProspect, relCandidate, relProspect] = await Promise.all([
+    // The identity fields a person compares side by side with this candidate.
     candidate.possibleDuplicateCandidateId
       ? db.discoveryCandidate.findUnique({
           where: { id: candidate.possibleDuplicateCandidateId },
-          select: { id: true, businessName: true, status: true },
+          select: {
+            id: true,
+            businessName: true,
+            status: true,
+            streetAddress: true,
+            city: true,
+            state: true,
+            website: true,
+            phone: true,
+            providerPhone: true,
+            latitude: true,
+            longitude: true,
+          },
         })
       : null,
     candidate.possibleDuplicateProspectId
       ? db.prospect.findUnique({
           where: { id: candidate.possibleDuplicateProspectId },
-          select: { id: true, businessName: true, status: true },
+          select: { id: true, businessName: true, status: true, city: true, state: true, website: true, phone: true },
         })
       : null,
     candidate.relatedCandidateId

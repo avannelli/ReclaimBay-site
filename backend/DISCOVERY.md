@@ -159,6 +159,21 @@ Paula Automotive Machine Shop").
 | Related (with `NO_MATCH`) | Stored as `discovered`, linked to the other location with the reason. A related link is not a duplicate flag and is not evidence about independence. |
 | `NO_MATCH` | Stored as `discovered`. |
 
+**A person answers a possible duplicate** (`src/discovery/duplicateReview.ts`,
+`resolveDuplicate()`), from the comparison on the candidate page. Detection is
+unchanged, and the flag and its reason are kept as the record of what the check
+found. The answer is stored in `duplicateDecision` / `duplicateDecidedAt`, with a
+note:
+
+| Answer | What happens |
+| ------ | ------------ |
+| **Not a duplicate** | Records `not_duplicate` and lifts the duplicate hold: a candidate still in the `needs_review` the duplicate check placed (`duplicateHold`) moves to `researched` when its evidence passes the Researched rule, otherwise to `discovered` so research can run. A Needs review hold a person set (any status change by a person clears `duplicateHold`) stays, and the confirmation says so. It leaves the "possible duplicate" filter. |
+| **Mark duplicate** | The existing move to `duplicate`, with "Duplicate of *match* (*reason*)" as the decision reason. It never becomes a prospect; reopening it brings the flag back for a new answer. |
+| **Leave unresolved** | Records `unresolved`; the warning and the hold stay. |
+
+While the question is open (possible or unresolved), the candidate page puts
+it before approval.
+
 - **Multi-location businesses and chains are kept.** A shared website is not
   enough to skip a record: each location is stored, and the link shows they
   belong together. Whether that means a chain is decided during research.
@@ -904,7 +919,7 @@ a website-finding search API could be added later behind the same boundary
 | ---- | ------------ |
 | `/admin/discovery` | Run discovery (provider, e.g. Overture Maps Places; a category choice: core, or core + adjacent), add a candidate, status counts, search and filters (status, qualification, score band, state, city, possible duplicate, category tier), sorting by score, recency, or name, recent runs with their provider, the import they read, status (including Queued), release, tiers, and counters, and **provider imports** (area, release, records staged, what was read and left out, status, errors, and whether retention has pruned their rows). List rows tag the tier, "Other location shares this website", "Provider says closed", and the research outcome. **Research up to 10 in this view** queues automated research for the first 10 not-yet-researched candidates matching the filters, with queue counts |
 | `/admin/discovery/candidates/new` | Add a candidate by hand |
-| `/admin/discovery/candidates/:id` | What we know (including street and position; a provider website is marked unverified), what we don't know, and where each fact came from (provider, GERS ID for Overture, release, category and tier, brand, provider confidence, operating status, retrieval time, upstream sources with attribution). The verified phone and the **unverified provider phone** are shown separately. Qualification and score shown separately. Possible-duplicate explanation and other-location links. **Automated research**: Run research, status, facts as Verified / Provider-reported · unverified / Uncertain / Not found with quotes and sources, URLs requested, warnings, and history; research-set signals and evidence are labelled. Status moves, evidence, notes, and Approve |
+| `/admin/discovery/candidates/:id` | The review page, in decision order. **Identity**: name, address, website and phone, each marked verified or provider-reported, and any identity issue (provider says closed, outside the target category, website not confirmed, another location sharing the website). **Possible duplicate**, when flagged: why it was flagged in plain words, a side-by-side comparison with the match (name, address, city, phone, website, distance; differences marked), and **Not a duplicate** / **Mark duplicate** / **Leave unresolved**. **Qualification**: the two required criteria, each Yes / No / Unknown with its evidence, and the result (Qualified, Needs verification, Does not qualify). **Decision**: one primary action for the current state (Approve as prospect, Run research, resolve the duplicate first, or Disregard), with the reasons when approval isn't possible, plus Keep for review and Disregard (with a reason); a closed record can be reopened. A one-line research summary keeps the opportunity score secondary. Everything else is in collapsed sections: automated research, evidence (and adding it), score breakdown, what we know, what we don't know, the duplicate assessment, the category check (and its override), discovery provenance, automatic approval, the research status (advanced status moves), and notes |
 | `/admin/discovery/candidates/:id/edit` | Edit facts and record signals with each signal's rules. A provider phone is shown as a reminder to verify it on the business's own website before entering it |
 
 Discovery pages are registered inside the admin scope, so they share its

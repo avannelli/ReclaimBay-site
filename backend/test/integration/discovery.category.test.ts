@@ -246,12 +246,12 @@ describe("category check (admin HTTP)", { skip: skipReason }, () => {
     assert.match(html, /Not scored: outside the target category/);
     assert.match(html, /Not assessed/);
     assert.match(html, /<b>Automated<\/b>/);
-    assert.doesNotMatch(html, /<span class="big">\d+<\/span>/, "no raw score is shown");
+    assert.doesNotMatch(html, /class="rv-score">\d+<\/b>/, "no raw score is shown");
 
     const fine = await readyCandidate("Smith Auto Repair");
     const ok = (await get(`/admin/discovery/candidates/${fine}`)).body;
     assert.match(ok, /✓ In target category/);
-    assert.match(ok, /<span class="big">\d+<\/span>/);
+    assert.match(ok, /class="rv-score">\d+<\/b>/);
     assert.doesNotMatch(ok, /Not scored: outside the target category/);
   });
 

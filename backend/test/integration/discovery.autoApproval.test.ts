@@ -234,7 +234,7 @@ describe("automatic approval (admin HTTP)", { skip: skipReason }, () => {
   test("an administrator sees who approved a prospect and why", async () => {
     const auto = await make(fixtureWeb(independentShop(HOST)));
     const autoPage = (await get(`/admin/discovery/candidates/${auto}`)).body;
-    assert.match(autoPage, /✓ Approved automatically/);
+    assert.match(autoPage, /✓<\/span>Approved automatically/);
     assert.match(autoPage, /Automatically approved \(approval@a1\): target category confirmed/);
     const list = (await get("/admin/discovery")).body;
     assert.match(list, /Approved automatically/);
@@ -248,6 +248,7 @@ describe("automatic approval (admin HTTP)", { skip: skipReason }, () => {
     const heldPage = (await get(`/admin/discovery/candidates/${held}`)).body;
     assert.match(heldPage, /Automatic approval \(approval@a1\): Held for human review/);
     assert.match(heldPage, /Independent shop is unknown, not yes\./);
-    assert.match(heldPage, /Approve and create prospect/, "a person can still approve it");
+    assert.match(heldPage, /Needs verification/);
+    assert.match(heldPage, /Approve anyway/, "a person can still approve it");
   });
 });

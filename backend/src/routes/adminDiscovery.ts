@@ -16,6 +16,7 @@ import {
   listCandidates,
   recentRuns,
   processDiscoveryRun,
+  resolveDuplicate,
   runDiscovery,
   setCandidateCategory,
   updateCandidate,
@@ -39,6 +40,18 @@ const NOTICES: Record<string, string> = {
   evidence_removed: "Evidence removed.",
   research: "Research queued. It runs in the background (about 10 seconds per website); refresh to see the results.",
   category: "Category check updated. This is not qualification and did not change the status.",
+};
+
+/** Decision confirmations that name the business; the names come from the database, never the request. */
+const DECISION_NOTICES: Record<string, (name: string, match: string) => string> = {
+  not_duplicate: (name, match) => `Duplicate resolved: ${name} is not a duplicate of ${match}.`,
+  not_duplicate_held: (name, match) =>
+    `Duplicate resolved: ${name} is not a duplicate of ${match}. It stays in Needs review because a person also put it on hold.`,
+  duplicate: (name, match) => `Marked as a duplicate: ${name} is the same business as ${match}. It will not become a prospect.`,
+  unresolved: (name) => `Left unresolved: ${name} keeps its possible-duplicate warning and stays in review.`,
+  kept: (name) => `${name} is kept for review.`,
+  disregarded: (name) => `${name} was disregarded. It will not become a prospect; reopen it from its page if that was a mistake.`,
+  reopened: (name) => `${name} was reopened for review.`,
 };
 
 const pick = (body: Form | undefined, keys: string[]): Values =>
@@ -95,11 +108,15 @@ export async function discoveryRoutes(app: FastifyInstance, opts: { config: Conf
     return html(reply, discoveryPage({ providers: providerOptions, list, runs, runCount, imports, research, statusCounts, filters, ...extra }));
   };
 
-  const renderDetail = async (reply: FastifyReply, id: string, extra: { notice?: string; errors?: string[]; values?: Values } = {}) => {
+  const renderDetail = async (reply: FastifyReply, id: string, extra: { notice?: string; done?: string; errors?: string[]; values?: Values } = {}) => {
     const detail = await getCandidateDetail(db, id);
     if (!detail) return notFound(reply);
     const research = await candidateResearch(db, id);
-    return html(reply, candidateDetailPage({ detail, research, ...extra }));
+    const { done, ...rest } = extra;
+    const decided = done ? DECISION_NOTICES[done] : undefined;
+    const match = detail.dupCandidate?.businessName ?? detail.dupProspect?.businessName ?? "the flagged record";
+    const notice = rest.notice ?? (decided ? decided(detail.candidate.businessName, match) : done ? NOTICES[done] : undefined);
+    return html(reply, candidateDetailPage({ detail, research, ...rest, notice, decided: Boolean(decided) }));
   };
 
   // ---------- overview and runs ----------
@@ -179,7 +196,7 @@ export async function discoveryRoutes(app: FastifyInstance, opts: { config: Conf
 
   app.get<{ Params: { id: string }; Querystring: { done?: string } }>("/admin/discovery/candidates/:id", async (req, reply) => {
     if (!validId(req.params.id, reply)) return reply;
-    return renderDetail(reply, req.params.id, { notice: req.query.done ? NOTICES[req.query.done] : undefined });
+    return renderDetail(reply, req.params.id, { done: req.query.done });
   });
 
   app.get<{ Params: { id: string } }>("/admin/discovery/candidates/:id/edit", async (req, reply) => {
@@ -210,9 +227,26 @@ export async function discoveryRoutes(app: FastifyInstance, opts: { config: Conf
     try {
       const { from, to } = await changeCandidateStatus(db, id, req.body?.status ?? "", req.body?.reason);
       req.log.info({ candidateId: id, from, to }, "candidate status changed");
-      return reply.redirect(`/admin/discovery/candidates/${id}?done=status`, 303);
+      // The decision buttons say which human decision this was; the advanced form doesn't.
+      const intent = req.body?.intent;
+      const done =
+        intent === "keep" && to === "needs_review" ? "kept" : intent === "disregard" && to === "rejected" ? "disregarded" : intent === "reopen" && to === "discovered" ? "reopened" : "status";
+      return reply.redirect(`/admin/discovery/candidates/${id}?done=${done}`, 303);
     } catch (err) {
-      return handleError(err, reply, (errors) => renderDetail(reply, id, { errors, values: pick(req.body, ["status", "reason"]) }));
+      return handleError(err, reply, (errors) => renderDetail(reply, id, { errors, values: pick(req.body, ["status", "reason", "intent"]) }));
+    }
+  });
+
+  // A person's answer to a possible-duplicate flag: not a duplicate, duplicate, or left unresolved.
+  app.post<{ Params: { id: string }; Body: Form }>("/admin/discovery/candidates/:id/duplicate", writeLimit, async (req, reply) => {
+    const { id } = req.params;
+    if (!validId(id, reply)) return reply;
+    try {
+      const r = await resolveDuplicate(db, id, req.body?.decision ?? "");
+      req.log.info({ candidateId: id, decision: r.answer, from: r.from, to: r.to }, "candidate duplicate decision");
+      return reply.redirect(`/admin/discovery/candidates/${id}?done=${r.kept ? "not_duplicate_held" : r.answer}`, 303);
+    } catch (err) {
+      return handleError(err, reply, (errors) => renderDetail(reply, id, { errors }));
     }
   });
 

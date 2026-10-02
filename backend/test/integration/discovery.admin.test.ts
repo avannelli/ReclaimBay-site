@@ -5,6 +5,8 @@ import type { FastifyInstance } from "fastify";
 import { buildApp } from "../../src/app.js";
 import { loadConfig } from "../../src/config.js";
 import type { Db } from "../../src/db.js";
+import { discoveryProviders } from "../../src/discovery/providers.js";
+import { runDiscovery } from "../../src/discovery/service.js";
 import { TEST_DATABASE_URL, WEBSITE, freshDb, readyForm, skipReason, truncate } from "./helpers.js";
 
 const SECRET = "integration-test-secret-0123456789";
@@ -40,6 +42,12 @@ describe("discovery admin (HTTP)", { skip: skipReason }, () => {
   const idFrom = (location: unknown, prefix: string) => new RegExp(`${prefix}/([0-9a-f-]{36})`).exec(String(location))![1]!;
 
   const runVentura = () => post("/admin/discovery/runs", { provider: "fixture", region: "Ventura County, CA", city: "", businessType: "Independent automotive repair" });
+  /**
+   * The same fixture run through the service, for tests about what happens after
+   * discovery: the HTTP route allows 10 runs a minute, and this file shares it.
+   */
+  const seedVentura = () =>
+    runDiscovery(db, discoveryProviders(loadConfig(ENV), db), { provider: "fixture", region: "Ventura County, CA", city: "", businessType: "Independent automotive repair" });
   const candidateId = async (externalId: string) => (await db.discoveryCandidate.findFirstOrThrow({ where: { externalId } })).id;
 
   /** A manual candidate researched through the forms, ready for approval. */
@@ -195,14 +203,15 @@ describe("discovery admin (HTTP)", { skip: skipReason }, () => {
       assert.match(page, /What we know/);
       assert.match(page, /What we don&#39;t know|What we don't know/);
       assert.match(page, /Where each fact came from/);
-      assert.match(page, /class="st q-unverified q-big">Unverified/);
+      assert.match(page, /class="vd vd-warn lg"><span aria-hidden="true">⚠<\/span>Needs verification/);
       assert.match(page, /Opportunity score · ranking only, not a verdict/);
       assert.match(page, /directory\.example\.com\/listing\/fx-1001/);
       assert.match(page, /8 of 9 signals are unknown/, "only 'has a website' is known; the provider phone is unverified");
       assert.match(page, /Provider phone/);
       assert.match(page, /Unverified/);
-      assert.match(page, /Not ready to approve yet/);
-      assert.doesNotMatch(page, /Approve and create prospect/);
+      assert.match(page, /Can&#39;t approve yet/);
+      assert.match(page, /It hasn&#39;t been researched yet\./, "the blocker in plain words");
+      assert.doesNotMatch(page, /Approve as prospect|Approve anyway/);
     });
 
     test("recorded facts show their evidence and source; unsourced ones are flagged", async () => {
@@ -217,17 +226,27 @@ describe("discovery admin (HTTP)", { skip: skipReason }, () => {
       assert.match(page, /smithauto\.example\.com\/about/);
       // Both required criteria are recorded "yes", so the existing rules say Meets criteria;
       // the signal that still lacks evidence stays flagged, and approval stays blocked.
-      assert.match(page, /class="st q-meets_criteria q-big"/);
+      assert.match(page, /class="vd vd-pos lg"><span aria-hidden="true">✓<\/span>Qualified/);
       assert.match(page, /No evidence yet/);
-      assert.match(page, /Not ready to approve yet/);
+      assert.match(page, /Can&#39;t approve yet/);
     });
 
-    test("a possible duplicate explains itself and links to the match", async () => {
+    test("a possible duplicate explains itself, compares the two, and links to the match", async () => {
       await runVentura();
       const page = (await get(`/admin/discovery/candidates/${await candidateId("fx-2002")}`)).body;
       assert.match(page, /Possible duplicate/);
-      assert.match(page, /Matched only on: candidate: same name and city/);
+      assert.match(page, /Why it was flagged<\/span><b>Same name in the same city<\/b>/);
+      assert.match(page, /matched only on: candidate: same name and city/, "the detection record stays in the details");
+      assert.match(page, /<table class="cmp">/);
       assert.match(page, new RegExp(`href="/admin/discovery/candidates/${await candidateId("fx-2001")}"`));
+    });
+
+    test("while a duplicate is unresolved, the decision is the duplicate question, not approval", async () => {
+      await seedVentura();
+      const page = (await get(`/admin/discovery/candidates/${await candidateId("fx-2002")}`)).body;
+      assert.match(page, /Resolve the possible duplicate first/);
+      assert.doesNotMatch(page, /Approve as prospect|Approve anyway/);
+      for (const decision of ["not_duplicate", "duplicate", "unresolved"]) assert.match(page, new RegExp(`name="decision" value="${decision}"`));
     });
 
     test("user and provider text is escaped everywhere", async () => {
@@ -243,11 +262,139 @@ describe("discovery admin (HTTP)", { skip: skipReason }, () => {
     });
   });
 
+  describe("resolving a possible duplicate", () => {
+    /** The flagged fixture candidate and the record it was matched with. */
+    const flagged = async () => {
+      await seedVentura();
+      const c = await db.discoveryCandidate.findFirstOrThrow({ where: { externalId: "fx-2002" } });
+      assert.equal(c.status, "needs_review");
+      assert.equal(c.duplicateHold, true, "the hold is the duplicate check's");
+      const match = await db.discoveryCandidate.findUniqueOrThrow({ where: { id: c.possibleDuplicateCandidateId! } });
+      return { c, match };
+    };
+    const decide = (id: string, decision: string) => post(`/admin/discovery/candidates/${id}/duplicate`, { decision });
+
+    test("Not a duplicate records the decision, keeps the flag, lifts the hold, and confirms with a way back to the queue", async () => {
+      const { c, match } = await flagged();
+      const res = await decide(c.id, "not_duplicate");
+      assert.equal(res.statusCode, 303);
+      assert.match(String(res.headers.location), /\?done=not_duplicate$/);
+      const after = await db.discoveryCandidate.findUniqueOrThrow({ where: { id: c.id }, include: { notes: true } });
+      assert.equal(after.duplicateDecision, "not_duplicate");
+      assert.ok(after.duplicateDecidedAt);
+      assert.equal(after.possibleDuplicateCandidateId, match.id, "the detection record is kept");
+      assert.equal(after.duplicateReason, c.duplicateReason);
+      assert.equal(after.status, "discovered", "no evidence yet, so it goes back to be researched");
+      assert.ok(after.notes.some((n) => n.body.startsWith(`Not a duplicate of ${match.businessName}: a person checked the possible match (same name in the same city)`)));
+
+      const page = (await get(String(res.headers.location))).body;
+      assert.match(page, /Duplicate resolved: .+ is not a duplicate of /);
+      assert.match(page, /<a href="\/admin\/discovery">Back to review queue<\/a>/);
+      assert.match(page, /✓<\/span>Not a duplicate/);
+      assert.doesNotMatch(page, /Resolve the possible duplicate first/);
+      assert.doesNotMatch((await get("/admin/discovery?flagged=1")).body, new RegExp(`/admin/discovery/candidates/${c.id}"`), "no longer waiting on a person");
+      assert.equal(await db.prospect.count(), 0, "a decision never creates a prospect");
+    });
+
+    test("Not a duplicate never lifts a Needs review hold a person set", async () => {
+      const { c } = await flagged();
+      // A person takes the candidate out of the duplicate check's hold, then puts it on hold themselves.
+      assert.equal((await post(`/admin/discovery/candidates/${c.id}/status`, { status: "researching" })).statusCode, 303);
+      assert.equal((await post(`/admin/discovery/candidates/${c.id}/status`, { status: "needs_review", intent: "keep" })).statusCode, 303);
+      assert.equal((await db.discoveryCandidate.findUniqueOrThrow({ where: { id: c.id } })).duplicateHold, false);
+
+      const res = await decide(c.id, "not_duplicate");
+      assert.match(String(res.headers.location), /\?done=not_duplicate_held$/);
+      const after = await db.discoveryCandidate.findUniqueOrThrow({ where: { id: c.id }, include: { notes: true } });
+      assert.equal(after.status, "needs_review", "the person's hold stays");
+      assert.equal(after.duplicateDecision, "not_duplicate", "the duplicate question is still answered");
+      assert.ok(after.notes.some((n) => /It stays in Needs review, where a person put it\.$/.test(n.body)));
+      const page = (await get(String(res.headers.location))).body;
+      assert.match(page, /It stays in Needs review because a person also put it on hold\./);
+      assert.doesNotMatch(page, /Resolve the possible duplicate first/);
+    });
+
+    test("Not a duplicate returns an evidence-backed candidate to Researched", async () => {
+      const { c } = await flagged();
+      await post(`/admin/discovery/candidates/${c.id}/evidence`, { signalKey: "independent_shop", sourceUrl: "https://harbor.example.com/about", excerpt: "Family owned." });
+      await decide(c.id, "not_duplicate");
+      const after = await db.discoveryCandidate.findUniqueOrThrow({ where: { id: c.id } });
+      assert.equal(after.status, "researched");
+      assert.ok(after.researchedAt);
+    });
+
+    test("Mark duplicate closes it with the match as the reason; it can't be approved, and can be reopened", async () => {
+      const { c, match } = await flagged();
+      const res = await decide(c.id, "duplicate");
+      assert.equal(res.statusCode, 303);
+      const after = await db.discoveryCandidate.findUniqueOrThrow({ where: { id: c.id } });
+      assert.equal(after.status, "duplicate");
+      assert.equal(after.decisionReason, `Duplicate of ${match.businessName} (same name in the same city).`);
+      const page = (await get(String(res.headers.location))).body;
+      assert.match(page, /Marked as a duplicate: .+ is the same business as /);
+      assert.match(page, /↔<\/span>Duplicate/);
+      assert.equal((await post(`/admin/discovery/candidates/${c.id}/approve`, {})).statusCode, 400);
+
+      const reopen = await post(`/admin/discovery/candidates/${c.id}/status`, { status: "discovered", intent: "reopen" });
+      assert.match(String(reopen.headers.location), /\?done=reopened$/);
+      const reopened = await db.discoveryCandidate.findUniqueOrThrow({ where: { id: c.id } });
+      assert.equal(reopened.status, "discovered");
+      assert.match((await get(`/admin/discovery/candidates/${c.id}`)).body, /Possible duplicate/, "the flag is still there to decide again");
+    });
+
+    test("Leave unresolved records that a person looked, and keeps the warning and the hold", async () => {
+      const { c } = await flagged();
+      await decide(c.id, "unresolved");
+      const after = await db.discoveryCandidate.findUniqueOrThrow({ where: { id: c.id } });
+      assert.equal(after.duplicateDecision, "unresolved");
+      assert.equal(after.status, "needs_review");
+      const page = (await get(`/admin/discovery/candidates/${c.id}?done=unresolved`)).body;
+      assert.match(page, /Left unresolved: .+ keeps its possible-duplicate warning/);
+      assert.match(page, /Resolve the possible duplicate first/);
+      assert.doesNotMatch(page, /value="unresolved"/, "already left unresolved: only the two real answers remain");
+      assert.match((await get("/admin/discovery?flagged=1")).body, new RegExp(`/admin/discovery/candidates/${c.id}"`));
+    });
+
+    test("refused: no flag, an unknown answer, or an approved candidate", async () => {
+      const { c } = await flagged();
+      const clean = await candidateId("fx-1001");
+      const none = await decide(clean, "not_duplicate");
+      assert.equal(none.statusCode, 400);
+      assert.match(none.body, /no possible-duplicate flag to resolve/);
+      assert.equal((await decide(c.id, "maybe")).statusCode, 400);
+      assert.equal((await decide(randomUUID(), "not_duplicate")).statusCode, 404);
+
+      const id = await readyCandidate();
+      await db.discoveryCandidate.update({ where: { id }, data: { possibleDuplicateCandidateId: c.id, duplicateReason: "candidate: same phone number" } });
+      assert.equal((await post(`/admin/discovery/candidates/${id}/approve`, {})).statusCode, 303);
+      const frozen = await decide(id, "duplicate");
+      assert.equal(frozen.statusCode, 409, "an approved candidate is frozen, as for every other change to it");
+      assert.match(frozen.body, /This candidate is approved and is now a prospect/);
+    });
+
+    test("Keep for review and Disregard are explicit decisions with confirmations", async () => {
+      const id = await readyCandidate();
+      const keep = await post(`/admin/discovery/candidates/${id}/status`, { status: "needs_review", intent: "keep" });
+      assert.match(String(keep.headers.location), /\?done=kept$/);
+      assert.match((await get(String(keep.headers.location))).body, /is kept for review\./);
+
+      const noReason = await post(`/admin/discovery/candidates/${id}/status`, { status: "rejected", intent: "disregard", reason: "" });
+      assert.equal(noReason.statusCode, 400);
+      assert.match(noReason.body, /<details class="rv-disregard" open>/, "the reason form stays open with the error");
+      const gone = await post(`/admin/discovery/candidates/${id}/status`, { status: "rejected", intent: "disregard", reason: "A dealership." });
+      assert.match(String(gone.headers.location), /\?done=disregarded$/);
+      const page = (await get(String(gone.headers.location))).body;
+      assert.match(page, /was disregarded\./);
+      assert.match(page, /✕<\/span>Disregarded/);
+      assert.match(page, /A dealership\./);
+    });
+  });
+
   describe("human approval", () => {
     test("manual add -> research forms -> approve creates a New prospect with provenance and evidence", async () => {
       const id = await readyCandidate();
       const detail = (await get(`/admin/discovery/candidates/${id}`)).body;
-      assert.match(detail, /Approve and create prospect/);
+      assert.match(detail, /✓ Approve as prospect/);
       assert.match(detail, /does not automatically qualify the business or mark it ready to contact/);
 
       const res = await post(`/admin/discovery/candidates/${id}/approve`, {});

@@ -111,6 +111,13 @@ enum CategoryVerdict {
   unclear
 }
 
+// A person's answer to a possible-duplicate flag. A confirmed duplicate is the
+// candidate status `duplicate`; null means nobody has answered yet.
+enum DuplicateDecision {
+  not_duplicate
+  unresolved
+}
+
 // Where a category verdict came from. "manual" is a person's decision,
 // which the automated checks never overwrite.
 enum CategorySource {
@@ -422,10 +429,17 @@ model DiscoveryCandidate {
   categoryRules     String?          @db.VarChar(40)
   categoryCheckedAt DateTime?
 
-  // Possible (not confident) duplicates, flagged for a human.
+  // Possible (not confident) duplicates, flagged for a human. The flag is
+  // kept after a decision, as the record of what the check found.
   possibleDuplicateCandidateId String? @db.Uuid
   possibleDuplicateProspectId  String? @db.Uuid
   duplicateReason              String? @db.VarChar(120)
+  duplicateDecision            DuplicateDecision?
+  duplicateDecidedAt           DateTime?
+  // True while the candidate's Needs review hold is the one the duplicate
+  // check placed. A person's own status change clears it, so answering the
+  // duplicate question never lifts a hold a person set.
+  duplicateHold                Boolean            @default(false)
 
   // Not a duplicate: another location sharing this business's website
   // (a multi-location business or chain). A research hint only.
