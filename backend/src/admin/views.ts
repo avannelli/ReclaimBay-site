@@ -72,7 +72,10 @@ export function disabledPage(): string {
 const fmtPct = (r: number | null) => (r === null ? "—" : `${(r * 100).toFixed(1)}%`);
 
 export interface Attention {
-  candidatesToReview: number;
+  /** Discovery queue: candidates waiting on a person's decision. */
+  candidatesToDecide: number;
+  /** Discovery queue: candidates ready to approve. */
+  candidatesToApprove: number;
   readyToContact: number;
   newProspects: number;
 }
@@ -88,12 +91,13 @@ interface DashboardOptions {
 function attentionStrip(a: Attention): string {
   const item = (n: number, label: string, href: string) =>
     `<a class="attn-item${n === 0 ? " zero" : ""}" href="${href}"><b>${n}</b><span>${esc(label)}</span></a>`;
-  const total = a.candidatesToReview + a.readyToContact + a.newProspects;
+  const total = a.candidatesToDecide + a.candidatesToApprove + a.readyToContact + a.newProspects;
   return section(
     "attention",
     "Needs attention",
     `<div class="attn-list">
-  ${item(a.candidatesToReview, a.candidatesToReview === 1 ? "candidate needs review" : "candidates need review", "/admin/discovery?status=needs_review")}
+  ${item(a.candidatesToDecide, a.candidatesToDecide === 1 ? "candidate needs your decision" : "candidates need your decision", "/admin/discovery?view=decision")}
+  ${item(a.candidatesToApprove, a.candidatesToApprove === 1 ? "candidate ready to approve" : "candidates ready to approve", "/admin/discovery?view=ready")}
   ${item(a.newProspects, a.newProspects === 1 ? "new prospect to research" : "new prospects to research", "/admin/prospects?status=new")}
   ${item(a.readyToContact, "ready to contact", "/admin/prospects?status=ready_to_contact")}
 </div>${total === 0 ? `<p class="small muted" style="margin-top:8px">Nothing is waiting on you right now.</p>` : ""}`,

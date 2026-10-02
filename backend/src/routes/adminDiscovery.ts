@@ -9,14 +9,16 @@ import {
   addManualCandidate,
   approveCandidate,
   candidateFormValues,
-  candidateStatusCounts,
   changeCandidateStatus,
   deleteCandidateEvidence,
   getCandidateDetail,
-  listCandidates,
+  isQueueView,
+  queuePosition,
   recentRuns,
   processDiscoveryRun,
   resolveDuplicate,
+  reviewQueue,
+  type QueueView,
   runDiscovery,
   setCandidateCategory,
   updateCandidate,
@@ -95,28 +97,34 @@ export async function discoveryRoutes(app: FastifyInstance, opts: { config: Conf
   const renderOverview = async (
     reply: FastifyReply,
     filters: Values,
-    extra: { notice?: string; errors?: string[]; values?: Values } = {},
+    extra: { notice?: string; noticeLink?: { href: string; label: string }; errors?: string[]; values?: Values; view?: QueueView } = {},
   ) => {
-    const [list, runs, runCount, statusCounts, imports, research] = await Promise.all([
-      listCandidates(db, filters),
+    const { view = "all", ...rest } = extra;
+    const [queue, runs, runCount, imports, research] = await Promise.all([
+      reviewQueue(db, filters, view),
       recentRuns(db),
       db.discoveryRun.count(),
-      candidateStatusCounts(db),
       recentImports(db),
       researchQueue(db),
     ]);
-    return html(reply, discoveryPage({ providers: providerOptions, list, runs, runCount, imports, research, statusCounts, filters, ...extra }));
+    return html(reply, discoveryPage({ providers: providerOptions, queue, runs, runCount, imports, research, filters, ...rest }));
+  };
+
+  /** Where a queue action returns to: the same view, with a confirmation keyed by `done`. */
+  const backToQueue = (body: Form | undefined, done: string, id: string) => {
+    const view = isQueueView(body?.view) && body.view !== "all" ? `&view=${body.view}` : "";
+    return `/admin/discovery?done=${done}&c=${id}${view}`;
   };
 
   const renderDetail = async (reply: FastifyReply, id: string, extra: { notice?: string; done?: string; errors?: string[]; values?: Values } = {}) => {
     const detail = await getCandidateDetail(db, id);
     if (!detail) return notFound(reply);
-    const research = await candidateResearch(db, id);
+    const [research, position] = await Promise.all([candidateResearch(db, id), queuePosition(db, id)]);
     const { done, ...rest } = extra;
     const decided = done ? DECISION_NOTICES[done] : undefined;
     const match = detail.dupCandidate?.businessName ?? detail.dupProspect?.businessName ?? "the flagged record";
     const notice = rest.notice ?? (decided ? decided(detail.candidate.businessName, match) : done ? NOTICES[done] : undefined);
-    return html(reply, candidateDetailPage({ detail, research, ...rest, notice, decided: Boolean(decided) }));
+    return html(reply, candidateDetailPage({ detail, research, position, ...rest, notice, decided: Boolean(decided) }));
   };
 
   // ---------- overview and runs ----------
@@ -137,7 +145,19 @@ export async function discoveryRoutes(app: FastifyInstance, opts: { config: Conf
       run: q.run && UUID_RE.test(q.run) ? q.run : undefined,
       sort: q.sort,
     };
+    const view: QueueView = isQueueView(q.view) ? q.view : "all";
     let notice: string | undefined;
+    let noticeLink: { href: string; label: string } | undefined;
+    // A queue action's confirmation names the business; the name comes from the database.
+    if ((q.done === "approved" || q.done === "research_one") && q.c && UUID_RE.test(q.c)) {
+      const c = await db.discoveryCandidate.findUnique({ where: { id: q.c }, select: { businessName: true, prospectId: true } });
+      if (c && q.done === "approved") {
+        notice = `${c.businessName} was approved and added to your prospect pipeline as New.`;
+        if (c.prospectId) noticeLink = { href: `/admin/prospects/${c.prospectId}`, label: "Open prospect" };
+      } else if (c) {
+        notice = `Research queued for ${c.businessName}. It runs in the background; refresh to see the result.`;
+      }
+    }
     if (q.done === "research_batch") {
       notice = "Research queued for up to 10 candidates in this view. It runs in the background, one website at a time; refresh to see progress.";
     } else if (q.done === "research_none") {
@@ -150,10 +170,10 @@ export async function discoveryRoutes(app: FastifyInstance, opts: { config: Conf
       } else if (run?.status === "queued" || run?.status === "running") {
         notice = "Discovery run queued. It runs in the background; refresh to see progress under Discovery runs.";
       } else if (run?.status === "failed") {
-        return renderOverview(reply.code(502), filters, { errors: [run.error ?? "The provider failed."] });
+        return renderOverview(reply.code(502), filters, { errors: [run.error ?? "The provider failed."], view });
       }
     }
-    return renderOverview(reply, filters, { notice });
+    return renderOverview(reply, filters, { notice, noticeLink, view });
   });
 
   app.post<{ Body: Form }>(
@@ -194,9 +214,10 @@ export async function discoveryRoutes(app: FastifyInstance, opts: { config: Conf
     }
   });
 
-  app.get<{ Params: { id: string }; Querystring: { done?: string } }>("/admin/discovery/candidates/:id", async (req, reply) => {
+  app.get<{ Params: { id: string }; Querystring: { done?: string; act?: string } }>("/admin/discovery/candidates/:id", async (req, reply) => {
     if (!validId(req.params.id, reply)) return reply;
-    return renderDetail(reply, req.params.id, { done: req.query.done });
+    // From the queue's "Disregard…": open the reason form, prefilled, so it is one more deliberate click.
+    return renderDetail(reply, req.params.id, { done: req.query.done, values: req.query.act === "disregard" ? { intent: "disregard" } : undefined });
   });
 
   app.get<{ Params: { id: string } }>("/admin/discovery/candidates/:id/edit", async (req, reply) => {
@@ -305,14 +326,18 @@ export async function discoveryRoutes(app: FastifyInstance, opts: { config: Conf
   // The only route that creates a prospect from a candidate: an explicit human POST.
   // ---------- automated research (queued; processed in the background) ----------
 
-  app.post<{ Params: { id: string } }>("/admin/discovery/candidates/:id/research", writeLimit, async (req, reply) => {
+  app.post<{ Params: { id: string }; Body: Form }>("/admin/discovery/candidates/:id/research", writeLimit, async (req, reply) => {
     if (!validId(req.params.id, reply)) return reply;
+    const fromQueue = req.body?.from === "queue";
     const r = await enqueueResearch(db, [req.params.id], "admin");
     const skipped = r.skipped[0];
     if (skipped?.reason === "not found") return notFound(reply);
-    if (skipped) return renderDetail(reply.code(409), req.params.id, { errors: [`Research can't start: ${skipped.reason}.`] });
+    if (skipped) {
+      const errors = [`Research can't start: ${skipped.reason}.`];
+      return fromQueue ? renderOverview(reply.code(409), {}, { errors }) : renderDetail(reply.code(409), req.params.id, { errors });
+    }
     startResearch();
-    return reply.redirect(`/admin/discovery/candidates/${req.params.id}?done=research`, 303);
+    return reply.redirect(fromQueue ? backToQueue(req.body, "research_one", req.params.id) : `/admin/discovery/candidates/${req.params.id}?done=research`, 303);
   });
 
   app.post<{ Body: Form }>(
@@ -322,26 +347,30 @@ export async function discoveryRoutes(app: FastifyInstance, opts: { config: Conf
       const b = req.body ?? {};
       const filters = pick(b, ["q", "status", "qualification", "band", "state", "city", "flagged", "tier", "category", "provider", "sort"]);
       const run = typeof b.run === "string" && UUID_RE.test(b.run) ? b.run : undefined;
-      const list = await listCandidates(db, { ...filters, run });
+      const view: QueueView = isQueueView(b.view) ? b.view : "all";
+      const queue = await reviewQueue(db, { ...filters, run }, view);
       // Only candidates never researched (so a batch moves through the list),
       // and never one outside the target category.
-      const ids = autoResearchIds(list.rows, MAX_BATCH);
+      const ids = autoResearchIds(queue.items, MAX_BATCH);
       const r = await enqueueResearch(db, ids, "batch");
-      if (!r.queued.length) return reply.redirect("/admin/discovery?done=research_none", 303);
+      const back = view === "all" ? "" : `&view=${view}`;
+      if (!r.queued.length) return reply.redirect(`/admin/discovery?done=research_none${back}`, 303);
       startResearch();
-      return reply.redirect("/admin/discovery?done=research_batch", 303);
+      return reply.redirect(`/admin/discovery?done=research_batch${back}`, 303);
     },
   );
 
-  app.post<{ Params: { id: string } }>("/admin/discovery/candidates/:id/approve", writeLimit, async (req, reply) => {
+  app.post<{ Params: { id: string }; Body: Form }>("/admin/discovery/candidates/:id/approve", writeLimit, async (req, reply) => {
     const { id } = req.params;
     if (!validId(id, reply)) return reply;
+    // Approving from the queue returns to the queue, so the next item is right there.
+    const fromQueue = req.body?.from === "queue";
     try {
       const { prospect } = await approveCandidate(db, id);
-      req.log.info({ candidateId: id, prospectId: prospect.id }, "candidate approved");
-      return reply.redirect(`/admin/prospects/${prospect.id}?done=created`, 303);
+      req.log.info({ candidateId: id, prospectId: prospect.id, fromQueue }, "candidate approved");
+      return reply.redirect(fromQueue ? backToQueue(req.body, "approved", id) : `/admin/prospects/${prospect.id}?done=created`, 303);
     } catch (err) {
-      return handleError(err, reply, (errors) => renderDetail(reply, id, { errors }));
+      return handleError(err, reply, (errors) => (fromQueue ? renderOverview(reply, {}, { errors }) : renderDetail(reply, id, { errors })));
     }
   });
 }

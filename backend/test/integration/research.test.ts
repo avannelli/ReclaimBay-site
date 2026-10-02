@@ -369,7 +369,8 @@ describe("automated research in the admin (HTTP)", { skip: skipReason }, () => {
     assert.match(page, /Set by research/);
     assert.match(page, /Automated research<\/span>/, "research evidence is labelled");
     assert.match(page, />Run research again</);
-    assert.match(page, /Meets criteria/);
+    // The candidate page's qualification result (Stage 1 wording; the rule is unchanged).
+    assert.match(page, /✓<\/span>Qualified/);
     assert.doesNotMatch(page, /Approved by a human/);
     assert.equal(await db.prospect.count(), 0);
   });
@@ -396,7 +397,7 @@ describe("automated research in the admin (HTTP)", { skip: skipReason }, () => {
     const overview = (await get("/admin/discovery?done=research_batch")).body;
     assert.match(overview, /Research queued for up to 10/);
     assert.match(overview, /10 completed/);
-    assert.match(overview, /Research: No website known/);
+    assert.match(overview, /No website known, so research found too little to go on\./);
     // The next batch takes the remaining two.
     await post("/admin/discovery/research", { tier: "core" });
     await settled();

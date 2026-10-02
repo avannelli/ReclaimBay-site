@@ -249,7 +249,8 @@ describe("admin UI structure (HTTP)", { skip: skipReason }, () => {
       await seed();
       await db.discoveryCandidate.updateMany({ data: { status: "needs_review" } });
       const body = (await get("/admin")).body;
-      assert.match(body, /<a class="attn-item" href="\/admin\/discovery\?status=needs_review"><b>1<\/b><span>candidate needs review<\/span>/);
+      assert.match(body, /<a class="attn-item" href="\/admin\/discovery\?view=decision"><b>1<\/b><span>candidate needs your decision<\/span>/, "a person's hold, counted by the work queue");
+      assert.match(body, /<a class="attn-item zero" href="\/admin\/discovery\?view=ready"><b>0<\/b><span>candidates ready to approve<\/span>/);
       assert.match(body, /<a class="attn-item" href="\/admin\/prospects\?status=new"><b>1<\/b><span>new prospect to research<\/span>/);
     });
 
@@ -278,13 +279,16 @@ describe("admin UI structure (HTTP)", { skip: skipReason }, () => {
       assert.match((await get("/admin/discovery?run=not-a-uuid")).body, /Conejo Valley Auto Care/, "an invalid run id is ignored");
     });
 
-    test("needs-review candidates are visibly distinct and labelled Review", async () => {
+    test("the queue leads with what needs a decision, and each row has one labelled action", async () => {
       await post("/admin/discovery/runs", { provider: "fixture", region: "Ventura County, CA" });
       const body = (await get("/admin/discovery")).body;
-      assert.match(body, /<tr class="attn">/);
-      assert.match(body, /class="st cs-needs_review">Needs review/);
-      assert.match(body, /<a class="chip attn"/);
-      assert.match(body, />Review<\/a>/);
+      assert.match(body, /<section class="q-tiles" aria-label="What needs attention">/);
+      assert.match(body, /<h2 class="q-group-h" id="lane-decision-h">/);
+      assert.ok(body.indexOf('id="lane-decision-h"') < body.indexOf('id="lane-research-h"'), "decisions before research");
+      assert.match(body, /<li class="q-row t-warn"[^>]*>[\s\S]*?Possible duplicate[\s\S]*?>Review duplicate<span class="sr-only">: Harbor Street Garage<\/span><\/a>/);
+      assert.match(body, /<a class="chip attn" href="\/admin\/discovery\?view=duplicates">Possible duplicates <span class="n">1<\/span><\/a>/);
+      assert.match(body, /<a class="chip" href="\/admin\/discovery" aria-current="true">All <span class="n">6<\/span><\/a>/);
+      assert.match(body, /<h3 class="q-name">/, "business names are headings under their group");
     });
 
     test("candidate detail leads with identity, qualification, and decision; research details follow, collapsed", async () => {

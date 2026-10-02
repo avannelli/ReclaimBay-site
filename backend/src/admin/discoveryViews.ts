@@ -1,4 +1,5 @@
-import type { candidateStatusCounts, getCandidateDetail, listCandidates, recentRuns } from "../discovery/service.js";
+import type { getCandidateDetail, queuePosition, recentRuns, reviewQueue, QueueItem, QueueView } from "../discovery/service.js";
+import { ACTION_LABELS, ACTIVE_LANES, LANE_HINTS, LANE_LABELS, STEP_GLYPHS, STEP_LABELS, STEP_TONE, stepReason, type Lane } from "../discovery/workQueue.js";
 import type { recentImports } from "../discovery/staging.js";
 import { OUTCOME_LABELS, type ResearchOutcome } from "../research/researcher.js";
 import type { candidateResearch, researchQueue } from "../research/service.js";
@@ -45,13 +46,13 @@ import {
 /* Admin pages for discovery. Server-rendered, no scripts, all values escaped. */
 
 type Values = Record<string, string | undefined>;
-type ListResult = Awaited<ReturnType<typeof listCandidates>>;
+type Queue = Awaited<ReturnType<typeof reviewQueue>>;
+type Position = Awaited<ReturnType<typeof queuePosition>>;
 type Detail = NonNullable<Awaited<ReturnType<typeof getCandidateDetail>>>;
 type Runs = Awaited<ReturnType<typeof recentRuns>>;
 type Imports = Awaited<ReturnType<typeof recentImports>>;
 type ResearchView = Awaited<ReturnType<typeof candidateResearch>>;
 type ResearchQueue = Awaited<ReturnType<typeof researchQueue>>;
-type StatusCounts = Awaited<ReturnType<typeof candidateStatusCounts>>;
 
 const SIGNAL_DEFS = SIGNALS as readonly SignalDefinition[];
 /** Short labels so the sort menu fits its column. */
@@ -218,31 +219,201 @@ function categoryTag(verdict: string | null, source?: string | null): string {
 
 const NOT_SCORED = "Not scored: outside the target category";
 
-// ---------- overview ----------
+// ---------- the work queue ----------
+
+/** Quick views, in the order a person works through them. */
+const VIEW_CHIPS: [QueueView, string][] = [
+  ["all", "All"],
+  ["decision", "Needs decision"],
+  ["duplicates", "Possible duplicates"],
+  ["ready", "Ready to approve"],
+  ["verify", "Needs verification"],
+  ["research", "Needs research"],
+  ["disregarded", "Disregarded"],
+  ["completed", "Completed"],
+];
+
+const LANE_TONE: Record<Lane, "warn" | "pos" | "info" | "quiet"> = { decision: "warn", ready: "pos", verify: "warn", research: "info", handled: "quiet" };
+const LANE_GLYPH: Record<Lane, string> = { decision: "⚠", ready: "✓", verify: "?", research: "◔", handled: "—" };
+
+const QUAL_SHORT: Record<Qualification, [Tone, string, string]> = {
+  meets_criteria: ["pos", "✓", "Qualified"],
+  unverified: ["warn", "⚠", "Needs verification"],
+  disqualified: ["neg", "✕", "Does not qualify"],
+};
+
+/** The one primary action of a queue row, sized by what it does. */
+function queueAction(item: QueueItem, view: QueueView): string {
+  const c = item.candidate;
+  const id = esc(c.id);
+  const href = `/admin/discovery/candidates/${id}`;
+  const back = `<input type="hidden" name="from" value="queue">${view === "all" ? "" : `<input type="hidden" name="view" value="${esc(view)}">`}`;
+  const label = ACTION_LABELS[item.step.action];
+  // The business name for screen readers, so every row's button is distinguishable.
+  const named = (verb: string) => `${verb}<span class="sr-only">: ${esc(c.businessName)}</span>`;
+  switch (item.step.action) {
+    case "approve":
+      return `<form method="post" action="${href}/approve" class="inline-form">${back}<button type="submit" class="btn-go">✓ ${named(label)}</button></form>`;
+    case "run_research":
+      return `<form method="post" action="${href}/research" class="inline-form">${back}<button type="submit">▶ ${named(label)}</button></form>`;
+    case "review_duplicate":
+      return `<a class="btn" href="${href}#dup-h">${named(label)}</a>`;
+    case "verify":
+      return `<a class="btn" href="${href}/edit${item.step.criterion ? `#sig-${esc(item.step.criterion)}` : ""}">${named(label)}</a>`;
+    case "disregard":
+      return `<a class="btn btn-danger" href="${href}?act=disregard#dec-h">${named(label)}</a>`;
+    case "review":
+      return `<a class="btn" href="${href}">${named(label)}</a>`;
+    case "wait":
+      return `<span class="q-wait">◔ ${esc(label)}</span>`;
+    case "open":
+      return `<a class="btn btn-ghost" href="${href}">${named(label)}</a>`;
+  }
+}
+
+function queueRow(item: QueueItem, view: QueueView): string {
+  const { candidate: c, result, outsideTarget, step } = item;
+  const tone = STEP_TONE[step.kind];
+  // City and state are provider or user text: escaped like everything else (extLink escapes the website).
+  const where = [esc([c.city, c.state].filter(Boolean).join(", ")), c.website ? extLink(c.website) : ""].filter(Boolean).join(" · ");
+  const [qt, qg, ql] = QUAL_SHORT[result.qualification];
+  // Before research, unknown criteria are expected: say so quietly instead of warning on every row.
+  const qualification = outsideTarget
+    ? verdict("quiet", "—", "Not assessed", "sub")
+    : step.lane === "research" && result.qualification === "unverified"
+      ? verdict("quiet", "?", "Not checked yet", "sub")
+      : verdict(qt, qg, ql, "sub");
+  const why = stepReason(step, {
+    duplicateReasonText: matchReasons(c.duplicateReason).map((r) => r.text).join("; ") || null,
+    categoryReason: c.categoryReason,
+    unverifiedCriteria: result.unverifiedCriteria,
+    disqualifiedBy: result.disqualifiedBy,
+    latestOutcome: c.research[0]?.outcome ?? null,
+    decisionReason: c.decisionReason,
+    automatic: isAutoApproved(c),
+  });
+  // Only what adds to the state above: an unusual research outcome, a non-default category tier, a related location.
+  const latest = c.research[0];
+  const meta = [
+    outsideTarget ? `<span>${NOT_SCORED}</span>` : `<span>Opportunity ${result.score}/${MAX_SCORE} <span class="muted">(ranking only)</span></span>`,
+    latest && step.lane !== "research" && latest.status === "completed" && latest.outcome !== "website_verified"
+      ? researchTag(latest).replace('<div class="sub">', "").replace(/<\/div>$/, "")
+      : "",
+    c.categoryTier && c.categoryTier !== "core" ? tierTag(c.categoryTier, true).trim() : "",
+    c.relatedCandidateId || c.relatedProspectId ? '<span class="tag">Other location shares this website</span>' : "",
+    c.status === "approved" ? `<span class="tag">${isAutoApproved(c) ? "Approved automatically" : "Approved by a person"}</span>` : "",
+  ].filter(Boolean);
+  return `<li class="q-row t-${tone}" id="c-${esc(c.id)}">
+  <div class="q-id"><h3 class="q-name"><a href="/admin/discovery/candidates/${esc(c.id)}">${esc(c.businessName)}</a></h3>${where ? `<div class="q-where">${where}</div>` : ""}</div>
+  <div class="q-state">${verdict(tone, STEP_GLYPHS[step.kind], STEP_LABELS[step.kind])}<p class="q-why">${esc(why)}</p></div>
+  <div class="q-qual"><span class="q-k">Qualification</span>${qualification}</div>
+  <div class="q-act">${queueAction(item, view)}</div>
+  <div class="q-meta">${meta.join('<span class="q-dot" aria-hidden="true">·</span>')}</div>
+</li>`;
+}
 
 export function discoveryPage(opts: {
   providers: { name: string; label: string; background?: boolean }[];
-  list: ListResult;
+  queue: Queue;
   runs: Runs;
   runCount: number;
   imports: Imports;
   research?: ResearchQueue;
-  statusCounts: StatusCounts;
   filters: Values;
   values?: Values;
   notice?: string;
+  noticeLink?: { href: string; label: string };
   errors?: string[];
 }): string {
-  const { providers, list, runs, runCount, imports, statusCounts, filters: f, values = {} } = opts;
+  const { providers, queue, runs, runCount, imports, filters: f, values = {} } = opts;
+  const { counts, view } = queue;
   const providerLabel = (name: string) => providers.find((p) => p.name === name)?.label ?? name;
   const fe = fieldErrors(opts.errors);
-  const totalCandidates = Object.values(statusCounts).reduce((n, v) => n + (v ?? 0), 0);
-  const review = statusCounts.needs_review ?? 0;
-  const anyFilter = Boolean(f.q || f.status || f.qualification || f.band || f.state || f.city || f.flagged || f.category || f.run);
+  const advanced = Boolean(f.status || f.qualification || f.band || f.state || f.city || f.flagged || f.tier || f.category || f.provider || (f.sort && f.sort !== "discovered"));
+  const anyFilter = Boolean(f.q || f.run || advanced);
+  // Filters carried by every queue link, so switching views keeps the search.
+  const keep = (["q", "status", "qualification", "band", "state", "city", "flagged", "tier", "category", "provider", "sort", "run"] as const)
+    .filter((k) => f[k])
+    .map((k) => `${k}=${encodeURIComponent(f[k]!)}`);
+  const viewHref = (v: QueueView) => {
+    const qs = [...(v === "all" ? [] : [`view=${v}`]), ...keep].join("&");
+    return `/admin/discovery${qs ? `?${qs}` : ""}`;
+  };
 
-  const runCard = `<section class="card" id="new-run" aria-labelledby="new-run-h">
-  <h2 class="card-h" id="new-run-h">New discovery run</h2>
-  ${
+  const lede =
+    counts.all === 0 && !anyFilter
+      ? "Find businesses, check them, and decide which become prospects."
+      : counts.active
+        ? `<b>${counts.active} ${counts.active === 1 ? "business needs" : "businesses need"} your attention</b>${anyFilter ? " in this search" : ""}. Start with decisions, then approvals.`
+        : `<b>Nothing needs your attention${anyFilter ? " in this search" : ""}.</b> Every candidate here has been handled.`;
+
+  // Every active lane is also a queue view.
+  const tile = (lane: Exclude<Lane, "handled">) => {
+    const n = counts[lane];
+    const on = view === lane;
+    return `<a class="q-tile t-${LANE_TONE[lane]}${n === 0 ? " zero" : ""}" href="${viewHref(lane)}"${on ? ' aria-current="true"' : ""}>
+  <span class="q-tile-n">${n}</span><span class="q-tile-l"><span aria-hidden="true">${LANE_GLYPH[lane]}</span> ${esc(LANE_LABELS[lane])}</span><span class="q-tile-h">${esc(LANE_HINTS[lane])}</span></a>`;
+  };
+  const viewCount: Record<QueueView, number> = {
+    all: counts.all,
+    decision: counts.decision,
+    duplicates: counts.duplicates,
+    ready: counts.ready,
+    verify: counts.verify,
+    research: counts.research,
+    disregarded: counts.disregarded,
+    completed: counts.completed,
+  };
+  const chips = VIEW_CHIPS.map(
+    ([v, l]) =>
+      `<a class="chip${v === "duplicates" && viewCount[v] ? " attn" : ""}" href="${viewHref(v)}"${view === v ? ' aria-current="true"' : ""}>${esc(l)} <span class="n">${viewCount[v]}</span></a>`,
+  ).join("");
+
+  const rows = (items: readonly QueueItem[]) => `<ol class="q-list">${items.map((i) => queueRow(i, view)).join("")}</ol>`;
+  const groups =
+    view === "all"
+      ? [
+          ...ACTIVE_LANES.map((lane) => {
+            const items = queue.items.filter((i) => i.step.lane === lane);
+            if (!items.length) return "";
+            return `<section class="q-group" aria-labelledby="lane-${lane}-h"><h2 class="q-group-h" id="lane-${lane}-h"><span aria-hidden="true">${LANE_GLYPH[lane]}</span> ${esc(LANE_LABELS[lane])} <span class="q-count">${counts[lane]}</span></h2><p class="q-hint">${esc(LANE_HINTS[lane])}</p>${rows(items)}</section>`;
+          }),
+          (() => {
+            const handled = queue.items.filter((i) => i.step.lane === "handled");
+            return handled.length
+              ? `<details class="disc q-handled" id="handled"><summary><h2 id="handled-h">Handled</h2><span class="disc-sum">${counts.handled} approved, disregarded, or duplicate</span></summary><div class="disc-body">${rows(handled)}</div></details>`
+              : "";
+          })(),
+        ].join("")
+      : queue.items.length
+        ? rows(queue.items)
+        : "";
+
+  const emptyQueue =
+    counts.all === 0 && !anyFilter
+      ? emptyState("No candidates to review.", providers.length ? "Find new businesses below, or add one by hand." : "Add a business by hand to start researching.", `<a class="btn" href="/admin/discovery/candidates/new">Add candidate</a>`)
+      : anyFilter && queue.total === 0 && counts.all === 0
+        ? emptyState("No candidates match these filters.", "Try clearing a filter or changing your search.", `<a class="btn btn-secondary" href="/admin/discovery">Clear filters</a>`)
+        : view !== "all"
+          ? emptyState(`Nothing in “${VIEW_CHIPS.find(([v]) => v === view)![1]}”.`, view === "decision" || view === "duplicates" ? "No decisions are waiting." : "Nothing here right now.", `<a class="btn btn-secondary" href="${viewHref("all")}">Show the whole queue</a>`)
+          : emptyState("Nothing needs your attention.", "Every candidate has been handled.");
+
+  const shown =
+    queue.items.length < queue.total ? `Showing the first ${queue.items.length} of ${queue.total}` : `${queue.total} candidate${queue.total === 1 ? "" : "s"}`;
+
+  const research = opts.research;
+  const batch =
+    (view === "all" || view === "research") && counts.research > 0
+      ? `<form method="post" action="/admin/discovery/research" class="q-batch">
+  ${(["q", "status", "qualification", "band", "state", "city", "flagged", "tier", "category", "provider", "sort", "run"] as const)
+    .map((k) => (f[k] ? `<input type="hidden" name="${k}" value="${esc(f[k])}">` : ""))
+    .join("")}${view === "all" ? "" : `<input type="hidden" name="view" value="${esc(view)}">`}
+  <div><b>${counts.research} waiting for research.</b> <span class="muted">Automated research reads each business's own website and records verified facts with sources${research ? ` · ${research.queued} queued · ${research.running} running · ${research.completed} completed · ${research.failed} failed` : ""}.</span></div>
+  <button type="submit" class="btn-secondary">Research up to 10</button>
+</form>`
+      : "";
+
+  const runCard = `${
     providers.length
       ? `<form method="post" action="/admin/discovery/runs" class="filters" novalidate>
   <div class="filter-row" style="grid-template-columns:repeat(auto-fit,minmax(180px,1fr))">
@@ -255,50 +426,7 @@ export function discoveryPage(opts: {
   <div class="row"><button type="submit">Run discovery</button><span class="small muted">Finds candidates for you to review. Nothing becomes a prospect on its own. Categories are a discovery filter, not qualification.${providers.some((p) => p.background) ? " Staged providers run in the background." : ""}</span></div>
 </form>`
       : `<p class="small" style="margin:0">No discovery provider is configured on this server, so there is nothing to run yet. You can still add candidates by hand. See <code>backend/DISCOVERY.md</code> for what a provider needs.</p>`
-  }
-</section>`;
-
-  const tiles = `<div class="kpis" style="margin-top:14px">
-  <div class="kpi"><div class="k-label">Discovery runs</div><div class="k-value">${runCount}</div><div class="k-hint">${runs.length ? "most recent below" : "none yet"}</div></div>
-  <div class="kpi"><div class="k-label">Candidates</div><div class="k-value">${totalCandidates}</div><div class="k-hint">not prospects until approved</div></div>
-  <a class="kpi attn-item" href="/admin/discovery?status=needs_review" style="display:block;text-decoration:none;color:inherit${review ? ";border-color:var(--amber)" : ""}"><div class="k-label">Needs review</div><div class="k-value">${review}</div><div class="k-hint">${review ? "waiting for your decision" : "nothing waiting"}</div></a>
-</div>`;
-
-  const chips = [
-    `<a class="chip" href="/admin/discovery"${!f.status && !f.run ? ' aria-current="true"' : ""}>All <span class="n">${totalCandidates}</span></a>`,
-    ...CANDIDATE_STATUSES.map((s) => {
-      const on = f.status === s;
-      return `<a class="chip${s === "needs_review" && (statusCounts[s] ?? 0) > 0 ? " attn" : ""}" href="/admin/discovery?status=${s}"${on ? ' aria-current="true"' : ""}>${esc(CANDIDATE_STATUS_LABELS[s])} <span class="n">${statusCounts[s] ?? 0}</span></a>`;
-    }),
-  ].join("");
-
-  const rows = list.rows
-    .map(({ candidate: c, result, outsideTarget }) => {
-      const loc = [c.city, c.state].filter(Boolean).join(", ");
-      const dup = duplicateState(c);
-      const dupCell =
-        dup === "possible" || dup === "unresolved"
-          ? `<span class="tag" style="border-color:var(--amber);color:var(--warn)">! ${esc(DUPLICATE_STATE_LABELS[dup])}</span><div class="sub">${esc(c.duplicateReason ?? "")}</div>`
-          : dup === "not_duplicate"
-            ? '<span class="tag">✓ Not a duplicate</span>'
-            : '<span class="muted">No flags</span>';
-      return `<tr${c.status === "needs_review" ? ' class="attn"' : ""}>
-  <td><a class="name" href="/admin/discovery/candidates/${esc(c.id)}">${esc(c.businessName)}</a>${c.website ? `<div class="sub">${extLink(c.website)}</div>` : ""}${tierTag(c.categoryTier)}${c.categoryVerdict && c.categoryVerdict !== "in_target" ? `<div class="sub">${categoryTag(c.categoryVerdict, c.categorySource)}</div>` : ""}${c.relatedCandidateId || c.relatedProspectId ? `<div class="sub"><span class="tag">Other location shares this website</span></div>` : ""}${c.providerStatus === "permanently_closed" ? `<div class="sub"><span class="tag" style="border-color:var(--neg);color:var(--neg)">Provider says closed</span></div>` : ""}${researchTag(c.research[0])}</td>
-  <td class="hide-md" data-label="Location">${loc ? esc(loc) : '<span class="muted">—</span>'}</td>
-  <td data-label="Research status">${candidateBadge(c.status)}${c.status === "approved" ? `<div class="sub"><span class="tag">${isAutoApproved(c) ? "Approved automatically" : "Approved by a person"}</span></div>` : ""}</td>
-  <td data-label="Qualification">${outsideTarget ? '<span class="muted">Not assessed</span>' : qualificationBadge(result.qualification)}</td>
-  <td class="num" data-label="Opportunity score">${outsideTarget ? `<span class="small muted">${NOT_SCORED}</span>` : `<span class="score-cell"><b>${result.score}</b><span class="of">/${MAX_SCORE}</span></span><div class="sub">${result.known}/${result.total} known · ${c._count.evidence} evidence</div>`}</td>
-  <td class="hide-md" data-label="Duplicate check">${dupCell}</td>
-  <td class="hide-lg small muted" data-label="Discovered">${fmtDay(c.discoveredAt)}<div class="sub">${esc(c.provider)}</div></td>
-  <td data-label=""><a class="btn btn-secondary" href="/admin/discovery/candidates/${esc(c.id)}" style="min-height:30px;padding:3px 10px">${c.status === "needs_review" || c.status === "discovered" ? "Review" : "Open"}</a></td>
-</tr>`;
-    })
-    .join("\n");
-
-  const emptyCandidates =
-    totalCandidates === 0
-      ? emptyState("No candidates to review.", providers.length ? "Start a discovery run above, or add a business by hand." : "Add a business by hand to start researching.", `<a class="btn" href="/admin/discovery/candidates/new">Add candidate</a>`)
-      : emptyState("No candidates match these filters.", "Try clearing a filter or changing your search.", `<a class="btn btn-secondary" href="/admin/discovery">Clear filters</a>`);
+  }`;
 
   const runRows = runs
     .map(
@@ -312,64 +440,55 @@ export function discoveryPage(opts: {
 </tr>`,
     )
     .join("");
+  const lastRun = runs[0];
+  const runErrors = ["provider", "region", "city", "businessType"].some((k) => values[k] !== undefined) || Boolean(opts.errors?.length);
 
-  const shown = list.rows.length < list.total ? `Showing the first ${list.rows.length} of ${list.total}` : `${list.total} candidate${list.total === 1 ? "" : "s"}`;
+  const noticeHtml = opts.notice
+    ? `<p class="notice" role="status">✓ ${esc(opts.notice)}${opts.noticeLink ? ` <a href="${esc(opts.noticeLink.href)}">${esc(opts.noticeLink.label)}</a>` : ""}</p>`
+    : "";
 
   return appPage(
     "Discovery · ReclaimBay admin",
     "discovery",
-    `${pageHead({
-      title: "Discovery",
-      lede: "Find and review businesses before they enter the prospect pipeline. Candidates are not prospects until you approve them.",
-      actions: `<a class="btn" href="#new-run">New discovery run</a><a class="btn btn-secondary" href="/admin/discovery/candidates/new">Add candidate</a>`,
-    })}
-${notice(opts.notice)}${errorSummary(opts.errors, fe, "Not done")}
-${runCard}
-${tiles}
+    `<div class="page-head q-head">
+  <div><h1>Discovery</h1><p class="lede">${lede}</p></div>
+  <div class="actions"><a class="btn btn-secondary" href="#find">Find new businesses</a><a class="btn btn-ghost" href="/admin/discovery/candidates/new">Add candidate</a></div>
+</div>
+${noticeHtml}${errorSummary(opts.errors, fe, "Not done")}
+<section class="q-tiles" aria-label="What needs attention">${(["decision", "ready", "verify", "research"] as const).map(tile).join("")}</section>
 
-${section(
-  "candidates",
-  "Candidates",
-  `<nav class="chips" aria-label="Filter by research status">${chips}</nav>
-${f.run ? `<div class="callout" style="margin-bottom:12px">Showing candidates from one discovery run. <a href="/admin/discovery">Show all</a></div>` : ""}
-<form class="card filters" method="get" action="/admin/discovery" role="search" aria-label="Search and filter candidates">
-  <div><label class="sr-only" for="f-q">Search candidates</label><input class="search" id="f-q" type="search" name="q" value="${esc(f.q)}" placeholder="Search name, website, city, or phone" maxlength="100"></div>
-  <div class="filter-row">
-    <div><label class="lbl" for="f-cstatus">Research status</label><select id="f-cstatus" name="status">${options([["", "Any"], ...CANDIDATE_STATUSES.map((s): [string, string] => [s, CANDIDATE_STATUS_LABELS[s]])], f.status)}</select></div>
-    <div><label class="lbl" for="f-cqual">Qualification</label><select id="f-cqual" name="qualification">${options([["", "Any"], ...Object.entries(QUALIFICATION_LABELS)], f.qualification)}</select></div>
-    <div><label class="lbl" for="f-cband">Score band</label><select id="f-cband" name="band">${options([["", "Any"], ["high", "High"], ["medium", "Medium"], ["low", "Low"]], f.band)}</select></div>
-    <div><label class="lbl" for="f-cstate">State</label><input id="f-cstate" type="text" name="state" value="${esc(f.state)}" maxlength="50"></div>
-    <div><label class="lbl" for="f-ccity">City</label><input id="f-ccity" type="text" name="city" value="${esc(f.city)}" maxlength="100"></div>
-    <div><label class="lbl" for="f-cflag">Duplicate flag</label><select id="f-cflag" name="flagged">${options([["", "Any"], ["1", "Possible duplicate"]], f.flagged)}</select></div>
-    <div><label class="lbl" for="f-ctier">Category tier</label><select id="f-ctier" name="tier">${options([["", "Any"], ["core", "Core"], ["adjacent", "Adjacent"]], f.tier)}</select></div>
-    <div><label class="lbl" for="f-ccat">Category check</label><select id="f-ccat" name="category">${options([["", "Any"], ...CATEGORY_VERDICTS.map((v): [string, string] => [v, CATEGORY_VERDICT_LABELS[v]])], f.category)}</select></div>
-    <div><label class="lbl" for="f-csort">Sort by</label><select id="f-csort" name="sort">${options(Object.keys(CANDIDATE_SORTS).map((k): [string, string] => [k, SORT_LABELS[k] ?? k]), list.sort)}</select></div>
-    <div class="filter-actions"><button type="submit">Apply filters</button><a class="btn btn-secondary" href="/admin/discovery">Reset</a></div>
-  </div>
-  ${f.run ? `<input type="hidden" name="run" value="${esc(f.run)}">` : ""}
-</form>
-<form method="post" action="/admin/discovery/research" class="card row spread" style="margin-bottom:12px">
-  ${(["q", "status", "qualification", "band", "state", "city", "flagged", "tier", "category", "provider", "sort", "run"] as const)
-    .map((k) => (f[k] ? `<input type="hidden" name="${k}" value="${esc(f[k])}">` : ""))
-    .join("")}
-  <span class="small"><b>Automated research</b>${opts.research ? ` · ${opts.research.queued} queued · ${opts.research.running} running · ${opts.research.completed} completed · ${opts.research.failed} failed` : ""}<br><span class="muted">Reads each business's own website and records verified facts with sources. Use filters to choose, then research up to 10 not-yet-researched candidates from this view. Candidates outside the target category are skipped.</span></span>
-  <button type="submit" class="btn-secondary">Research up to 10 in this view</button>
-</form>
-<div class="result-line"><span><b>${esc(shown)}</b>${anyFilter ? " match" : ""}${list.notRanked ? ` · ${list.notRanked} outside the target category not ranked (<a href="/admin/discovery?category=wrong_category">show them</a>)` : ""}</span><span><b>Qualification</b> (${esc(criteriaNames)}) and the <b>opportunity score</b> (ranking only) are worked out from recorded signals and are independent.</span></div>
-${
-  list.rows.length
-    ? `<div class="scroll"><table class="tbl cards">
-<caption class="sr-only">Discovery candidates</caption>
-<thead><tr><th scope="col">Candidate</th><th scope="col" class="hide-md">Location</th><th scope="col">Research status</th><th scope="col">Qualification</th><th scope="col" class="num">Opportunity score</th><th scope="col" class="hide-md">Duplicate check</th><th scope="col" class="hide-lg">Discovered</th><th scope="col"><span class="sr-only">Action</span></th></tr></thead>
-<tbody>${rows}</tbody>
-</table></div>`
-    : `<div class="card">${emptyCandidates}</div>`
-}`,
-)}
+<section class="q-queue" id="candidates" aria-labelledby="queue-h">
+  <h2 class="sr-only" id="queue-h">Review queue</h2>
+  <nav class="chips q-chips" aria-label="Queue views">${chips}</nav>
+  <form class="q-search" method="get" action="/admin/discovery" role="search" aria-label="Search and filter candidates">
+    ${view === "all" ? "" : `<input type="hidden" name="view" value="${esc(view)}">`}${f.run ? `<input type="hidden" name="run" value="${esc(f.run)}">` : ""}
+    <div class="q-search-row"><label class="sr-only" for="f-q">Search candidates</label><input class="search" id="f-q" type="search" name="q" value="${esc(f.q)}" placeholder="Search name, website, city, or phone" maxlength="100"><button type="submit" class="btn-secondary">Search</button>${anyFilter ? `<a class="btn btn-ghost" href="${view === "all" ? "/admin/discovery" : `/admin/discovery?view=${view}`}">Clear</a>` : ""}</div>
+    <details class="q-more"${advanced ? " open" : ""}><summary>More filters${advanced ? " (in use)" : ""}</summary>
+    <div class="filter-row">
+      <div><label class="lbl" for="f-cstatus">Research status</label><select id="f-cstatus" name="status">${options([["", "Any"], ...CANDIDATE_STATUSES.map((s): [string, string] => [s, CANDIDATE_STATUS_LABELS[s]])], f.status)}</select></div>
+      <div><label class="lbl" for="f-cqual">Qualification</label><select id="f-cqual" name="qualification">${options([["", "Any"], ...Object.entries(QUALIFICATION_LABELS)], f.qualification)}</select></div>
+      <div><label class="lbl" for="f-cband">Score band</label><select id="f-cband" name="band">${options([["", "Any"], ["high", "High"], ["medium", "Medium"], ["low", "Low"]], f.band)}</select></div>
+      <div><label class="lbl" for="f-cstate">State</label><input id="f-cstate" type="text" name="state" value="${esc(f.state)}" maxlength="50"></div>
+      <div><label class="lbl" for="f-ccity">City</label><input id="f-ccity" type="text" name="city" value="${esc(f.city)}" maxlength="100"></div>
+      <div><label class="lbl" for="f-cflag">Duplicate flag</label><select id="f-cflag" name="flagged">${options([["", "Any"], ["1", "Possible duplicate"]], f.flagged)}</select></div>
+      <div><label class="lbl" for="f-ctier">Category tier</label><select id="f-ctier" name="tier">${options([["", "Any"], ["core", "Core"], ["adjacent", "Adjacent"]], f.tier)}</select></div>
+      <div><label class="lbl" for="f-ccat">Category check</label><select id="f-ccat" name="category">${options([["", "Any"], ...CATEGORY_VERDICTS.map((v): [string, string] => [v, CATEGORY_VERDICT_LABELS[v]])], f.category)}</select></div>
+      <div><label class="lbl" for="f-csort">Order within each group</label><select id="f-csort" name="sort">${options(Object.keys(CANDIDATE_SORTS).map((k): [string, string] => [k, SORT_LABELS[k] ?? k]), queue.sort)}</select></div>
+      <div class="filter-actions"><button type="submit">Apply filters</button><a class="btn btn-ghost" href="/admin/discovery">Reset</a></div>
+    </div></details>
+  </form>
+  ${f.run ? `<div class="callout" style="margin-bottom:12px">Showing candidates from one discovery run. <a href="/admin/discovery">Show all</a></div>` : ""}
+  ${batch}
+  <div class="result-line"><span><b>${esc(shown)}</b>${anyFilter ? " match" : ""}${queue.notRanked ? ` · ${queue.notRanked} outside the target category not ranked (<a href="/admin/discovery?category=wrong_category">show them</a>)` : ""}</span><span>Qualification needs ${esc(criteriaNames)}. Opportunity score — ranking only, not a verdict.</span></div>
+  ${groups || `<div class="card">${emptyQueue}</div>`}
+</section>
 
-${section(
+<h2 class="rv-more" id="find-h">Finding businesses</h2>
+${disclosure("find", "Find new businesses", lastRun ? `last run ${esc(fmtDay(lastRun.createdAt))}` : "no runs yet", `<section class="card" id="new-run" aria-label="New discovery run">${runCard}</section>`, runErrors || (counts.all === 0 && !anyFilter))}
+${disclosure(
   "runs",
   "Discovery runs",
+  `${runCount} run${runCount === 1 ? "" : "s"}`,
   runs.length
     ? `<div class="scroll"><table class="tbl cards">
 <caption class="sr-only">Recent discovery runs</caption>
@@ -377,12 +496,12 @@ ${section(
 <tbody>${runRows}</tbody>
 </table></div>
 <p class="small muted" style="margin-top:8px">Skipped records were confident duplicates of a stored candidate or prospect (the same provider record, or the same business at the same place). Flagged records were possible duplicates, kept for you to review. Other locations of a business are kept and linked.</p>`
-    : `<div class="card">${emptyState("No discovery runs yet.", providers.length ? "Use “New discovery run” to search a region for candidate businesses." : "When a provider is configured, runs will appear here. You can add candidates by hand meanwhile.")}</div>`,
+    : `<div class="card">${emptyState("No discovery runs yet.", providers.length ? "Use “Find new businesses” to search a region for candidate businesses." : "When a provider is configured, runs will appear here. You can add candidates by hand meanwhile.")}</div>`,
 )}
-
-${section(
+${disclosure(
   "imports",
   "Provider imports",
+  `${imports.length} recent`,
   imports.length
     ? `<div class="scroll"><table class="tbl cards">
 <caption class="sr-only">Recent provider imports</caption>
@@ -677,8 +796,8 @@ function decisionCard(d: Detail, research: ResearchView | undefined, values: Val
   <form method="post" action="/admin/discovery/candidates/${id}/status" class="rv-reason-form" novalidate>
     <input type="hidden" name="status" value="rejected"><input type="hidden" name="intent" value="disregard">
     <label class="lbl" for="f-dreason">Why? <span class="muted" style="font-weight:400">(kept on the record)</span></label>
-    <div class="row"><input id="f-dreason" type="text" name="reason" value="${esc(values.intent === "disregard" ? values.reason : prefill)}" maxlength="${FIELD_LIMITS.reason}"${values.intent === "disregard" && statusErrs.length ? ' aria-invalid="true"' : ""} style="flex:1;min-width:200px">
-    <button type="submit" class="btn-danger">Disregard</button></div>
+    <div class="row"><input id="f-dreason" type="text" name="reason" value="${esc(values.intent === "disregard" ? (values.reason ?? prefill) : prefill)}" maxlength="${FIELD_LIMITS.reason}"${values.intent === "disregard" && statusErrs.length ? ' aria-invalid="true"' : ""} style="flex:1;min-width:200px">
+    <button type="submit" class="btn-stop">Disregard</button></div>
     ${values.intent === "disregard" ? statusErrs.map((e) => `<div class="ferr">${esc(e)}</div>`).join("") : ""}
   </form></details>`
       : "";
@@ -783,10 +902,12 @@ export function candidateDetailPage(opts: {
   notice?: string;
   /** The notice confirms a review decision: offer the way back to the queue. */
   decided?: boolean;
+  /** Where this candidate sits in the queue, for Previous / Next. */
+  position?: Position;
   errors?: string[];
   values?: Values;
 }): string {
-  const { detail, values = {}, research } = opts;
+  const { detail, values = {}, research, position } = opts;
   const { candidate: c, result, outsideTarget, relCandidate, relProspect } = detail;
   const id = esc(c.id);
   const fe = fieldErrors(opts.errors);
@@ -959,14 +1080,30 @@ export function candidateDetailPage(opts: {
 
   const categoryErrs = [...(fe.byField.get("categoryVerdict") ?? []), ...(fe.byField.get("categoryReason") ?? [])];
   const evidenceErrs = ["signalKey", "sourceUrl", "excerpt"].some((k) => fe.byField.has(k));
+  // After a decision, the next item needing attention is one click away.
+  const nextLink = (cls: string) =>
+    position?.next ? `<a class="${cls}" href="/admin/discovery/candidates/${esc(position.next.id)}" rel="next">Next: ${esc(position.next.businessName)} →</a>` : "";
   const decidedNotice = opts.notice
-    ? `<p class="notice" role="status">✓ ${esc(opts.notice)}${opts.decided ? ` <a href="/admin/discovery">Back to review queue</a>` : ""}</p>`
+    ? `<p class="notice" role="status">✓ ${esc(opts.notice)}${opts.decided ? ` ${nextLink("")}${position?.next ? " · " : ""}<a href="/admin/discovery">Back to review queue</a>` : ""}</p>`
     : "";
+  const queueNav = `<nav class="rv-nav" aria-label="Review queue">
+  <a class="rv-back" href="/admin/discovery">← Review queue</a>
+  <span class="rv-pos">${
+    position
+      ? position.index
+        ? `${position.index} of ${position.total} needing attention`
+        : position.total
+          ? `${position.total} ${position.total === 1 ? "item needs" : "items need"} attention`
+          : "Nothing else needs attention"
+      : ""
+  }</span>
+  <span class="rv-step">${position?.previous ? `<a class="btn btn-ghost" href="/admin/discovery/candidates/${esc(position.previous.id)}" rel="prev">← Previous</a>` : ""}${position?.next ? `<a class="btn btn-ghost" href="/admin/discovery/candidates/${esc(position.next.id)}" rel="next">Next →<span class="sr-only">: ${esc(position.next.businessName)}</span></a>` : ""}</span>
+</nav>`;
 
   return appPage(
     `${c.businessName} · Discovery · ReclaimBay admin`,
     "discovery",
-    `${crumbs([{ label: "Review queue", href: "/admin/discovery" }, { label: c.businessName }])}
+    `${queueNav}
 ${decidedNotice}${errorSummary(opts.errors, fe, "Not done")}
 <div class="rv">
 ${identity}

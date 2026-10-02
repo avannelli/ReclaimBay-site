@@ -171,7 +171,7 @@ describe("discovery admin (HTTP)", { skip: skipReason }, () => {
         assert.match(page.body, new RegExp(name));
       }
       assert.match(page.body, /Possible duplicate/);
-      assert.match(page.body, /candidate: same name and city/);
+      assert.match(page.body, /It may be the same business as another record: same name in the same city\./);
       assert.equal(await db.prospect.count(), 0);
     });
 

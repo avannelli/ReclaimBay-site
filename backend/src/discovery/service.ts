@@ -33,7 +33,8 @@ import {
   researchedErrors,
   type CandidateStatus,
 } from "./candidateStatus.js";
-import { isDuplicateAnswer, isFlagged, matchReasons, type DuplicateAnswer } from "./duplicateReview.js";
+import { duplicateState, isDuplicateAnswer, isFlagged, matchReasons, type DuplicateAnswer } from "./duplicateReview.js";
+import { ACTIVE_LANES, LANES, nextStep, type Lane, type NextStep } from "./workQueue.js";
 import { AUTO_APPROVAL_RULES, assessAutoApproval, type AutoApprovalAssessment, type LatestResearch } from "./autoApproval.js";
 import { nameCategory } from "./categories.js";
 import {
@@ -1154,6 +1155,12 @@ const CANDIDATE_FETCH_CAP = 2000;
  * page or drift from the scoring rules.
  */
 export async function listCandidates(db: Db, filters: CandidateFilters) {
+  const { scored, sort, notRanked } = await scoredCandidates(db, filters);
+  return { total: scored.length, sort, notRanked, rows: scored.slice(0, CANDIDATE_LIST_LIMIT) };
+}
+
+/** Every candidate matching the filters, scored and sorted (up to the fetch cap). */
+async function scoredCandidates(db: Db, filters: CandidateFilters) {
   const and: Prisma.DiscoveryCandidateWhereInput[] = [];
   const q = filters.q?.trim().slice(0, 100);
   if (q) {
@@ -1181,10 +1188,13 @@ export async function listCandidates(db: Db, filters: CandidateFilters) {
     where: and.length ? { AND: and } : {},
     include: {
       signals: true,
+      // Which signals have evidence: the queue applies the same approval gate as the candidate page.
+      evidence: { select: { signalKey: true } },
       _count: { select: { evidence: true } },
       research: { orderBy: { queuedAt: "desc" }, take: 1, select: { status: true, outcome: true } },
     },
-    orderBy: { discoveredAt: "desc" },
+    // The id breaks ties, so the queue order (and Previous / Next) is the same on every load.
+    orderBy: [{ discoveredAt: "desc" }, { id: "asc" }],
     take: CANDIDATE_FETCH_CAP,
   });
   // Outside the target category: not scored, not qualified, not ranked.
@@ -1203,7 +1213,113 @@ export async function listCandidates(db: Db, filters: CandidateFilters) {
   }
   if (sort === "name") scored.sort((a, b) => a.candidate.nameKey.localeCompare(b.candidate.nameKey));
 
-  return { total: scored.length, sort, notRanked, rows: scored.slice(0, CANDIDATE_LIST_LIMIT) };
+  return { scored, sort, notRanked };
+}
+
+/** Why a candidate can't be approved now: the same reasons the candidate page shows. */
+export function approvalBlockersOf(c: {
+  status: CandidateStatus;
+  signals: readonly { key: string }[];
+  evidence: readonly { signalKey: string }[];
+  categoryVerdict: string | null;
+  categoryReason: string | null;
+}): string[] {
+  if (isFrozen(c.status)) return [];
+  return [
+    ...(APPROVABLE_FROM.includes(c.status) ? [] : [`Status is ${CANDIDATE_STATUS_LABELS[c.status]}; only Researched or Needs review can be approved.`]),
+    ...researchGateErrors(c.signals, c.evidence),
+    ...categoryApprovalErrors(c),
+  ];
+}
+
+/** Queue views: a lane, possible duplicates only, or the handled kinds. */
+export const QUEUE_VIEWS = ["all", "decision", "duplicates", "ready", "verify", "research", "disregarded", "completed"] as const;
+export type QueueView = (typeof QUEUE_VIEWS)[number];
+export const isQueueView = (v: unknown): v is QueueView => (QUEUE_VIEWS as readonly unknown[]).includes(v);
+
+type ScoredCandidate = Awaited<ReturnType<typeof scoredCandidates>>["scored"][number];
+export type QueueItem = ScoredCandidate & { step: NextStep };
+
+const inView = (view: QueueView, s: NextStep) =>
+  view === "all" ||
+  (view === "duplicates" ? s.kind === "duplicate" : view === "disregarded" ? s.kind === "disregarded" || s.kind === "duplicate_closed" : view === "completed" ? s.kind === "approved" : s.lane === view);
+
+/** The work queue step for a scored candidate (rules in workQueue.ts). */
+function stepOf(r: ScoredCandidate): NextStep {
+  const c = r.candidate;
+  const latest = c.research[0] ?? null;
+  const pending = latest?.status === "queued" || latest?.status === "running";
+  return nextStep({
+    status: c.status,
+    duplicate: duplicateState(c),
+    outsideTarget: r.outsideTarget,
+    categoryVerdict: c.categoryVerdict,
+    providerStatus: c.providerStatus,
+    qualification: r.result.qualification,
+    unverifiedCriteria: r.result.unverifiedCriteria,
+    disqualifiedBy: r.result.disqualifiedBy,
+    approvalBlockers: approvalBlockersOf(c),
+    research: { pending, latest: pending ? null : latest },
+  });
+}
+
+/**
+ * The Discovery work queue: every candidate matching the filters, with its next
+ * step, counted per lane, and the requested view in queue order (active lanes
+ * in LANES order, then handled; the chosen sort within each lane). Only the
+ * first CANDIDATE_LIST_LIMIT items are returned for display.
+ */
+export async function reviewQueue(db: Db, filters: CandidateFilters, view: QueueView = "all") {
+  const { ordered, ...rest } = await orderedQueue(db, filters, view);
+  return { ...rest, items: ordered.slice(0, CANDIDATE_LIST_LIMIT) };
+}
+
+/** The whole queue for a view in queue order, uncapped: the display limit applies only in reviewQueue. */
+async function orderedQueue(db: Db, filters: CandidateFilters, view: QueueView) {
+  const { scored, sort, notRanked } = await scoredCandidates(db, filters);
+  const items: QueueItem[] = scored.map((r) => ({ ...r, step: stepOf(r) }));
+  const counts = Object.fromEntries(LANES.map((l) => [l, 0])) as Record<Lane, number>;
+  let duplicates = 0;
+  let disregarded = 0;
+  let completed = 0;
+  for (const i of items) {
+    counts[i.step.lane]++;
+    if (i.step.kind === "duplicate") duplicates++;
+    if (i.step.kind === "disregarded" || i.step.kind === "duplicate_closed") disregarded++;
+    if (i.step.kind === "approved") completed++;
+  }
+  const active = ACTIVE_LANES.reduce((n, l) => n + counts[l], 0);
+  // A stable sort keeps the chosen order inside each lane.
+  const ordered = items.filter((i) => inView(view, i.step)).sort((a, b) => LANES.indexOf(a.step.lane) - LANES.indexOf(b.step.lane));
+  return {
+    view,
+    sort,
+    notRanked,
+    total: ordered.length,
+    counts: { ...counts, duplicates, disregarded, completed, active, all: items.length },
+    ordered,
+  };
+}
+
+/**
+ * Where a candidate sits in the active queue (default order): the previous and
+ * next items needing attention, and how many there are. A candidate no longer
+ * in the queue (just approved or disregarded) gets the first remaining item as
+ * its next one. Uses the whole queue, not the displayed first page, so a
+ * candidate past the display limit still has its true place and neighbours.
+ */
+export async function queuePosition(db: Db, id: string) {
+  const { ordered } = await orderedQueue(db, {}, "all");
+  const active = ordered.filter((i) => i.step.lane !== "handled");
+  const at = active.findIndex((i) => i.candidate.id === id);
+  const pick = (i: QueueItem | undefined) => (i ? { id: i.candidate.id, businessName: i.candidate.businessName } : null);
+  return {
+    remaining: active.length - (at === -1 ? 0 : 1),
+    index: at === -1 ? null : at + 1,
+    total: active.length,
+    previous: at > 0 ? pick(active[at - 1]) : null,
+    next: pick(at === -1 ? active[0] : active[at + 1]),
+  };
 }
 
 export async function candidateStatusCounts(db: Db) {
@@ -1272,15 +1388,7 @@ export async function getCandidateDetail(db: Db, id: string) {
       : null,
   ]);
   const result = scoreCandidate(candidate);
-  const approvalBlockers = isFrozen(candidate.status)
-    ? []
-    : [
-        ...(APPROVABLE_FROM.includes(candidate.status)
-          ? []
-          : [`Status is ${CANDIDATE_STATUS_LABELS[candidate.status]}; only Researched or Needs review can be approved.`]),
-        ...researchGateErrors(candidate.signals, candidate.evidence),
-        ...categoryApprovalErrors(candidate),
-      ];
+  const approvalBlockers = approvalBlockersOf(candidate);
   const autoApproval = assessAutoApproval({ ...candidate, latestRun: await latestResearch(db, id) });
   return { candidate, result, outsideTarget: isOutsideTarget(candidate), autoApproval, dupCandidate, dupProspect, relCandidate, relProspect, approvalBlockers };
 }

@@ -14,6 +14,7 @@ import { loadProspectRows, loadSummary } from "../admin/stats.js";
 import { dashboardPage, disabledPage, loginPage } from "../admin/views.js";
 import type { Config } from "../config.js";
 import type { Db } from "../db.js";
+import { reviewQueue } from "../discovery/service.js";
 import type { Status } from "../prospectStatus.js";
 import type { ProcessDeps } from "../research/service.js";
 import type { OutreachSender } from "../outreach/sender.js";
@@ -149,16 +150,18 @@ export async function adminRoutes(app: FastifyInstance, opts: { config: Config; 
   // ---------- funnel ----------
 
   app.get<{ Querystring: { created?: string } }>("/admin", async (req, reply) => {
-    const [summary, rows, prospectStatuses, candidateStatuses] = await Promise.all([
+    const [summary, rows, prospectStatuses, queue] = await Promise.all([
       loadSummary(db),
       loadProspectRows(db),
       db.prospect.groupBy({ by: ["status"], _count: { _all: true } }),
-      db.discoveryCandidate.groupBy({ by: ["status"], _count: { _all: true } }),
+      // The Discovery work queue's own counts, so the funnel and the queue agree.
+      reviewQueue(db, {}, "all"),
     ]);
     const count = (list: { status: string; _count: { _all: number } }[], status: string) =>
       list.find((g) => g.status === status)?._count._all ?? 0;
     const attention = {
-      candidatesToReview: count(candidateStatuses, "needs_review"),
+      candidatesToDecide: queue.counts.decision,
+      candidatesToApprove: queue.counts.ready,
       readyToContact: count(prospectStatuses, "ready_to_contact"),
       newProspects: count(prospectStatuses, "new"),
     };
