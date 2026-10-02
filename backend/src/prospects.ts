@@ -1,6 +1,8 @@
 import { randomInt } from "node:crypto";
 import type { Db } from "./db.js";
 import type { Prisma } from "./generated/prisma/client.js";
+import { OUTREACH_CLOSED } from "./outreach/lifecycle.js";
+import { cancelOpenOutreach } from "./outreach/records.js";
 import { STATUS_LABELS, isStatus, statusRequirementErrors, transitionErrors, type Status } from "./prospectStatus.js";
 import {
   BAND_THRESHOLDS,
@@ -342,24 +344,31 @@ export async function changeStatus(db: Db, id: string, toRaw: string, reasonRaw:
     throw new ProspectError([`Reason is too long (max ${FIELD_LIMITS.reason}).`]);
   }
 
-  return db.$transaction(async (tx) => {
-    const current = await tx.prospect.findUnique({ where: { id }, include: { signals: true } });
-    if (!current) throw notFound();
-    const from = current.status;
-    const input = scoringInputFromRecord(current);
-    const errors = transitionErrors(from, to, { businessName: current.businessName, ...statusContext(input) }, reason);
-    if (errors.length) throw new ProspectError(errors);
+  return db.$transaction((tx) => changeStatusInTx(tx, id, to, reason));
+}
 
-    const now = new Date();
-    // Compare-and-set: fails if the status changed since it was read.
-    const { count } = await tx.prospect.updateMany({
-      where: { id, status: from },
-      data: { status: to, statusChangedAt: now },
-    });
-    if (count !== 1) throw new ProspectError(["The status changed meanwhile. Reload and try again."], "conflict");
-    await tx.prospectStatusChange.create({ data: { prospectId: id, fromStatus: from, toStatus: to, reason, createdAt: now } });
-    return { from, to };
+/**
+ * One validated status change inside the caller's transaction, with its
+ * history row. Entering a status that ends outreach cancels any open
+ * outreach message, so a draft can't outlive a Do not contact.
+ */
+export async function changeStatusInTx(tx: Tx, id: string, to: Status, reason: string | null, now = new Date()) {
+  const current = await tx.prospect.findUnique({ where: { id }, include: { signals: true } });
+  if (!current) throw notFound();
+  const from = current.status;
+  const input = scoringInputFromRecord(current);
+  const errors = transitionErrors(from, to, { businessName: current.businessName, ...statusContext(input) }, reason);
+  if (errors.length) throw new ProspectError(errors);
+
+  // Compare-and-set: fails if the status changed since it was read.
+  const { count } = await tx.prospect.updateMany({
+    where: { id, status: from },
+    data: { status: to, statusChangedAt: now },
   });
+  if (count !== 1) throw new ProspectError(["The status changed meanwhile. Reload and try again."], "conflict");
+  await tx.prospectStatusChange.create({ data: { prospectId: id, fromStatus: from, toStatus: to, reason, createdAt: now } });
+  if (OUTREACH_CLOSED.includes(to)) await cancelOpenOutreach(tx, id, `The prospect moved to ${STATUS_LABELS[to]}.`, now);
+  return { from, to };
 }
 
 export async function addNote(db: Db, prospectId: string, bodyRaw: unknown) {

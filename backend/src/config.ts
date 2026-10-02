@@ -22,6 +22,20 @@ export interface Config {
    * end up in the real database by accident.
    */
   enableFixtureDiscovery: boolean;
+  /**
+   * Who outreach is signed by. A name, email, and postal address are all
+   * required before anything can be sent (the address by law).
+   */
+  outreachSender: { name: string | null; email: string | null; postalAddress: string | null };
+  /**
+   * Deployment-level arm for sending (OUTREACH_SENDING_ENABLED=1). Sending
+   * also needs the admin's global switch on and a configured provider.
+   */
+  outreachSendingArmed: boolean;
+  /** This backend's public base URL, for one-click unsubscribe links. */
+  publicApiUrl: string | null;
+  /** New outreach sends per rolling 24 hours (OUTREACH_DAILY_LIMIT, 1-500; default 20). */
+  outreachDailyLimit: number;
 }
 
 /** Shorter admin secrets are refused so a weak value can't be deployed by accident. */
@@ -53,5 +67,13 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     publicSiteUrl: (env.PUBLIC_SITE_URL?.trim() || "https://reclaimbay.com").replace(/\/+$/, ""),
     secureCookies,
     enableFixtureDiscovery: env.ENABLE_FIXTURE_DISCOVERY === "1" || !secureCookies,
+    outreachSender: {
+      name: env.OUTREACH_SENDER_NAME?.trim().slice(0, 120) || null,
+      email: env.OUTREACH_SENDER_EMAIL?.trim().toLowerCase().slice(0, 254) || null,
+      postalAddress: env.OUTREACH_POSTAL_ADDRESS?.trim().slice(0, 300) || null,
+    },
+    outreachSendingArmed: env.OUTREACH_SENDING_ENABLED === "1",
+    publicApiUrl: env.PUBLIC_API_URL?.trim().replace(/\/+$/, "") || null,
+    outreachDailyLimit: Math.min(500, Math.max(1, Number.parseInt(env.OUTREACH_DAILY_LIMIT ?? "20", 10) || 20)),
   };
 }

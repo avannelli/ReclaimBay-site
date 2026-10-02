@@ -22,7 +22,11 @@
     "discovery:process": "node --env-file-if-exists=.env dist/scripts/processDiscoveryRuns.js",
     "discovery:research": "node --env-file-if-exists=.env dist/scripts/researchCandidates.js",
     "discovery:check-categories": "node --env-file-if-exists=.env dist/scripts/checkCategories.js",
-    "discovery:auto-approve": "node --env-file-if-exists=.env dist/scripts/autoApprove.js"
+    "discovery:auto-approve": "node --env-file-if-exists=.env dist/scripts/autoApprove.js",
+    "outreach:draft": "node --env-file-if-exists=.env dist/scripts/draftOutreach.js",
+    "outreach:prepare": "node --env-file-if-exists=.env dist/scripts/prepareOutreach.js",
+    "outreach:send": "node --env-file-if-exists=.env dist/scripts/sendOutreach.js",
+    "outreach:inbox": "node --env-file-if-exists=.env dist/scripts/readOutreachInbox.js"
   },
   "dependencies": {
     "@duckdb/node-api": "1.5.6-r.1",

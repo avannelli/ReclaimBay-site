@@ -3,7 +3,8 @@
 A small Fastify + Prisma (PostgreSQL) service for anonymous product analytics,
 referral attribution, a private admin funnel, and manual prospect research
 with transparent scoring (see [PROSPECTS.md](PROSPECTS.md)), and an evidence-backed
-discovery and research workflow that feeds it (see [DISCOVERY.md](DISCOVERY.md)). The public site stays a
+discovery and research workflow that feeds it (see [DISCOVERY.md](DISCOVERY.md)), and
+outreach with a measurable lifecycle, sent through Google Workspace when configured and switched on (see [OUTREACH.md](OUTREACH.md); off by default). The public site stays a
 static export on Cloudflare Pages. This service runs separately on Railway.
 
 ## Privacy guarantee
@@ -115,6 +116,12 @@ local site through.
 | `HOST`             | no       | Bind address (default `::`)                                             |
 | `LOG_LEVEL`        | no       | Fastify log level (default `info`)                                      |
 | `ENABLE_FIXTURE_DISCOVERY` | no | `1` offers the synthetic fixture discovery provider. On by default outside production, off in production. Leave it off on the real database |
+| `OUTREACH_SENDER_NAME`, `OUTREACH_SENDER_EMAIL`, `OUTREACH_POSTAL_ADDRESS` | no | Who outreach is signed by, and the postal address it ends with. All three are required before anything can be sent |
+| `PUBLIC_API_URL`   | no       | This backend's public base URL, for one-click unsubscribe links. Required before anything can be sent |
+| `OUTREACH_SENDING_ENABLED` | no | `1` arms outreach sending for this deployment. Sending also needs the admin's global switch on and an email provider |
+| `OUTREACH_PROVIDER` | no | `gmail` to send through Google Workspace; unset (default) disables sending |
+| `GMAIL_SERVICE_ACCOUNT_JSON` | with gmail | The Google service account's JSON key (raw or base64), with domain-wide delegation for `gmail.send` and `gmail.readonly`. A secret: set it in the host's secret store |
+| `OUTREACH_DAILY_LIMIT` | no | New outreach sends per rolling 24 hours (default 20, at most 500) |
 
 Generate an admin secret:
 
@@ -152,6 +159,14 @@ Discovery (`/admin/discovery…`, see [DISCOVERY.md](DISCOVERY.md)) adds: `GET /
 `GET|POST /admin/discovery/candidates/:id(/edit)`, and POSTs to `…/:id/status`, `…/notes`,
 `…/evidence`, `…/evidence/:evidenceId/delete`, and `…/:id/approve` (the only route that
 creates a prospect from a candidate).
+
+Outreach (see [OUTREACH.md](OUTREACH.md)) adds: `GET /admin/outreach` (the sending switch,
+automatic preparation, and the funnel), `POST /admin/outreach/switch`, `POST /admin/outreach/prepare`,
+`POST /admin/prospects/:id/outreach` (prepares a draft, or returns the open one), `GET /admin/outreach/:id`,
+and POSTs to `…/:id/queue`, `…/discard`, `…/reply`, `…/classify`, `…/follow-up`, and `…/confirm-sent`.
+No route sends: the dispatcher job does (`npm run outreach:send`).
+
+Public: `GET|POST /u/:token`, one-click unsubscribe for outreach email (rate limited; same answer for any token).
 
 Every `/admin` route except login and logout requires a session, and every
 admin POST must be same-origin. Admin write routes allow 60 requests per minute.

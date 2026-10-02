@@ -19,12 +19,13 @@ ${body}
 </div></body></html>`;
 }
 
-export type AdminSection = "funnel" | "prospects" | "discovery";
+export type AdminSection = "funnel" | "prospects" | "discovery" | "outreach";
 
 const NAV: [AdminSection, string, string][] = [
   ["funnel", "/admin", "Funnel"],
   ["prospects", "/admin/prospects", "Prospects"],
   ["discovery", "/admin/discovery", "Discovery"],
+  ["outreach", "/admin/outreach", "Outreach"],
 ];
 
 /** The shared shell for every signed-in page: one header, one main landmark. */

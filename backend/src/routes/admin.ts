@@ -16,7 +16,10 @@ import type { Config } from "../config.js";
 import type { Db } from "../db.js";
 import type { Status } from "../prospectStatus.js";
 import type { ProcessDeps } from "../research/service.js";
+import type { OutreachSender } from "../outreach/sender.js";
+import { createOutreachDraft, prospectOutreach } from "../outreach/service.js";
 import { discoveryRoutes } from "./adminDiscovery.js";
+import { outreachRoutes } from "./adminOutreach.js";
 import {
   ProspectError,
   addEvidence,
@@ -52,7 +55,7 @@ const PUBLIC_PATHS = new Set(["/admin/login", "/admin/logout"]);
  * Private admin at /admin, protected server-side by ADMIN_SECRET. The
  * secret never reaches the static frontend.
  */
-export async function adminRoutes(app: FastifyInstance, opts: { config: Config; db: Db; research?: ProcessDeps }) {
+export async function adminRoutes(app: FastifyInstance, opts: { config: Config; db: Db; research?: ProcessDeps; sender: OutreachSender }) {
   const { config, db } = opts;
   const secret = config.adminSecret;
 
@@ -174,10 +177,13 @@ export async function adminRoutes(app: FastifyInstance, opts: { config: Config; 
     return render(err.messages);
   };
 
+  const draftOptions = { siteUrl: config.publicSiteUrl, sender: config.outreachSender };
+
   const renderDetail = async (reply: FastifyReply, id: string, extra: { notice?: string; errors?: string[]; values?: Values } = {}) => {
     const detail = await getProspectDetail(db, id);
     if (!detail) return reply.code(404).type("text/plain").send("Not found");
-    return html(reply, prospectDetailPage({ detail, siteUrl: config.publicSiteUrl, ...extra }), reply.statusCode);
+    const outreach = await prospectOutreach(db, id, draftOptions);
+    return html(reply, prospectDetailPage({ detail, outreach, siteUrl: config.publicSiteUrl, ...extra }), reply.statusCode);
   };
 
   const validId = (id: string, reply: FastifyReply) => {
@@ -256,6 +262,19 @@ export async function adminRoutes(app: FastifyInstance, opts: { config: Config; 
     }
   });
 
+  /** Prepares an outreach draft from stored evidence, or returns the open one. Never sends. */
+  app.post<{ Params: { id: string } }>("/admin/prospects/:id/outreach", writeLimit, async (req, reply) => {
+    const { id } = req.params;
+    if (!validId(id, reply)) return reply;
+    try {
+      const { outreach, created } = await createOutreachDraft(db, id, draftOptions);
+      req.log.info({ prospectId: id, outreachId: outreach.id, created }, "outreach draft");
+      return reply.redirect(`/admin/outreach/${outreach.id}?done=${created ? "drafted" : "existing"}`, 303);
+    } catch (err) {
+      return handleError(err, reply, (errors) => renderDetail(reply, id, { errors }));
+    }
+  });
+
   app.post<{ Params: { id: string }; Body: Form }>("/admin/prospects/:id/notes", writeLimit, async (req, reply) => {
     const { id } = req.params;
     if (!validId(id, reply)) return reply;
@@ -297,6 +316,7 @@ export async function adminRoutes(app: FastifyInstance, opts: { config: Config; 
 
   // Discovery shares this scope's session check, origin check, and headers.
   await app.register(discoveryRoutes, { config, db, research: opts.research });
+  await app.register(outreachRoutes, { config, db, sender: opts.sender });
 }
 
 const pick = (body: Form | undefined, keys: string[]): Values =>

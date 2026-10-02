@@ -1,0 +1,138 @@
+import type { FastifyInstance, FastifyReply } from "fastify";
+import { outreachControlPage, outreachDetailPage } from "../admin/outreachViews.js";
+import type { Config } from "../config.js";
+import type { Db } from "../db.js";
+import { confirmStuckSent, readinessErrors, sendingSwitch, setSendingSwitch, stuckMessages } from "../outreach/dispatch.js";
+import { outreachMetrics } from "../outreach/metrics.js";
+import { prepareEligibleOutreach, type PrepareReport } from "../outreach/prepare.js";
+import type { OutreachSender } from "../outreach/sender.js";
+import { classifyReply, createOutreachDraft, discardOutreach, getOutreachDetail, queueOutreach, recordReply } from "../outreach/service.js";
+import { ProspectError } from "../prospects.js";
+
+type Form = Record<string, string>;
+type Values = Record<string, string | undefined>;
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
+/** Confirmations shown after a redirect, keyed so no free text is reflected. */
+const NOTICES: Record<string, string> = {
+  drafted: "Draft prepared from the stored evidence. Nothing was sent.",
+  existing: "This prospect already has an open message, so no new draft was made.",
+  discarded: "Message discarded. It stays in the history as Cancelled.",
+  queued: "Queued. It is sent only while sending is switched on.",
+  reply: "Reply recorded.",
+  classified: "Reply classified.",
+  confirmed: "Recorded as sent.",
+  switched_on: "Sending switched on.",
+  switched_off: "Sending switched off. No further message will be sent.",
+};
+
+const pick = (body: Form | undefined, keys: string[]): Values =>
+  Object.fromEntries(keys.map((k) => [k, typeof body?.[k] === "string" ? body[k] : undefined]));
+
+/**
+ * Outreach admin. Registered inside the admin scope, so every route here
+ * requires a session, same-origin POSTs, and the admin security headers.
+ * No route here sends: queued messages are sent by the dispatcher job
+ * (npm run outreach:send), and only while the global switch is on.
+ */
+export async function outreachRoutes(app: FastifyInstance, opts: { config: Config; db: Db; sender: OutreachSender }) {
+  const { config, db, sender } = opts;
+  const draftOptions = { siteUrl: config.publicSiteUrl, sender: config.outreachSender };
+  const writeLimit = { config: { rateLimit: { max: 60, timeWindow: "1 minute" } } };
+
+  const html = (reply: FastifyReply, body: string, code = 200) => reply.code(code).type("text/html; charset=utf-8").send(body);
+  const notFound = (reply: FastifyReply) => reply.code(404).type("text/plain").send("Not found");
+
+  const renderDetail = async (reply: FastifyReply, id: string, extra: { notice?: string; errors?: string[]; values?: Values } = {}) => {
+    const detail = await getOutreachDetail(db, id, config);
+    if (!detail) return notFound(reply);
+    return html(reply, outreachDetailPage({ detail, ...extra }), reply.statusCode);
+  };
+
+  const renderControl = async (reply: FastifyReply, extra: { notice?: string; errors?: string[]; prepared?: PrepareReport } = {}) => {
+    const [sw, grouped, stuck, eligible, metrics] = await Promise.all([
+      sendingSwitch(db),
+      db.outreach.groupBy({ by: ["status"], _count: { _all: true } }),
+      stuckMessages(db, sender),
+      prepareEligibleOutreach(db, { draft: draftOptions, compliance: config, apply: false, limit: 1_000 }),
+      outreachMetrics(db),
+    ]);
+    const counts = Object.fromEntries(grouped.map((g) => [g.status, g._count._all]));
+    const page = outreachControlPage({ sw, readiness: readinessErrors(config, sender), counts, stuck, eligible, metrics, prepared: extra.prepared }, extra);
+    return html(reply, page, reply.statusCode);
+  };
+
+  /** Maps service errors to a page; anything unexpected is rethrown. */
+  const handleError = (err: unknown, reply: FastifyReply, render: (errors: string[]) => unknown) => {
+    if (!(err instanceof ProspectError)) throw err;
+    if (err.kind === "not_found") return notFound(reply);
+    reply.code(err.kind === "conflict" ? 409 : 400);
+    return render(err.messages);
+  };
+
+  // ---------- control page ----------
+
+  app.get<{ Querystring: { done?: string } }>("/admin/outreach", (req, reply) =>
+    renderControl(reply, { notice: req.query.done ? NOTICES[req.query.done] : undefined }),
+  );
+
+  app.post<{ Body: Form }>("/admin/outreach/switch", writeLimit, async (req, reply) => {
+    const enabled = req.body?.enabled === "1";
+    try {
+      await setSendingSwitch(db, enabled, req.body?.reason, config, sender);
+      req.log.warn({ enabled }, "outreach sending switch changed");
+      return reply.redirect(`/admin/outreach?done=${enabled ? "switched_on" : "switched_off"}`, 303);
+    } catch (err) {
+      return handleError(err, reply, (errors) => renderControl(reply, { errors }));
+    }
+  });
+
+  /** Drafts (and optionally queues) every eligible prospect. Never sends. */
+  app.post<{ Body: Form }>("/admin/outreach/prepare", writeLimit, async (req, reply) => {
+    const prepared = await prepareEligibleOutreach(db, { draft: draftOptions, compliance: config, apply: true, queue: req.body?.queue === "1" });
+    req.log.info({ drafted: prepared.drafted.length, queued: prepared.queued.length }, "outreach prepared");
+    return renderControl(reply, { prepared });
+  });
+
+  // ---------- one message ----------
+
+  app.get<{ Params: { id: string }; Querystring: { done?: string } }>("/admin/outreach/:id", async (req, reply) => {
+    if (!UUID_RE.test(req.params.id)) return notFound(reply);
+    return renderDetail(reply, req.params.id, { notice: req.query.done ? NOTICES[req.query.done] : undefined });
+  });
+
+  // A first draft is prepared from the prospect's page (routes/admin.ts).
+
+  /** Runs a service action on one message, then redirects with a notice or re-renders with its errors. */
+  const action = (path: string, done: string, run: (id: string, body: Form) => Promise<unknown>, keep: string[] = []) =>
+    app.post<{ Params: { id: string }; Body: Form }>(`/admin/outreach/:id/${path}`, writeLimit, async (req, reply) => {
+      const { id } = req.params;
+      if (!UUID_RE.test(id)) return notFound(reply);
+      try {
+        await run(id, req.body ?? {});
+        return reply.redirect(`/admin/outreach/${id}?done=${done}`, 303);
+      } catch (err) {
+        return handleError(err, reply, (errors) => renderDetail(reply, id, { errors, values: pick(req.body, keep) }));
+      }
+    });
+
+  action("discard", "discarded", (id, body) => discardOutreach(db, id, body.reason), ["reason"]);
+  action("queue", "queued", (id) => queueOutreach(db, id, config));
+  action("reply", "reply", (id, body) => recordReply(db, id, { outcome: body.outcome, summary: body.summary, requireOutcome: true }), ["outcome", "summary"]);
+  action("classify", "classified", (id, body) => classifyReply(db, id, body.outcome), ["outcome"]);
+  action("confirm-sent", "confirmed", (id) => confirmStuckSent(db, id, sender.name));
+
+  app.post<{ Params: { id: string } }>("/admin/outreach/:id/follow-up", writeLimit, async (req, reply) => {
+    const { id } = req.params;
+    if (!UUID_RE.test(id)) return notFound(reply);
+    const original = await db.outreach.findUnique({ where: { id }, select: { prospectId: true } });
+    if (!original) return notFound(reply);
+    try {
+      const { outreach, created } = await createOutreachDraft(db, original.prospectId, { ...draftOptions, followUpOfId: id });
+      return reply.redirect(`/admin/outreach/${outreach.id}?done=${created ? "drafted" : "existing"}`, 303);
+    } catch (err) {
+      return handleError(err, reply, (errors) => renderDetail(reply, id, { errors }));
+    }
+  });
+}

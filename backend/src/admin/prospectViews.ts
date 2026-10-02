@@ -20,6 +20,7 @@ import {
   type SignalDefinition,
   type SignalKey,
 } from "../scoring.js";
+import { outreachSection } from "./outreachViews.js";
 import { appPage } from "./views.js";
 import {
   bandBadge,
@@ -278,7 +279,7 @@ ${gate ? `<div class="callout warn" style="margin-bottom:14px">${gate}</div>` : 
 
 // ---------- detail ----------
 
-const PIPELINE: Status[] = ["new", "qualified", "ready_to_contact", "contacted", "engaged", "customer"];
+const PIPELINE: Status[] = ["new", "qualified", "ready_to_contact", "contacted", "engaged", "meeting", "proposal", "customer"];
 const EVENT_LABELS: [string, string][] = [
   ["landing_view", "Visits"],
   ["upload_started", "Uploads"],
@@ -290,6 +291,8 @@ const EVENT_LABELS: [string, string][] = [
 export function prospectDetailPage(opts: {
   detail: Detail;
   siteUrl: string;
+  /** The Outreach section's data; omitted, the section isn't shown. */
+  outreach?: Parameters<typeof outreachSection>[1];
   notice?: string;
   errors?: string[];
   values?: Values;
@@ -436,6 +439,8 @@ ${statusBlock}
 <h3 class="card-h" style="margin-top:16px">History</h3>
 <ul class="timeline">${p.statusChanges.map((c) => `<li><span class="when">${fmtDate(c.createdAt)}</span>${c.fromStatus ? `${esc(STATUS_LABELS[c.fromStatus])} → ` : ""}<b>${esc(STATUS_LABELS[c.toStatus])}</b>${c.reason ? ` · ${esc(c.reason)}` : ""}</li>`).join("")}</ul></div>`,
 )}
+
+${opts.outreach ? outreachSection(p.id, opts.outreach) : ""}
 
 ${section(
   "evidence",

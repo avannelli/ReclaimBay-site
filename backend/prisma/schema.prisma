@@ -13,14 +13,19 @@ datasource db {
 
 // Lifecycle rules (allowed transitions, entry requirements) live in
 // src/prospectStatus.ts. do_not_contact is terminal: a compliance flag.
+// The commercial outcome of outreach (meeting, proposal, customer, lost) is
+// a prospect status; what happened to each message is an Outreach status.
 enum ProspectStatus {
   new
   qualified
   ready_to_contact
   contacted
   engaged
+  meeting
+  proposal
   customer
   not_a_fit
+  lost
   do_not_contact
   archived
 }
@@ -128,6 +133,55 @@ enum ProviderImportStatus {
   failed
 }
 
+// Outreach (see OUTREACH.md). Rules live in src/outreach/lifecycle.ts.
+// What happened to one message: draft -> queued -> sent -> delivered ->
+// replied, or bounced / failed / cancelled. Nothing in this version sends.
+enum OutreachStatus {
+  draft
+  queued
+  sent
+  delivered
+  bounced
+  failed
+  replied
+  cancelled
+}
+
+enum OutreachKind {
+  initial
+  follow_up
+}
+
+// A person's reading of a reply.
+enum ReplyOutcome {
+  interested
+  not_interested
+  do_not_contact
+  other
+}
+
+enum OutreachEventType {
+  drafted
+  queued
+  sent
+  delivered
+  bounced
+  failed
+  replied
+  cancelled
+  // Not status changes: a spam complaint, and an unsubscribe by link.
+  complained
+  unsubscribed
+}
+
+// Why an address must never be emailed again.
+enum SuppressionReason {
+  bounced
+  complained
+  unsubscribed
+  invalid
+}
+
 model Prospect {
   id           String  @id @default(uuid()) @db.Uuid
   referralCode String  @unique
@@ -162,6 +216,7 @@ model Prospect {
   evidence      ProspectEvidence[]
   notes         ProspectNote[]
   statusChanges ProspectStatusChange[]
+  outreach      Outreach[]
 
   @@index([status, score])
   @@index([score])
@@ -573,4 +628,111 @@ model ProviderPlace {
   @@unique([importId, externalId])
   @@index([importId, state, county, city])
   @@index([importId, categoryTier])
+}
+
+// One outreach message to a prospect. Every attempt is its own row and is
+// never overwritten: a follow-up or a retry is a new row. The generated
+// message and the facts it relies on are frozen when it is drafted.
+model Outreach {
+  id           String       @id @default(uuid()) @db.Uuid
+  prospectId   String       @db.Uuid
+  kind         OutreachKind
+  // The message this one follows up (follow_up only).
+  followUpOfId String?      @db.Uuid
+
+  template    String   @db.VarChar(40)
+  // Added to the referral link, so visits and scans are attributed to it.
+  campaign    String?  @db.VarChar(64)
+  subject     String   @db.VarChar(200)
+  body        String   @db.VarChar(5000)
+  // The stored facts the message relies on, each with its source.
+  evidence    Json
+  generatedAt DateTime
+
+  // The public business email, with where it was found.
+  recipientEmail     String  @db.VarChar(254)
+  recipientSourceUrl String  @db.VarChar(500)
+  senderName         String? @db.VarChar(120)
+  senderEmail        String? @db.VarChar(254)
+
+  status            OutreachStatus @default(draft)
+  statusChangedAt   DateTime       @default(now())
+  // The prospect's id while the message is open (draft or queued), null
+  // otherwise: at most one open message per prospect, enforced here.
+  openForProspectId String?        @unique @db.Uuid
+
+  queuedAt      DateTime?
+  sentAt        DateTime?
+  deliveredAt   DateTime?
+  // When it bounced or failed, and why.
+  failedAt      DateTime?
+  failureReason String?       @db.VarChar(500)
+  repliedAt     DateTime?
+  replyOutcome  ReplyOutcome?
+  replySummary  String?       @db.VarChar(2000)
+  cancelledAt   DateTime?
+  cancelReason  String?       @db.VarChar(500)
+
+  // Set by the sending provider. Never credentials.
+  provider          String? @db.VarChar(40)
+  providerMessageId String? @unique @db.VarChar(200)
+
+  // Sending. sendStartedAt is set once, when a dispatcher claims the message;
+  // a claimed message is only ever retried with the same idempotency key.
+  sendStartedAt    DateTime?
+  sendAttempts     Int       @default(0)
+  lastSendError    String?   @db.VarChar(500)
+  // Opaque token for the one-click unsubscribe link.
+  unsubscribeToken String?   @unique @db.VarChar(64)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  prospect   Prospect        @relation(fields: [prospectId], references: [id], onDelete: Cascade)
+  followUpOf Outreach?       @relation("FollowUp", fields: [followUpOfId], references: [id], onDelete: Restrict)
+  followUps  Outreach[]      @relation("FollowUp")
+  events     OutreachEvent[]
+
+  @@index([prospectId, createdAt])
+  @@index([status, statusChangedAt])
+}
+
+// Append-only log of what happened to each message: the raw data for
+// outreach counts. Prospect outcomes are in ProspectStatusChange.
+model OutreachEvent {
+  id              String            @id @default(uuid()) @db.Uuid
+  outreachId      String            @db.Uuid
+  type            OutreachEventType
+  detail          String?           @db.VarChar(500)
+  // The provider's id for the notification that caused this event, so a
+  // repeated webhook can never be recorded twice.
+  providerEventId String?           @unique @db.VarChar(200)
+  createdAt       DateTime          @default(now())
+
+  outreach Outreach @relation(fields: [outreachId], references: [id], onDelete: Cascade)
+
+  @@index([outreachId, createdAt])
+  @@index([type, createdAt])
+}
+
+// Addresses that must never be emailed again, whatever prospect they are on.
+// Only ever added to.
+model EmailSuppression {
+  id         String            @id @default(uuid()) @db.Uuid
+  email      String            @unique @db.VarChar(254)
+  reason     SuppressionReason
+  detail     String?           @db.VarChar(500)
+  outreachId String?           @db.Uuid
+  createdAt  DateTime          @default(now())
+}
+
+// The global sending switch. Append-only: the newest row is the current
+// state, and no row means sending is off.
+model OutreachControlChange {
+  id             String   @id @default(uuid()) @db.Uuid
+  sendingEnabled Boolean
+  reason         String   @db.VarChar(500)
+  createdAt      DateTime @default(now())
+
+  @@index([createdAt])
 }

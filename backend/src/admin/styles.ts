@@ -100,6 +100,15 @@ code { font:12px ui-monospace,SFMono-Regular,Consolas,monospace; background:var(
 .st-not_a_fit::before { content:"\\2715"; } .st-not_a_fit { color:var(--muted); text-decoration:line-through; text-decoration-thickness:1px; }
 .st-archived::before { content:"\\25AB"; } .st-archived { color:var(--muted); border-style:dashed; }
 .st-do_not_contact::before { content:"\\2298"; font-size:13px; } .st-do_not_contact { border:2px solid var(--neg); color:var(--neg); background:var(--neg-soft); font-weight:700; }
+.st-meeting::before { content:"\\25C9"; } .st-proposal::before { content:"\\25C8"; } .st-meeting, .st-proposal { border-color:var(--pos); color:var(--pos); background:var(--pos-soft); }
+.st-lost::before { content:"\\2717"; } .st-lost { color:var(--muted); border-style:dashed; }
+/* outreach message states */
+.os-draft::before { content:"\\270E"; } .os-draft { border-style:dashed; }
+.os-queued::before { content:"\\25F7"; } .os-sent::before { content:"\\2192"; } .os-queued, .os-sent { border-color:var(--info); color:var(--info); background:var(--info-soft); }
+.os-delivered::before { content:"\\2713"; } .os-replied::before { content:"\\21A9"; } .os-delivered, .os-replied { border-color:var(--pos); color:var(--pos); background:var(--pos-soft); } .os-replied { font-weight:700; }
+.os-bounced::before { content:"\\2715"; } .os-failed::before { content:"!"; font-weight:800; } .os-bounced, .os-failed { border-color:var(--neg); color:var(--neg); background:var(--neg-soft); }
+.os-cancelled::before { content:"\\2014"; } .os-cancelled { color:var(--muted); text-decoration:line-through; text-decoration-thickness:1px; }
+pre.msg { margin:0; white-space:pre-wrap; word-break:break-word; font:inherit; font-size:14px; line-height:1.55; }
 /* discovery states */
 .cs-discovered::before { content:"\\25CB"; } .cs-researching::before { content:"\\25D4"; } .cs-researched::before { content:"\\25D1"; }
 .cs-researching { border-color:var(--info); color:var(--info); background:var(--info-soft); } .cs-researched { border-color:var(--pos); color:var(--pos); background:var(--pos-soft); }

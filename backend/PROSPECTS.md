@@ -137,8 +137,11 @@ rows "cache stale", and the detail page always shows the live score.
 | `ready_to_contact` | Qualified, and reachable through published business contact | Same as qualified, **plus** a public business phone or email with its source URL |
 | `contacted` | Reached out to at least once | — |
 | `engaged` | Replied, visited via referral link, or in conversation | — |
+| `meeting` | A call or meeting is scheduled or has taken place | — |
+| `proposal` | An offer has been made and is awaiting a decision | — |
 | `customer` | Using ReclaimBay | — |
 | `not_a_fit` | Researched and ruled out (reason required) | — |
+| `lost` | Declined after being contacted (reason required) | — |
 | `do_not_contact` | Must never be contacted (reason required). **Permanent.** | — |
 | `archived` | Set aside without a decision | — |
 
@@ -155,10 +158,13 @@ rows "cache stale", and the detail page always shows the live score.
 | new | qualified, not_a_fit, do_not_contact, archived |
 | qualified | ready_to_contact, new, not_a_fit, do_not_contact, archived |
 | ready_to_contact | contacted, qualified, not_a_fit, do_not_contact, archived |
-| contacted | engaged, not_a_fit, do_not_contact, archived |
-| engaged | customer, contacted, not_a_fit, do_not_contact, archived |
+| contacted | engaged, lost, not_a_fit, do_not_contact, archived |
+| engaged | meeting, proposal, customer, contacted, lost, not_a_fit, do_not_contact, archived |
+| meeting | proposal, customer, engaged, lost, do_not_contact, archived |
+| proposal | customer, meeting, engaged, lost, do_not_contact, archived |
 | customer | engaged, do_not_contact, archived |
 | not_a_fit | new, do_not_contact, archived |
+| lost | engaged, do_not_contact, archived |
 | archived | new, do_not_contact |
 | do_not_contact | *(none)* |
 
@@ -204,7 +210,9 @@ A typical flow:
 1. Add a shop as **new**.
 2. Research it and record signals, adding evidence for the important ones. Move it to **qualified**.
 3. Record a public phone or email with its source. Move it to **ready to contact**.
-4. Later milestones pick up outreach from there.
+4. Prepare an outreach draft from the prospect's page (see [OUTREACH.md](OUTREACH.md)).
+   Replies and outcomes then move the status: engaged, meeting, proposal,
+   customer, or lost.
 
 ## Where prospects come from
 
@@ -214,19 +222,20 @@ through the same path and validators as adding one by hand, and never sets
 Qualified or Ready to contact. The qualification and status rules on this page
 still apply to it unchanged.
 
-## For future outreach (not built)
+## Outreach
 
-These records already give an outreach feature what it needs:
-- **Who is eligible:** `ready_to_contact` only (`OUTREACH_ELIGIBLE` in
-  `src/prospectStatus.ts`).
-- **Who is excluded:** `do_not_contact` permanently, and every other status.
-- **Where to send:** a published business email or phone, with proof of where
-  it was found.
-- **What happened:** a status history, a score with its reasons, and a
-  referral code to attribute replies and visits.
-
-Anything that sends messages, schedules follow-ups, or discovers prospects
-automatically belongs to a later milestone.
+Outreach is described in [OUTREACH.md](OUTREACH.md). Its links to this page:
+- **Who gets a draft:** qualified prospects with a valid published business
+  email, in New, Qualified, or Ready to contact, whose address isn't
+  suppressed. Queueing a first message moves the prospect to **Ready to
+  contact** through the normal rules; only Ready to contact is ever sent a
+  first message (`OUTREACH_ELIGIBLE` in `src/prospectStatus.ts`).
+- **Who is excluded:** `do_not_contact` permanently, and any suppressed
+  address (bounced, complained, unsubscribed, invalid). Entering Do not
+  contact, Not a fit, Lost, Archived, or Customer cancels any unsent message.
+- **What happened:** each message has its own record and event log; the
+  commercial outcome (engaged, meeting, proposal, customer, lost) is this
+  status, with its history.
 
 ## Tests
 

@@ -2,11 +2,16 @@
  * Prospect lifecycle. Pure rules, enforced by the service layer for every
  * status change and every edit.
  *
- *   new -> qualified -> ready_to_contact -> contacted -> engaged -> customer
+ *   new -> qualified -> ready_to_contact -> contacted -> engaged
+ *       -> meeting -> proposal -> customer
  *
- * with exits to not_a_fit and archived, a way back to new (reopen), and
- * do_not_contact, which is terminal: a compliance flag that must keep a
- * shop out of all future outreach, so nothing in the app can undo it.
+ * with exits to not_a_fit, lost (declined after contact), and archived, a
+ * way back to new (reopen), and do_not_contact, which is terminal: a
+ * compliance flag that must keep a shop out of all future outreach, so
+ * nothing in the app can undo it.
+ *
+ * This is the commercial outcome. What happened to each message (sent,
+ * delivered, bounced, replied) is tracked per message in src/outreach.
  */
 
 import type { Qualification } from "./scoring.js";
@@ -17,8 +22,11 @@ export const STATUSES = [
   "ready_to_contact",
   "contacted",
   "engaged",
+  "meeting",
+  "proposal",
   "customer",
   "not_a_fit",
+  "lost",
   "do_not_contact",
   "archived",
 ] as const;
@@ -33,8 +41,11 @@ export const STATUS_LABELS: Record<Status, string> = {
   ready_to_contact: "Ready to contact",
   contacted: "Contacted",
   engaged: "Engaged",
+  meeting: "Meeting",
+  proposal: "Proposal",
   customer: "Customer",
   not_a_fit: "Not a fit",
+  lost: "Lost",
   do_not_contact: "Do not contact",
   archived: "Archived",
 };
@@ -45,8 +56,11 @@ export const STATUS_MEANINGS: Record<Status, string> = {
   ready_to_contact: "Qualified, and has a public business phone or email with the URL where it was found.",
   contacted: "Reached out to at least once.",
   engaged: "Replied, visited through their referral link, or is otherwise in conversation.",
+  meeting: "A call or meeting is scheduled or has taken place.",
+  proposal: "An offer has been made and is awaiting a decision.",
   customer: "Using ReclaimBay.",
   not_a_fit: "Researched and ruled out.",
+  lost: "Declined after being contacted.",
   do_not_contact: "Asked not to be contacted, or must not be. Permanent.",
   archived: "Set aside without a decision.",
 };
@@ -56,10 +70,13 @@ export const TRANSITIONS: Record<Status, readonly Status[]> = {
   new: ["qualified", "not_a_fit", "do_not_contact", "archived"],
   qualified: ["ready_to_contact", "new", "not_a_fit", "do_not_contact", "archived"],
   ready_to_contact: ["contacted", "qualified", "not_a_fit", "do_not_contact", "archived"],
-  contacted: ["engaged", "not_a_fit", "do_not_contact", "archived"],
-  engaged: ["customer", "contacted", "not_a_fit", "do_not_contact", "archived"],
+  contacted: ["engaged", "lost", "not_a_fit", "do_not_contact", "archived"],
+  engaged: ["meeting", "proposal", "customer", "contacted", "lost", "not_a_fit", "do_not_contact", "archived"],
+  meeting: ["proposal", "customer", "engaged", "lost", "do_not_contact", "archived"],
+  proposal: ["customer", "meeting", "engaged", "lost", "do_not_contact", "archived"],
   customer: ["engaged", "do_not_contact", "archived"],
   not_a_fit: ["new", "do_not_contact", "archived"],
+  lost: ["engaged", "do_not_contact", "archived"],
   archived: ["new", "do_not_contact"],
   do_not_contact: [],
 };
@@ -68,7 +85,7 @@ export const TRANSITIONS: Record<Status, readonly Status[]> = {
 export const OUTREACH_ELIGIBLE: readonly Status[] = ["ready_to_contact"];
 
 /** Changes that must say why. */
-export const REASON_REQUIRED: readonly Status[] = ["do_not_contact", "not_a_fit"];
+export const REASON_REQUIRED: readonly Status[] = ["do_not_contact", "not_a_fit", "lost"];
 
 /** What the rules need to know about a prospect. */
 export interface StatusContext {
