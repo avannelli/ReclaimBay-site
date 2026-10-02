@@ -200,8 +200,11 @@ export interface ControlPageData {
   stuck: { id: string; subject: string; recipientEmail: string; sendStartedAt: Date | null; lastSendError: string | null }[];
   eligible: PrepareReport;
   metrics: FunnelRow[];
-  /** The Gmail provider's state; null when OUTREACH_PROVIDER isn't gmail. */
-  gmail?: { mailbox: string | null; canAuthorize: boolean; authorized: boolean; problem: string | null } | null;
+  /**
+   * The Gmail provider's state; null when OUTREACH_PROVIDER isn't gmail. `mailbox` is the
+   * sender (OUTREACH_SENDER_EMAIL); `account` the Google account authorized to send as it.
+   */
+  gmail?: { mailbox: string | null; account: string | null; canAuthorize: boolean; authorized: boolean; problem: string | null } | null;
   prepared?: PrepareReport;
 }
 
@@ -224,12 +227,13 @@ const METRIC_COLUMNS: [keyof FunnelRow, string][] = [
 ];
 
 function gmailCard(g: NonNullable<ControlPageData["gmail"]>): string {
+  const account = g.account ?? g.mailbox;
   const status = g.authorized
-    ? `<p><b>Authorized as ${esc(g.mailbox)}.</b> <span class="small muted">Checked with Gmail just now.</span></p>`
+    ? `<p><b>Authorized as ${esc(account)}${account !== g.mailbox ? `, sending as ${esc(g.mailbox)}` : ""}.</b> <span class="small muted">Checked with Gmail just now.</span></p>`
     : `<p><b>${g.problem && /reauthoriz/i.test(g.problem) ? "Reauthorization required." : "Not ready."}</b></p><p class="small" style="margin:0">${esc(g.problem)}</p>`;
   const action = g.canAuthorize
     ? `<p style="margin-top:12px"><a class="btn${g.authorized ? " btn-secondary" : ""}" href="/admin/outreach/gmail/authorize">${g.authorized ? "Reauthorize" : "Authorize"} ${esc(g.mailbox)} with Google</a></p>
-<p class="small muted" style="margin:6px 0 0">Google asks for two permissions only: send email, and read email (bounces and replies). Afterwards you get a sealed value to store as GMAIL_REFRESH_TOKEN_SEALED.</p>`
+<p class="small muted" style="margin:6px 0 0">Sign in as ${esc(g.mailbox)}, or as the Google account that has it as a verified Send As address. Google asks for two permissions only: send email, and read email (bounces and replies). Afterwards you get a sealed value to store as GMAIL_REFRESH_TOKEN_SEALED.</p>`
     : "";
   return status + action;
 }

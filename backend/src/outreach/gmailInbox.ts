@@ -50,8 +50,8 @@ export function messageText(part: GmailPart | undefined): string {
 const address = (from: string) => normalizeEmail(/<([^>]+)>/.exec(from)?.[1] ?? from);
 const UUID = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
 
-/** What an inbound message is. Pure: headers and text only. */
-export function classifyInbound(m: GmailMessage, mailbox: string): Classified {
+/** What an inbound message is. Pure: headers and text only. `own` is our address, or addresses (the account and its sender). */
+export function classifyInbound(m: GmailMessage, own: string | readonly string[]): Classified {
   const fromHeader = headerOf(m, "From") ?? "";
   const from = address(fromHeader);
   const subject = headerOf(m, "Subject") ?? "";
@@ -59,7 +59,7 @@ export function classifyInbound(m: GmailMessage, mailbox: string): Classified {
   const text = messageText(m.payload);
   const marker = new RegExp(`${OUTREACH_HEADER}:\\s*(${UUID.source})`, "i").exec(text)?.[1]?.toLowerCase() ?? null;
   const base = { from, markerOutreachId: marker };
-  if (from === normalizeEmail(mailbox)) return { ...base, kind: "own", reason: null };
+  if ((typeof own === "string" ? [own] : own).some((a) => from === normalizeEmail(a))) return { ...base, kind: "own", reason: null };
 
   const isDsn =
     /^(mailer-daemon|postmaster)@/i.test(from) ||
@@ -125,7 +125,8 @@ export async function pollGmailInbox(
   client: GmailClient,
   opts: { apply: boolean; lookbackDays?: number; max?: number; now?: () => Date },
 ): Promise<InboxReport> {
-  const mailbox = client.mailbox;
+  // Mail from the account itself or from its Send As address is ours, never a reply.
+  const own = [client.sender, client.account];
   const max = opts.max ?? 200;
   const report: InboxReport = { checked: 0, items: [] };
   let pageToken: string | undefined;
@@ -135,7 +136,7 @@ export async function pollGmailInbox(
       if (report.checked >= max) break;
       report.checked++;
       const m = await client.getMessage(id, "full");
-      const c = classifyInbound(m, mailbox);
+      const c = classifyInbound(m, own);
       const at = m.internalDate ? new Date(Number(m.internalDate)) : (opts.now?.() ?? new Date());
       const item: InboxItem = { gmailId: id, kind: c.kind, from: c.from, subject: (headerOf(m, "Subject") ?? "").slice(0, 200), outreachId: null, result: "ignored" };
       report.items.push(item);

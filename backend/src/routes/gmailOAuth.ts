@@ -49,14 +49,15 @@ export async function gmailOAuthRoutes(app: FastifyInstance, opts: { config: Con
     const cfg = gmailOAuthConfig(config);
     if ("problem" in cfg) return page(reply, 503, "Gmail isn't configured", `<p>${esc(cfg.problem)}</p>`);
     try {
-      const { account, sealed } = await completeAuthorization(cfg, req.query.code, opts.fetchImpl);
-      req.log.warn({ account }, "gmail authorized; sealed refresh token issued");
+      const { account, sender, sealed } = await completeAuthorization(cfg, req.query.code, opts.fetchImpl);
+      req.log.warn({ account, sender }, "gmail authorized; sealed refresh token issued");
+      const as = account === sender ? "" : ` as ${esc(sender)}, a verified Send As address of that account,`;
       return page(
         reply,
         200,
         "Gmail authorized",
-        `<p><b>${esc(account)}</b> is authorized for sending and reading outreach mail.</p>
-<p>Store this value as <code>GMAIL_REFRESH_TOKEN_SEALED</code> in the host's secret store, then restart the service. It is encrypted with <code>GMAIL_TOKEN_ENCRYPTION_KEY</code> and only works for ${esc(account)} with this OAuth client. It isn't shown again.</p>
+        `<p><b>${esc(account)}</b> is authorized for sending${as} and reading outreach mail.</p>
+<p>Store this value as <code>GMAIL_REFRESH_TOKEN_SEALED</code> in the host's secret store, then restart the service. It is encrypted with <code>GMAIL_TOKEN_ENCRYPTION_KEY</code> and only works for ${esc(account)} sending as ${esc(sender)} with this OAuth client. It isn't shown again.</p>
 <textarea readonly aria-label="Sealed Gmail authorization">${esc(sealed)}</textarea>
 <p>Sending stays off until <code>OUTREACH_SENDING_ENABLED=1</code> is set and sending is switched on in the admin.</p>`,
       );

@@ -12,7 +12,7 @@ import { senderFromConfig } from "../../src/outreach/sender.js";
 import { pollGmailInbox } from "../../src/outreach/gmailInbox.js";
 import { createOutreachDraft, queueOutreach } from "../../src/outreach/service.js";
 import { addEvidence, createProspect } from "../../src/prospects.js";
-import { CLIENT_ID, FakeGoogle, MAILBOX, fakeGmail, inbound } from "../fixtures/fakeGmail.js";
+import { ACCOUNT, CLIENT_ID, FakeGoogle, MAILBOX, aliasGoogle, fakeGmail, inbound } from "../fixtures/fakeGmail.js";
 import { TEST_DATABASE_URL, freshDb, readyForm, skipReason, truncate } from "./helpers.js";
 import { CFG, OPTS, switchOn } from "./outreachHelpers.js";
 
@@ -76,6 +76,30 @@ describe("outreach through Gmail", { skip: skipReason }, () => {
     assert.equal(google.sent[0]!.marker, o.id);
     assert.match(Buffer.from(google.sent[0]!.raw, "base64url").toString(), /List-Unsubscribe: <https:\/\/api\.reclaimbay\.example\/u\//);
     assert.equal((await db.prospect.findUniqueOrThrow({ where: { id: p.id } })).status, "contacted");
+  });
+
+  test("authorized as another account, a send goes out as its verified Send As address; without that alias nothing is attempted", async () => {
+    const { google, client } = fakeGmail(aliasGoogle("accepted"));
+    const sender = gmailSender(client);
+    const { o } = await queued();
+    await switchOn(db, sender);
+    const report = await dispatchQueued(db, { config: CFG, sender });
+    assert.equal(report.sent.length, 1);
+    const head = Buffer.from(google.sent[0]!.raw, "base64url").toString().split("\r\n\r\n")[0]!;
+    assert.match(head, /^From: "Alex Rivera" <hello@reclaimbay\.example>$/m);
+    assert.match(head, /^Reply-To: hello@reclaimbay\.example$/m);
+    assert.equal((await row(o.id)).providerMessageId, google.sent[0]!.id);
+
+    const pending = fakeGmail(aliasGoogle("pending"));
+    const s2 = gmailSender(pending.client);
+    const b = await queued();
+    await switchOn(db, s2);
+    const blocked = await dispatchQueued(db, { config: CFG, sender: s2 });
+    assert.equal(blocked.unavailable.length, 1);
+    assert.match(blocked.stoppedBecause!, /isn't ready to use \(Gmail says pending\)/);
+    assert.equal(pending.google.sendCalls.length, 0);
+    const r = await row(b.o.id);
+    assert.deepEqual([r.status, r.sendAttempts, r.sendStartedAt], ["queued", 0, null], "untouched, ready once the alias is verified");
   });
 
   test("Google unavailable (auth or quota): nothing sent, the message untouched, the batch stops", async () => {
@@ -291,7 +315,7 @@ describe("authorizing the Gmail mailbox (HTTP)", { skip: skipReason }, () => {
     assert.match(String(ok.headers["set-cookie"]), /rb_gmail_oauth=; Path=\/oauth\/gmail; .*Max-Age=0/, "the state is single-use");
     assert.equal(ok.headers["cache-control"], "no-store");
     const sealed = sealedFrom(ok.body)!;
-    const refresh = openSealedToken(sealed, gmailOAuthConfig(loadConfig(env())) as GmailOAuthConfig)!;
+    const { refreshToken: refresh } = openSealedToken(sealed, gmailOAuthConfig(loadConfig(env())) as GmailOAuthConfig)!;
     assert.ok(google.validRefreshTokens.has(refresh));
     assert.ok(!ok.body.includes(refresh), "the plain refresh token is never shown");
 
@@ -310,10 +334,37 @@ describe("authorizing the Gmail mailbox (HTTP)", { skip: skipReason }, () => {
     const { google: url, stateCookie } = await begin(get);
     const res = await app.inject({ method: "GET", url: `/oauth/gmail/callback?state=${url.searchParams.get("state")}&code=good-code`, headers: { cookie: stateCookie } });
     assert.equal(res.statusCode, 400);
-    assert.match(res.body, /That was personal@gmail\.com, not hello@reclaimbay\.example/);
+    assert.match(res.body, /That was personal@gmail\.com, which can&#39;t send as hello@reclaimbay\.example/);
     assert.equal(sealedFrom(res.body), null);
     assert.equal(google.revoked.length, 1);
     assert.equal(google.validRefreshTokens.size, 0);
+  });
+
+  test("the account that has the sender as a verified Send As address is authorized; a pending alias is refused", async () => {
+    const google = aliasGoogle("accepted");
+    const { app, get } = await start(google);
+    const { google: url, stateCookie } = await begin(get);
+    assert.equal(url.searchParams.get("login_hint"), null, "no hint to sign in as the alias");
+    const ok = await app.inject({ method: "GET", url: `/oauth/gmail/callback?state=${url.searchParams.get("state")}&code=good-code`, headers: { cookie: stateCookie } });
+    assert.equal(ok.statusCode, 200);
+    assert.match(ok.body, /alex@reclaimbay\.example<\/b> is authorized for sending as hello@reclaimbay\.example/);
+    const sealed = sealedFrom(ok.body)!;
+    assert.equal(openSealedToken(sealed, gmailOAuthConfig(loadConfig(env())) as GmailOAuthConfig)!.account, ACCOUNT);
+    assert.deepEqual(google.revoked, []);
+
+    const live = (await (await start(google, { GMAIL_REFRESH_TOKEN_SEALED: sealed })).get("/admin/outreach")).body;
+    assert.match(live, /Authorized as alex@reclaimbay\.example, sending as hello@reclaimbay\.example\./);
+
+    // The alias is still awaiting verification: refused, revoked, nothing issued.
+    const pending = aliasGoogle("pending");
+    const p = await start(pending);
+    const second = await begin(p.get);
+    const res = await p.app.inject({ method: "GET", url: `/oauth/gmail/callback?state=${second.google.searchParams.get("state")}&code=good-code`, headers: { cookie: second.stateCookie } });
+    assert.equal(res.statusCode, 400);
+    assert.match(res.body, /isn&#39;t ready to use \(Gmail says pending\)/);
+    assert.equal(sealedFrom(res.body), null);
+    assert.equal(pending.revoked.length, 1);
+    assert.equal(google.sendCalls.length + pending.sendCalls.length, 0, "authorizing never sends");
   });
 
   test("a cancelled consent changes nothing", async () => {

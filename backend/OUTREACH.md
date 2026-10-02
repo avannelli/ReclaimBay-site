@@ -231,40 +231,57 @@ reader. Both get their credentials from
 [`src/outreach/gmailAuth.ts`](src/outreach/gmailAuth.ts), so neither depends
 on how the mailbox was authorized.
 
-**Authentication: Google OAuth 2.0 user authorization.** The outreach
-mailbox is authorized once, by a person signed in as that mailbox, through
-Google's standard authorization-code flow with offline access. This uses
-Google's official `google-auth-library`. There is no password, no SMTP, and no
+**Authentication: Google OAuth 2.0 user authorization.** A Workspace account
+is authorized once, by a person signed in as that account, through Google's
+standard authorization-code flow with offline access. This uses Google's
+official `google-auth-library`. There is no password, no SMTP, and no
 service-account key: the Workspace organization policy
 `iam.disableServiceAccountKeyCreation` blocks keys, and it should stay on.
-- **Scopes:** exactly `gmail.send` and `gmail.readonly`. Nothing modifies or
-  deletes mail.
-- **Right account only.** Before its first call, and on every admin check,
-  the client confirms the account with Gmail's own profile. Any account other
-  than `OUTREACH_SENDER_EMAIL` fails closed.
+- **Two identities.** The *account* is the Google user who signs in
+  (`alex@reclaimbay.com`). The *sender* is `OUTREACH_SENDER_EMAIL`, the From
+  address (`hello@reclaimbay.com`). They can be the same address. They can
+  differ only when the sender is one of the account's Gmail **Send As**
+  addresses that Gmail reports as ready to use: verification status
+  `accepted`, or none reported, as for a Workspace alias. A `pending` address,
+  an address missing from the account's Send As list, or another account
+  entirely fails closed. Matching the domain is never enough.
+- **Scopes:** exactly `gmail.send` and `gmail.readonly`. `gmail.readonly` also
+  allows reading the Send As settings (`users.settings.sendAs.get`), so no
+  settings scope is requested. Nothing modifies or deletes mail.
+- **Checked before anything is sent.** Before its first call, and on every
+  admin check, the client confirms the account with Gmail's own profile and
+  the sender with the account's Send As settings. Without this, Gmail would
+  quietly put the account's own address in From. Each message's From must
+  also be exactly the sender: not the account's own address, and not
+  another of its aliases.
 - **Fail closed.** Access tokens are refreshed automatically. If the
-  authorization is revoked or expires, nothing is sent: the message stays
-  queued, the batch stops, and the admin **Outreach** page says
-  "Reauthorization required".
+  authorization is revoked or expires, or the alias stops being usable,
+  nothing is sent: the message stays queued, the batch stops, and the admin
+  **Outreach** page says why.
 
-**Authorizing the mailbox (once, and again after a revocation):**
+**Authorizing (once, and again after a revocation):**
 1. In the admin's **Outreach** page, choose **Authorize
    hello@reclaimbay.com with Google**.
 2. The server sets a random state (32 bytes) in an HMAC-signed,
    ten-minute, HttpOnly cookie, and sends you to Google. Google is asked for
    offline access, only the two Gmail scopes, `prompt=consent`, and a hint for
-   the mailbox and its domain.
-3. Sign in as the outreach mailbox and allow both permissions.
+   the sender's domain. There's no login hint, because the sender may be an
+   alias that nobody signs in as.
+3. Sign in as `alex@reclaimbay.com`, the account that has
+   `hello@reclaimbay.com` as a Send As address, and allow both permissions.
 4. Google returns to `PUBLIC_API_URL/oauth/gmail/callback`. The server:
    - checks the state against the cookie (single use);
    - exchanges the code;
-   - checks that both scopes were granted and the account is the mailbox.
-     A grant for another account is revoked at once, and nothing is issued.
-5. The page shows the refresh token **sealed** once: encrypted with
-   AES-256-GCM under `GMAIL_TOKEN_ENCRYPTION_KEY`, and bound to this OAuth
-   client and mailbox. Store it as `GMAIL_REFRESH_TOKEN_SEALED` in the host's
-   secret store and restart. The plain refresh token is never shown, logged,
-   or stored anywhere else.
+   - checks that both scopes were granted;
+   - reads the account from Gmail's profile, and confirms the sender is that
+     account or one of its ready Send As addresses. Any other grant is
+     revoked at once, and nothing is issued.
+5. The page shows the refresh token **sealed** once, together with the
+   account it belongs to: encrypted with AES-256-GCM under
+   `GMAIL_TOKEN_ENCRYPTION_KEY`, and bound to this OAuth client and sender.
+   Store it as `GMAIL_REFRESH_TOKEN_SEALED` in the host's secret store and
+   restart. The plain refresh token is never shown, logged, or stored anywhere
+   else.
 
 The sealed value is kept in the host's secret store, not the database: the
 app can't write to that store, so this one copy step is the price of
@@ -309,7 +326,7 @@ example every 5 minutes. It is a dry run by default; `--apply` records.
 | Variable | Value |
 | -------- | ----- |
 | `OUTREACH_PROVIDER` | `gmail` |
-| `OUTREACH_SENDER_EMAIL` | The Workspace mailbox to send from and read (`hello@reclaimbay.com`), and the only account that may be authorized |
+| `OUTREACH_SENDER_EMAIL` | The From address (`hello@reclaimbay.com`). Either the authorized account itself, or a verified Send As address of it. Mail is read from the authorized account's mailbox |
 | `GOOGLE_OAUTH_CLIENT_ID` | The OAuth client's ID |
 | `GOOGLE_OAUTH_CLIENT_SECRET` | The OAuth client's secret. A secret: host secret store only |
 | `GMAIL_TOKEN_ENCRYPTION_KEY` | 32 random bytes, base64, for sealing the refresh token: `node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"`. A secret |

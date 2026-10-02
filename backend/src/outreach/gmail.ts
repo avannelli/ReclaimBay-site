@@ -3,14 +3,15 @@
  * stand in for an ESP's events (see gmailInbox.ts).
  *
  * Authentication comes from GmailCredentials (gmailAuth.ts): Google OAuth 2.0
- * user authorization of the outreach mailbox, with access tokens refreshed
+ * user authorization of a Workspace account, with access tokens refreshed
  * automatically. No password, no SMTP, no service-account key. Before its
- * first call the client confirms, from Gmail's own profile, that the
- * credentials belong to the configured mailbox; any other account fails
- * closed.
+ * first call the client confirms, from Gmail itself, that the credentials
+ * belong to the authorized account and that the configured sender is that
+ * account or one of its ready Send As addresses; anything else fails closed,
+ * so Gmail is never left to substitute the account's own address in From.
  *
- * Scopes: gmail.send (send) and gmail.readonly (verify retries, read
- * bounces and replies). Nothing here modifies or deletes mail.
+ * Scopes: gmail.send (send) and gmail.readonly (verify the sender and
+ * retries, read bounces and replies). Nothing here modifies or deletes mail.
  *
  * What Gmail does and doesn't give us:
  *   - sending: the API returns Gmail's message id. Gmail replaces any
@@ -20,7 +21,7 @@
  *     header since the first attempt, and sends only if it isn't there;
  *   - no delivery receipts, no complaint events: never reported.
  */
-import { GMAIL_SCOPES, GmailError, gmailProfileEmail, type GmailCredentials } from "./gmailAuth.js";
+import { GMAIL_SCOPES, GmailError, gmailProfileEmail, verifySendAs, type GmailCredentials } from "./gmailAuth.js";
 import type { OutgoingMessage, OutreachSender, SendResult } from "./sender.js";
 
 export { GMAIL_SCOPES, GmailError };
@@ -37,20 +38,29 @@ export class GmailClient {
     private readonly fetchImpl: typeof fetch = globalThis.fetch,
   ) {}
 
-  get mailbox() {
-    return this.credentials.mailbox;
+  /** The authorized Google account: whose mailbox is read and whose Sent is checked. */
+  get account() {
+    return this.credentials.account;
+  }
+
+  /** The only From address this client sends as: the account, or one of its Send As addresses. */
+  get sender() {
+    return this.credentials.sender;
   }
 
   /**
-   * Confirms the credentials belong to the configured mailbox (once per
-   * client; again after a failure). Throws GmailError("auth") otherwise.
+   * Confirms with Gmail that the credentials belong to the authorized account
+   * and that the account may send as the sender (once per client; again after
+   * a failure). Throws GmailError("auth") otherwise.
    */
-  verifyAccount(): Promise<void> {
+  verifyIdentity(): Promise<void> {
     this.verified ??= (async () => {
-      const account = await gmailProfileEmail(this.fetchImpl, await this.credentials.accessToken());
-      if (account !== this.mailbox) {
-        throw new GmailError("auth", `Gmail is authorized as ${account}, not the configured mailbox ${this.mailbox}. Reauthorize as ${this.mailbox}.`);
+      const token = await this.credentials.accessToken();
+      const account = await gmailProfileEmail(this.fetchImpl, token);
+      if (account !== this.account) {
+        throw new GmailError("auth", `Gmail is authorized as ${account}, not ${this.account}, the account that was authorized. Reauthorize in the admin.`);
       }
+      await verifySendAs(this.fetchImpl, token, account, this.sender);
     })().catch((err) => {
       this.verified = null;
       throw err;
@@ -60,17 +70,17 @@ export class GmailClient {
 
   /**
    * A live check for the admin: a fresh access token from the stored
-   * authorization, and the account re-verified with Gmail. Nothing cached.
+   * authorization, and the account and sender re-verified with Gmail. Nothing cached.
    */
   recheck(): Promise<void> {
     this.verified = null;
     this.credentials.invalidate();
-    return this.verifyAccount();
+    return this.verifyIdentity();
   }
 
   /** One Gmail API call; errors become GmailError by kind. A stale access token is refreshed once. */
   async call<T>(path: string, init: { method?: string; body?: unknown } = {}): Promise<T> {
-    await this.verifyAccount();
+    await this.verifyIdentity();
     for (let attempt = 1; ; attempt++) {
       const token = await this.credentials.accessToken();
       let res: Response;
@@ -219,8 +229,9 @@ export function gmailSender(client: GmailClient): OutreachSender {
       }
     },
     async send(m) {
-      if (m.from.email.toLowerCase() !== client.mailbox) {
-        return { status: "unavailable", reason: `The sender ${m.from.email} isn't the configured Gmail mailbox.` };
+      // Exactly the configured sender: not another Send As address, and not the account's own.
+      if (m.from.email.toLowerCase() !== client.sender) {
+        return { status: "unavailable", reason: `The sender ${m.from.email} isn't the configured Gmail sender.` };
       }
       if (m.attempt > 1) {
         try {

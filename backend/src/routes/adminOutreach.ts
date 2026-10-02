@@ -3,7 +3,7 @@ import { outreachControlPage, outreachDetailPage } from "../admin/outreachViews.
 import type { Config } from "../config.js";
 import type { Db } from "../db.js";
 import { confirmStuckSent, readinessErrors, sendingSwitch, setSendingSwitch, stuckMessages } from "../outreach/dispatch.js";
-import { STATE_COOKIE, authorizationUrl, gmailOAuthConfig, newOAuthState } from "../outreach/gmailAuth.js";
+import { STATE_COOKIE, authorizationUrl, gmailCredentialsFromConfig, gmailOAuthConfig, newOAuthState } from "../outreach/gmailAuth.js";
 import { outreachMetrics } from "../outreach/metrics.js";
 import { prepareEligibleOutreach, type PrepareReport } from "../outreach/prepare.js";
 import type { OutreachSender } from "../outreach/sender.js";
@@ -46,11 +46,14 @@ export async function outreachRoutes(app: FastifyInstance, opts: { config: Confi
     const oauth = gmailOAuthConfig(config);
     const canAuthorize = !("problem" in oauth) && Boolean(oauth.redirectUri);
     const mailbox = config.outreachSender.email;
-    if ("problem" in oauth) return { mailbox, canAuthorize, authorized: false, problem: oauth.problem };
-    if (!oauth.redirectUri) return { mailbox, canAuthorize, authorized: false, problem: "PUBLIC_API_URL isn't configured, so Google can't send the authorization back." };
-    if (sender.problem) return { mailbox, canAuthorize, authorized: false, problem: sender.problem };
+    // The account the stored authorization is for (read locally; the live check below confirms it with Gmail).
+    const stored = gmailCredentialsFromConfig(config);
+    const account = "problem" in stored ? null : stored.account;
+    if ("problem" in oauth) return { mailbox, account, canAuthorize, authorized: false, problem: oauth.problem };
+    if (!oauth.redirectUri) return { mailbox, account, canAuthorize, authorized: false, problem: "PUBLIC_API_URL isn't configured, so Google can't send the authorization back." };
+    if (sender.problem) return { mailbox, account, canAuthorize, authorized: false, problem: sender.problem };
     const live = sender.check ? await sender.check() : null;
-    return { mailbox, canAuthorize, authorized: live === null, problem: live };
+    return { mailbox, account, canAuthorize, authorized: live === null, problem: live };
   };
   const draftOptions = { siteUrl: config.publicSiteUrl, sender: config.outreachSender };
   const writeLimit = { config: { rateLimit: { max: 60, timeWindow: "1 minute" } } };

@@ -1,22 +1,31 @@
 /*
  * Gmail credentials. The Gmail client (gmail.ts) and the mailbox reader only
- * see GmailCredentials: a mailbox and a way to get a current access token.
+ * see GmailCredentials: the authorized account, the From address, and a way
+ * to get a current access token.
  *
  * The one implementation is Google OAuth 2.0 user authorization
  * (authorization-code flow, offline access) through Google's official
  * google-auth-library. Service-account keys aren't used: the organization
  * policy iam.disableServiceAccountKeyCreation forbids them, rightly.
  *
+ * Two identities. The account is the Google Workspace user who signs in
+ * (Gmail's own profile address). The sender is OUTREACH_SENDER_EMAIL, the
+ * From address. They may differ only when the sender is one of the account's
+ * Gmail Send As addresses that Gmail reports as ready to use
+ * (verifySendAs); any other pairing fails closed.
+ *
  *   1. An admin starts authorization (routes/adminOutreach.ts): a random
  *      state, kept in a signed, short-lived cookie, and Google's consent
  *      screen for exactly gmail.send and gmail.readonly, offline.
  *   2. Google redirects back (routes/gmailOAuth.ts). The state is checked,
- *      the code exchanged, both scopes and the account (Gmail's own profile)
- *      verified. A grant for the wrong account is revoked at once.
- *   3. The refresh token is sealed (AES-256-GCM, bound to this OAuth client
- *      and mailbox) with GMAIL_TOKEN_ENCRYPTION_KEY and shown once, sealed,
- *      to be stored as GMAIL_REFRESH_TOKEN_SEALED in the host's secret store.
- *      The plain token is never shown, logged, or stored anywhere else.
+ *      the code exchanged, both scopes verified, the account read from
+ *      Gmail's profile, and the sender confirmed as that account or one of
+ *      its Send As addresses. Any other grant is revoked at once.
+ *   3. The refresh token and its account are sealed (AES-256-GCM, bound to
+ *      this OAuth client and sender) with GMAIL_TOKEN_ENCRYPTION_KEY and shown
+ *      once, sealed, to be stored as GMAIL_REFRESH_TOKEN_SEALED in the host's
+ *      secret store. The plain token is never shown, logged, or stored
+ *      anywhere else.
  *   4. At run time the library refreshes access tokens from it. A revoked or
  *      invalid refresh token fails closed: nothing is sent, and the admin
  *      shows that reauthorization is needed.
@@ -25,8 +34,10 @@ import { createCipheriv, createDecipheriv, createHmac, randomBytes, timingSafeEq
 import { OAuth2Client } from "google-auth-library";
 import type { Config } from "../config.js";
 
+// gmail.readonly also covers users.settings.sendAs.get: no settings scope is needed.
 export const GMAIL_SCOPES = ["https://www.googleapis.com/auth/gmail.send", "https://www.googleapis.com/auth/gmail.readonly"] as const;
 const PROFILE_URL = "https://gmail.googleapis.com/gmail/v1/users/me/profile";
+const SEND_AS_URL = "https://gmail.googleapis.com/gmail/v1/users/me/settings/sendAs";
 export const OAUTH_CALLBACK_PATH = "/oauth/gmail/callback";
 
 /** A Gmail API or authorization failure, classified. Never carries a credential. */
@@ -42,8 +53,10 @@ export class GmailError extends Error {
 
 /** What the Gmail client needs, wherever the credentials come from. */
 export interface GmailCredentials {
-  /** The Workspace mailbox these credentials act as. */
-  readonly mailbox: string;
+  /** The Google account these credentials act as (Gmail's profile address). */
+  readonly account: string;
+  /** The From address: the account itself, or one of its Gmail Send As addresses. */
+  readonly sender: string;
   /** A current access token; refreshed as needed. Throws GmailError("auth") when it can't be. */
   accessToken(): Promise<string>;
   /** Drops any cached access token (after a 401). */
@@ -57,7 +70,8 @@ export const REAUTHORIZE = "Gmail authorization was revoked or has expired: reau
 export interface GmailOAuthConfig {
   clientId: string;
   clientSecret: string;
-  mailbox: string;
+  /** OUTREACH_SENDER_EMAIL, lowercased: the From address the authorized account must be able to send as. */
+  sender: string;
   key: Buffer;
   /** Where Google sends the admin back; null without PUBLIC_API_URL. */
   redirectUri: string | null;
@@ -78,7 +92,7 @@ export function gmailOAuthConfig(config: Pick<Config, "gmailOAuth" | "outreachSe
   return {
     clientId: g.clientId!,
     clientSecret: g.clientSecret!,
-    mailbox: config.outreachSender.email!.toLowerCase(),
+    sender: config.outreachSender.email!.toLowerCase(),
     key,
     redirectUri: config.publicApiUrl ? `${config.publicApiUrl}${OAUTH_CALLBACK_PATH}` : null,
   };
@@ -86,25 +100,37 @@ export function gmailOAuthConfig(config: Pick<Config, "gmailOAuth" | "outreachSe
 
 // ---------- the sealed refresh token ----------
 
-/** Binds a sealed token to one OAuth client and one mailbox. */
-const aad = (cfg: GmailOAuthConfig) => Buffer.from(`reclaimbay-gmail-v1|${cfg.clientId}|${cfg.mailbox}`);
-
-/** AES-256-GCM: "v1.<iv>.<ciphertext>.<tag>", base64url. Useless without the key. */
-export function sealRefreshToken(token: string, cfg: GmailOAuthConfig): string {
-  const iv = randomBytes(12);
-  const cipher = createCipheriv("aes-256-gcm", cfg.key, iv).setAAD(aad(cfg));
-  const ct = Buffer.concat([cipher.update(token, "utf8"), cipher.final()]);
-  return ["v1", iv, ct, cipher.getAuthTag()].map((p) => (typeof p === "string" ? p : p.toString("base64url"))).join(".");
+/** What the admin's authorization produced: the account Google signed in, and its refresh token. */
+export interface SealedAuthorization {
+  account: string;
+  refreshToken: string;
 }
 
-/** The refresh token, or null when the value is malformed, tampered with, or sealed for another client or mailbox. */
-export function openSealedToken(sealed: string, cfg: GmailOAuthConfig): string | null {
+/** Binds a sealed token to one OAuth client and one sender. */
+const aad = (cfg: GmailOAuthConfig) => Buffer.from(`reclaimbay-gmail-v2|${cfg.clientId}|${cfg.sender}`);
+
+/** AES-256-GCM over the account and refresh token: "v2.<iv>.<ciphertext>.<tag>", base64url. Useless without the key. */
+export function sealRefreshToken(auth: SealedAuthorization, cfg: GmailOAuthConfig): string {
+  const iv = randomBytes(12);
+  const cipher = createCipheriv("aes-256-gcm", cfg.key, iv).setAAD(aad(cfg));
+  const plain = JSON.stringify({ account: auth.account, refreshToken: auth.refreshToken });
+  const ct = Buffer.concat([cipher.update(plain, "utf8"), cipher.final()]);
+  return ["v2", iv, ct, cipher.getAuthTag()].map((p) => (typeof p === "string" ? p : p.toString("base64url"))).join(".");
+}
+
+/**
+ * The account and refresh token, or null when the value is malformed, tampered
+ * with, sealed for another client or sender, or in an older format.
+ */
+export function openSealedToken(sealed: string, cfg: GmailOAuthConfig): SealedAuthorization | null {
   const [v, iv, ct, tag] = sealed.trim().split(".");
-  if (v !== "v1" || !iv || !ct || !tag) return null;
+  if (v !== "v2" || !iv || !ct || !tag) return null;
   try {
     const decipher = createDecipheriv("aes-256-gcm", cfg.key, Buffer.from(iv, "base64url")).setAAD(aad(cfg));
     decipher.setAuthTag(Buffer.from(tag, "base64url"));
-    return Buffer.concat([decipher.update(Buffer.from(ct, "base64url")), decipher.final()]).toString("utf8");
+    const plain = JSON.parse(Buffer.concat([decipher.update(Buffer.from(ct, "base64url")), decipher.final()]).toString("utf8")) as Partial<SealedAuthorization>;
+    if (typeof plain.account !== "string" || !plain.account.includes("@") || typeof plain.refreshToken !== "string" || !plain.refreshToken) return null;
+    return { account: plain.account.toLowerCase(), refreshToken: plain.refreshToken };
   } catch {
     return null;
   }
@@ -146,7 +172,11 @@ export function verifyOAuthState(secret: string, cookie: string | null | undefin
   return a.length === b.length && timingSafeEqual(a, b);
 }
 
-/** Google's consent URL: the two Gmail scopes only, offline, for this mailbox's domain. */
+/**
+ * Google's consent URL: the two Gmail scopes only, offline, for the sender's
+ * domain. No login hint: the sender may be a Send As address, not an account
+ * anyone signs in as.
+ */
 export function authorizationUrl(cfg: GmailOAuthConfig, state: string, fetchImpl: typeof fetch = globalThis.fetch): string {
   if (!cfg.redirectUri) throw new GmailError("auth", "PUBLIC_API_URL isn't configured, so Google has nowhere to send the authorization back.");
   return oauthClient(cfg, fetchImpl).generateAuthUrl({
@@ -154,8 +184,7 @@ export function authorizationUrl(cfg: GmailOAuthConfig, state: string, fetchImpl
     prompt: "consent",
     scope: [...GMAIL_SCOPES],
     state,
-    login_hint: cfg.mailbox,
-    hd: cfg.mailbox.split("@")[1],
+    hd: cfg.sender.split("@")[1],
     include_granted_scopes: false,
   });
 }
@@ -175,6 +204,37 @@ export async function gmailProfileEmail(fetchImpl: typeof fetch, accessToken: st
   return body.emailAddress.toLowerCase();
 }
 
+/** Send As statuses that mean Gmail will use the address. Gmail reports none for an account's own address or a Workspace alias. */
+const READY_SEND_AS = new Set(["accepted", "verificationStatusUnspecified"]);
+
+/**
+ * Confirms that `account` may send as `sender`: it is the account itself, or
+ * Gmail lists it among the account's Send As addresses (users.settings.sendAs.get,
+ * allowed by gmail.readonly) and doesn't report it as awaiting verification.
+ * Gmail would otherwise put the account's own address in From, so this runs
+ * before anything is sent. Throws GmailError("auth") when the sender isn't
+ * usable; network and server failures throw too, so nothing is assumed.
+ */
+export async function verifySendAs(fetchImpl: typeof fetch, accessToken: string, account: string, sender: string): Promise<void> {
+  if (sender === account) return;
+  let res: Response;
+  try {
+    res = await fetchImpl(`${SEND_AS_URL}/${encodeURIComponent(sender)}`, { headers: { authorization: `Bearer ${accessToken}` }, signal: AbortSignal.timeout(30_000) });
+  } catch (err) {
+    throw new GmailError("network", `Gmail Send As request failed: ${(err as Error).message}`);
+  }
+  const notAlias = `${sender} isn't a Send As address of ${account} in Gmail.`;
+  if (res.status === 404) throw new GmailError("auth", notAlias, 404);
+  if (res.status === 401) throw new GmailError("auth", "Gmail refused the access token.", 401);
+  if (!res.ok) throw new GmailError(res.status >= 500 ? "server" : "auth", `Gmail Send As request failed (${res.status}).`, res.status);
+  const body = (await res.json().catch(() => ({}))) as { sendAsEmail?: string; verificationStatus?: string };
+  if (body.sendAsEmail?.toLowerCase() !== sender) throw new GmailError("auth", notAlias);
+  const status = body.verificationStatus ?? "verificationStatusUnspecified";
+  if (!READY_SEND_AS.has(status)) {
+    throw new GmailError("auth", `${sender} is a Send As address of ${account} but isn't ready to use (Gmail says ${status.slice(0, 40)}). Finish verifying it in Gmail's settings.`);
+  }
+}
+
 const googleError = (err: unknown) => {
   const e = err as { response?: { data?: { error?: unknown } }; message?: string };
   return String(e.response?.data?.error ?? e.message ?? "unknown error").slice(0, 80);
@@ -182,8 +242,9 @@ const googleError = (err: unknown) => {
 
 /**
  * Finishes the authorization: exchanges the code, checks both scopes were
- * granted and that the account is the configured mailbox, and returns the
- * refresh token sealed. The wrong account's grant is revoked at once.
+ * granted, reads the account from Gmail's profile, confirms it can send as
+ * the configured sender, and returns the account and refresh token sealed.
+ * Any other grant is revoked at once.
  */
 export async function completeAuthorization(cfg: GmailOAuthConfig, code: string, fetchImpl: typeof fetch = globalThis.fetch) {
   const client = oauthClient(cfg, fetchImpl);
@@ -207,21 +268,29 @@ export async function completeAuthorization(cfg: GmailOAuthConfig, code: string,
     throw new GmailError("auth", "Google didn't return offline access. Start again.");
   }
   const account = await gmailProfileEmail(fetchImpl, tokens.access_token);
-  if (account !== cfg.mailbox) {
+  try {
+    await verifySendAs(fetchImpl, tokens.access_token, account, cfg.sender);
+  } catch (err) {
     await revoke();
-    throw new GmailError("auth", `That was ${account}, not ${cfg.mailbox}. Its access was revoked; start again and choose ${cfg.mailbox}.`);
+    const why = err instanceof GmailError && err.kind === "auth" ? err.message : `It couldn't be checked (${(err as Error).message}).`;
+    throw new GmailError(
+      "auth",
+      `That was ${account}, which can't send as ${cfg.sender}: ${why} Its access was revoked; start again and choose ${cfg.sender}'s own account, or the account that has it as a verified Send As address.`,
+    );
   }
-  return { account, sealed: sealRefreshToken(tokens.refresh_token, cfg) };
+  return { account, sender: cfg.sender, sealed: sealRefreshToken({ account, refreshToken: tokens.refresh_token }, cfg) };
 }
 
 // ---------- at run time ----------
 
-/** GmailCredentials from a stored refresh token; the library refreshes access tokens. */
-export function oauthCredentials(cfg: GmailOAuthConfig, refreshToken: string, fetchImpl: typeof fetch): GmailCredentials {
+/** GmailCredentials from a stored authorization; the library refreshes access tokens. */
+export function oauthCredentials(cfg: GmailOAuthConfig, auth: SealedAuthorization, fetchImpl: typeof fetch): GmailCredentials {
+  const { refreshToken } = auth;
   const client = oauthClient(cfg, fetchImpl);
   client.setCredentials({ refresh_token: refreshToken });
   return {
-    mailbox: cfg.mailbox,
+    account: auth.account,
+    sender: cfg.sender,
     async accessToken() {
       try {
         const { token } = await client.getAccessToken();
@@ -243,7 +312,7 @@ export function oauthCredentials(cfg: GmailOAuthConfig, refreshToken: string, fe
 /**
  * The Gmail credentials the configuration describes, or why there are none:
  * incomplete configuration, no authorization yet, or an authorization that
- * can't be read (another key, client, or mailbox).
+ * can't be read (another key, client, or sender, or an older format).
  */
 export function gmailCredentialsFromConfig(
   config: Pick<Config, "gmailOAuth" | "outreachSender" | "publicApiUrl">,
@@ -252,11 +321,11 @@ export function gmailCredentialsFromConfig(
   const cfg = gmailOAuthConfig(config);
   if ("problem" in cfg) return cfg;
   if (!config.gmailOAuth.sealedRefreshToken) {
-    return { problem: `Gmail isn't authorized yet: authorize ${cfg.mailbox} in the admin (Outreach page), then set GMAIL_REFRESH_TOKEN_SEALED.` };
+    return { problem: `Gmail isn't authorized yet: authorize sending as ${cfg.sender} in the admin (Outreach page), then set GMAIL_REFRESH_TOKEN_SEALED.` };
   }
-  const token = openSealedToken(config.gmailOAuth.sealedRefreshToken, cfg);
-  if (!token) {
-    return { problem: `GMAIL_REFRESH_TOKEN_SEALED can't be read with this key for ${cfg.mailbox} and this OAuth client: reauthorize in the admin (Outreach page).` };
+  const auth = openSealedToken(config.gmailOAuth.sealedRefreshToken, cfg);
+  if (!auth) {
+    return { problem: `GMAIL_REFRESH_TOKEN_SEALED can't be read with this key for ${cfg.sender} and this OAuth client: reauthorize in the admin (Outreach page).` };
   }
-  return oauthCredentials(cfg, token, fetchImpl);
+  return oauthCredentials(cfg, auth, fetchImpl);
 }

@@ -4,7 +4,7 @@ import { readinessErrors } from "../../src/outreach/dispatch.js";
 import { GmailClient, buildRawMessage, gmailSender } from "../../src/outreach/gmail.js";
 import { classifyInbound } from "../../src/outreach/gmailInbox.js";
 import { disabledSender, senderFromConfig, type OutgoingMessage } from "../../src/outreach/sender.js";
-import { FakeGoogle, MAILBOX, authorizedConfig, fakeGmail, gmailTestConfig, inbound } from "../fixtures/fakeGmail.js";
+import { ACCOUNT, FakeGoogle, MAILBOX, aliasGoogle, authorizedConfig, fakeGmail, gmailTestConfig, inbound } from "../fixtures/fakeGmail.js";
 
 /*
  * The Gmail adapter against a fake Google. Any real network call fails the
@@ -48,7 +48,7 @@ describe("Gmail provider selection", () => {
     assert.equal(senderFromConfig({ ...gmailTestConfig(), outreachProvider: null }), disabledSender, "disabled by default, even with OAuth configured");
     const unauthorized = senderFromConfig(gmailTestConfig());
     assert.equal(unauthorized.enabled, false);
-    assert.match(unauthorized.problem!, /isn't authorized yet: authorize hello@reclaimbay\.example in the admin/);
+    assert.match(unauthorized.problem!, /isn't authorized yet: authorize sending as hello@reclaimbay\.example in the admin/);
     assert.match(readinessErrors(ready, unauthorized).join(" "), /isn't authorized yet/, "the admin sees why");
     assert.match(senderFromConfig({ ...gmailTestConfig(), outreachProvider: "resend" }).problem!, /Unknown OUTREACH_PROVIDER "resend"/);
     const google = new FakeGoogle();
@@ -95,6 +95,7 @@ describe("sending through Gmail", () => {
     assert.equal(google.sendCalls.length, 2);
     assert.match(google.calls.find((c) => c.url.endsWith("/messages/send"))!.url, /\/users\/me\/messages\/send$/);
     assert.equal(google.sent[0]!.marker, OUTREACH_ID);
+    assert.equal(google.sendAsCalls.length, 0, "sending as the account itself needs no Send As lookup");
   });
 
   test("Gmail's errors map to the dispatcher's outcomes", async () => {
@@ -158,12 +159,12 @@ describe("sending through Gmail", () => {
     google.account = "someone@gmail.com";
     const r = await gmailSender(client).send(message());
     assert.equal(r.status, "unavailable");
-    assert.match((r as { reason: string }).reason, /authorized as someone@gmail\.com, not the configured mailbox hello@reclaimbay\.example/);
+    assert.match((r as { reason: string }).reason, /authorized as someone@gmail\.com, not hello@reclaimbay\.example, the account that was authorized/);
     assert.equal(google.sendCalls.length, 0);
-    assert.match((await gmailSender(client).check!())!, /not the configured mailbox/);
+    assert.match((await gmailSender(client).check!())!, /the account that was authorized/);
   });
 
-  test("a different From than the configured mailbox is refused before calling Gmail", async () => {
+  test("a different From than the configured sender is refused before calling Gmail", async () => {
     const { google, client } = fakeGmail();
     const r = await gmailSender(client).send(message({ from: { name: "X", email: "other@reclaimbay.example" } }));
     assert.equal(r.status, "unavailable");
@@ -208,6 +209,87 @@ describe("sending through Gmail", () => {
   });
 });
 
+describe("sending as a Send As address of the authorized account", () => {
+  const headOf = (raw: string) => decodeRaw(raw).split("\r\n\r\n")[0]!;
+
+  test("a verified alias: authorized as the account, sent with the sender in From, every safety header kept", async () => {
+    const { google, client } = fakeGmail(aliasGoogle("accepted"));
+    assert.deepEqual([client.account, client.sender], [ACCOUNT, MAILBOX]);
+    const sender = gmailSender(client);
+    assert.equal((await sender.send(message())).status, "accepted");
+    assert.equal((await sender.send(message({ outreachId: "1b7e9a52-4d1f-4c4e-9a7d-2f5b8c1d3e4f" }))).status, "accepted");
+    assert.equal(google.sendAsCalls.length, 1, "the alias is verified before the first send, then trusted for this client");
+    assert.ok(google.calls.findIndex((c) => c.url.includes("/settings/sendAs/")) < google.calls.findIndex((c) => c.url.endsWith("/messages/send")), "verified before sending");
+
+    const head = headOf(google.sent[0]!.raw);
+    assert.match(head, /^From: "Alex Rivera" <hello@reclaimbay\.example>$/m, "From is the sender, never the account");
+    assert.doesNotMatch(head, /^From:.*alex@reclaimbay\.example/m);
+    assert.match(head, /^Reply-To: hello@reclaimbay\.example$/m);
+    assert.match(head, /^To: service@shop\.example\.com$/m);
+    assert.match(head, new RegExp(`^X-ReclaimBay-Outreach: ${OUTREACH_ID}$`, "m"));
+    assert.match(head, /^List-Unsubscribe: <https:\/\/api\.reclaimbay\.example\/u\/tok>, /m);
+    assert.match(head, /^List-Unsubscribe-Post: List-Unsubscribe=One-Click$/m);
+  });
+
+  test("a Workspace alias, for which Gmail reports no verification status, can send", async () => {
+    const { google, client } = fakeGmail(aliasGoogle(undefined));
+    assert.equal((await gmailSender(client).send(message())).status, "accepted");
+    assert.equal(google.sendCalls.length, 1);
+  });
+
+  test("a sender that isn't a ready alias of the account: refused before Gmail's send is called", async () => {
+    const cases: [FakeGoogle, RegExp][] = [
+      [aliasGoogle(null), /hello@reclaimbay\.example isn't a Send As address of alex@reclaimbay\.example in Gmail/],
+      [aliasGoogle("pending"), /isn't ready to use \(Gmail says pending\)/],
+      [aliasGoogle("someFutureStatus"), /isn't ready to use/],
+    ];
+    const unrelated = aliasGoogle(null);
+    unrelated.sendAs = [{ sendAsEmail: "sales@reclaimbay.example", verificationStatus: "accepted" }];
+    cases.push([unrelated, /isn't a Send As address of alex@reclaimbay\.example/]);
+    for (const [google, why] of cases) {
+      const { client } = fakeGmail(google);
+      const sender = gmailSender(client);
+      const r = await sender.send(message());
+      assert.equal(r.status, "unavailable", String(why));
+      assert.match((r as { reason: string }).reason, why);
+      assert.equal(google.sendCalls.length, 0, `${why}: nothing sent`);
+      assert.equal(google.sent.length, 0);
+      assert.match((await sender.check!())!, why, "the admin sees why");
+    }
+  });
+
+  test("an alias removed after authorization stops sending at the next run, never falling back to the account", async () => {
+    const google = aliasGoogle("accepted");
+    const { config } = fakeGmail(google);
+    google.sendAs = [];
+    const sender = senderFromConfig(config, google.fetch);
+    const r = await sender.send(message());
+    assert.equal(r.status, "unavailable");
+    assert.equal(google.sendCalls.length, 0);
+  });
+
+  test("only the configured sender: the account's own address, or another of its aliases, is refused before calling Gmail", async () => {
+    const google = aliasGoogle("accepted");
+    google.sendAs.push({ sendAsEmail: "sales@reclaimbay.example", verificationStatus: "accepted" });
+    const { client } = fakeGmail(google);
+    for (const email of [ACCOUNT, "sales@reclaimbay.example", "anyone@else.example"]) {
+      const r = await gmailSender(client).send(message({ from: { name: "X", email } }));
+      assert.equal(r.status, "unavailable", email);
+      assert.match((r as { reason: string }).reason, /isn't the configured Gmail sender/);
+    }
+    assert.equal(google.calls.length, 0, "Google isn't contacted at all");
+  });
+
+  test("a retry checks Sent in the account's mailbox, and never sends twice", async () => {
+    const { google, client } = fakeGmail(aliasGoogle("accepted"));
+    const sender = gmailSender(client);
+    google.sendAnswers = ["network"];
+    assert.equal((await sender.send(message())).status, "uncertain");
+    assert.deepEqual(await sender.send(message({ attempt: 2 })), { status: "accepted", providerMessageId: google.sent[0]!.id });
+    assert.equal(google.sent.length, 1);
+  });
+});
+
 describe("classifying inbound mail", () => {
   const dsn = (status: string, subject = "Delivery Status Notification (Failure)") =>
     inbound("in-1", "th-1", { From: "Mail Delivery Subsystem <mailer-daemon@googlemail.com>", Subject: subject, "Content-Type": 'multipart/report; report-type=delivery-status; boundary="x"' }, [
@@ -239,5 +321,8 @@ describe("classifying inbound mail", () => {
     assert.equal(h({}).kind, "reply");
     assert.equal(h({}).from, "owner@shop.example.com");
     assert.equal(classifyInbound(inbound("y", "t", { From: `Alex <${MAILBOX}>`, Subject: "x" }), MAILBOX).kind, "own");
+    // Sending as an alias: mail from the account itself is ours too, never a prospect's reply.
+    assert.equal(classifyInbound(inbound("z", "t", { From: `Alex <${ACCOUNT}>`, Subject: "Re: Declined work" }), [MAILBOX, ACCOUNT]).kind, "own");
+    assert.equal(classifyInbound(inbound("z", "t", { From: `Alex <${ACCOUNT}>`, Subject: "Re: Declined work" }), MAILBOX).kind, "reply");
   });
 });

@@ -33,7 +33,7 @@ const db = createDb(config.databaseUrl);
 try {
   const apply = values.apply === true;
   const r = await pollGmailInbox(db, new GmailClient(gmail), { apply, lookbackDays: Math.max(1, Number.parseInt(values.days ?? "7", 10) || 7) });
-  console.log(`${apply ? "APPLIED" : "DRY RUN (nothing is recorded; pass --apply)"}: ${r.checked} message(s) read from ${gmail.mailbox}.`);
+  console.log(`${apply ? "APPLIED" : "DRY RUN (nothing is recorded; pass --apply)"}: ${r.checked} message(s) read from ${gmail.account}'s mailbox.`);
   for (const i of r.items) {
     if (i.kind === "own") continue;
     console.log(`  ${i.kind.padEnd(14)} ${i.result.padEnd(14)} ${i.from} "${i.subject}"${i.outreachId ? ` -> ${i.outreachId}` : ""}`);
