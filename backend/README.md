@@ -120,7 +120,9 @@ local site through.
 | `PUBLIC_API_URL`   | no       | This backend's public base URL, for one-click unsubscribe links. Required before anything can be sent |
 | `OUTREACH_SENDING_ENABLED` | no | `1` arms outreach sending for this deployment. Sending also needs the admin's global switch on and an email provider |
 | `OUTREACH_PROVIDER` | no | `gmail` to send through Google Workspace; unset (default) disables sending |
-| `GMAIL_SERVICE_ACCOUNT_JSON` | with gmail | The Google service account's JSON key (raw or base64), with domain-wide delegation for `gmail.send` and `gmail.readonly`. A secret: set it in the host's secret store |
+| `GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_OAUTH_CLIENT_SECRET` | with gmail | The Google OAuth client (Web application) used to authorize the outreach mailbox. The secret goes in the host's secret store |
+| `GMAIL_TOKEN_ENCRYPTION_KEY` | with gmail | 32 random bytes, base64: seals the mailbox's refresh token. A secret |
+| `GMAIL_REFRESH_TOKEN_SEALED` | with gmail | The sealed refresh token from the admin's Gmail authorization (see [OUTREACH.md](OUTREACH.md#google-workspace-gmail)). A secret |
 | `OUTREACH_DAILY_LIMIT` | no | New outreach sends per rolling 24 hours (default 20, at most 500) |
 
 Generate an admin secret:
@@ -166,7 +168,11 @@ automatic preparation, and the funnel), `POST /admin/outreach/switch`, `POST /ad
 and POSTs to `…/:id/queue`, `…/discard`, `…/reply`, `…/classify`, `…/follow-up`, and `…/confirm-sent`.
 No route sends: the dispatcher job does (`npm run outreach:send`).
 
+`GET /admin/outreach/gmail/authorize` starts Google authorization of the outreach mailbox.
+
 Public: `GET|POST /u/:token`, one-click unsubscribe for outreach email (rate limited; same answer for any token).
+`GET /oauth/gmail/callback`, Google's return from mailbox authorization (accepted only with the
+signed state cookie from the admin's own authorize step; never logged).
 
 Every `/admin` route except login and logout requires a session, and every
 admin POST must be same-origin. Admin write routes allow 60 requests per minute.

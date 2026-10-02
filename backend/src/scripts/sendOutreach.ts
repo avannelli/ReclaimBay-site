@@ -13,7 +13,7 @@ import { parseArgs } from "node:util";
 import { loadConfig } from "../config.js";
 import { createDb } from "../db.js";
 import { dispatchQueued, stuckMessages } from "../outreach/dispatch.js";
-import { senderFromEnv } from "../outreach/sender.js";
+import { senderFromConfig } from "../outreach/sender.js";
 
 const { values } = parseArgs({ options: { apply: { type: "boolean", default: false }, limit: { type: "string", default: "20" } } });
 const apply = values.apply === true;
@@ -21,7 +21,7 @@ const limit = Math.max(1, Number.parseInt(values.limit ?? "20", 10) || 20);
 
 const config = loadConfig();
 const db = createDb(config.databaseUrl);
-const sender = senderFromEnv();
+const sender = senderFromConfig(config);
 try {
   const r = await dispatchQueued(db, { config, sender, limit, dryRun: !apply });
   console.log(`${apply ? "APPLIED" : "DRY RUN (nothing is sent; pass --apply)"} with sender "${sender.name}".`);

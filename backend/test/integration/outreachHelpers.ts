@@ -10,7 +10,7 @@ import { queueOutreach } from "../../src/outreach/service.js";
 
 /** A complete, compliant sender configuration. */
 export const CFG: SendingConfig = {
-  outreachSender: { name: "Alex Rivera", email: "alex@reclaimbay.example", postalAddress: "1 Main St, Ventura, CA 93001" },
+  outreachSender: { name: "Alex Rivera", email: "hello@reclaimbay.example", postalAddress: "1 Main St, Ventura, CA 93001" },
   publicApiUrl: "https://api.reclaimbay.example",
   outreachSendingArmed: true,
 };

@@ -3,8 +3,9 @@ import type { Config } from "./config.js";
 import type { Db } from "./db.js";
 import { adminRoutes } from "./routes/admin.js";
 import { eventRoutes } from "./routes/events.js";
-import { senderFromEnv, type OutreachSender } from "./outreach/sender.js";
+import { senderFromConfig, type OutreachSender } from "./outreach/sender.js";
 import type { ProcessDeps } from "./research/service.js";
+import { gmailOAuthRoutes } from "./routes/gmailOAuth.js";
 import { unsubscribeRoutes } from "./routes/unsubscribe.js";
 
 /** Optional dependencies, injected by tests (production uses the defaults). */
@@ -13,6 +14,8 @@ export interface AppDeps {
   research?: ProcessDeps;
   /** The outreach email sender (tests pass a mock). Default: from the environment. */
   outreachSender?: OutreachSender;
+  /** Carries every Google call (OAuth and Gmail); tests pass a fake. Default: the global fetch. */
+  googleFetch?: typeof fetch;
 }
 
 const HEALTH_DB_TIMEOUT_MS = 2_000;
@@ -46,8 +49,11 @@ export async function buildApp(config: Config, db: Db, logger: boolean = true, d
   });
 
   await app.register(eventRoutes, { config, db });
-  await app.register(adminRoutes, { config, db, research: deps.research, sender: deps.outreachSender ?? senderFromEnv() });
+  const googleFetch = deps.googleFetch ?? globalThis.fetch;
+  const sender = deps.outreachSender ?? senderFromConfig(config, googleFetch);
+  await app.register(adminRoutes, { config, db, research: deps.research, sender, googleFetch });
   await app.register(unsubscribeRoutes, { db });
+  await app.register(gmailOAuthRoutes, { config, fetchImpl: googleFetch });
 
   return app;
 }

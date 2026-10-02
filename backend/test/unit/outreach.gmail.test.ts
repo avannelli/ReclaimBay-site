@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
 import { afterEach, beforeEach, describe, test } from "node:test";
 import { readinessErrors } from "../../src/outreach/dispatch.js";
-import { GmailClient, buildRawMessage, gmailConfigFromEnv, gmailSender, type GmailConfig } from "../../src/outreach/gmail.js";
+import { GmailClient, buildRawMessage, gmailSender } from "../../src/outreach/gmail.js";
 import { classifyInbound } from "../../src/outreach/gmailInbox.js";
-import { disabledSender, senderFromEnv, type OutgoingMessage } from "../../src/outreach/sender.js";
-import { FakeGoogle, MAILBOX, fakeGmail, inbound, testServiceAccount } from "../fixtures/fakeGmail.js";
+import { disabledSender, senderFromConfig, type OutgoingMessage } from "../../src/outreach/sender.js";
+import { FakeGoogle, MAILBOX, authorizedConfig, fakeGmail, gmailTestConfig, inbound } from "../fixtures/fakeGmail.js";
 
 /*
  * The Gmail adapter against a fake Google. Any real network call fails the
@@ -41,31 +41,21 @@ const message = (over: Partial<OutgoingMessage> = {}): OutgoingMessage => ({
 });
 const decodeRaw = (raw: string) => Buffer.from(raw, "base64url").toString("utf8");
 
-describe("Gmail configuration", () => {
-  const { json } = testServiceAccount();
+describe("Gmail provider selection", () => {
+  const ready = { outreachSender: { name: "A", email: MAILBOX, postalAddress: "1 Main St" }, publicApiUrl: "https://api.x", outreachSendingArmed: true };
 
-  test("needs a service account JSON key and the mailbox; reports exactly what is wrong", () => {
-    assert.match((gmailConfigFromEnv({ OUTREACH_SENDER_EMAIL: MAILBOX }) as { problem: string }).problem, /GMAIL_SERVICE_ACCOUNT_JSON is missing/);
-    assert.match((gmailConfigFromEnv({ GMAIL_SERVICE_ACCOUNT_JSON: "{not json", OUTREACH_SENDER_EMAIL: MAILBOX }) as { problem: string }).problem, /isn't a service account JSON key/);
-    assert.match((gmailConfigFromEnv({ GMAIL_SERVICE_ACCOUNT_JSON: '{"client_email":"x"}', OUTREACH_SENDER_EMAIL: MAILBOX }) as { problem: string }).problem, /no client_email or private_key/);
-    assert.match((gmailConfigFromEnv({ GMAIL_SERVICE_ACCOUNT_JSON: '{"client_email":"x","private_key":"nope"}', OUTREACH_SENDER_EMAIL: MAILBOX }) as { problem: string }).problem, /private_key can't be read/);
-    assert.match((gmailConfigFromEnv({ GMAIL_SERVICE_ACCOUNT_JSON: json }) as { problem: string }).problem, /OUTREACH_SENDER_EMAIL/);
-    const ok = gmailConfigFromEnv({ GMAIL_SERVICE_ACCOUNT_JSON: Buffer.from(json).toString("base64"), OUTREACH_SENDER_EMAIL: MAILBOX.toUpperCase() }) as GmailConfig;
-    assert.equal(ok.mailbox, MAILBOX, "a base64 key is accepted; the mailbox is normalised");
-  });
-
-  test("sending stays disabled unless OUTREACH_PROVIDER=gmail is set and complete", () => {
-    assert.equal(senderFromEnv({}), disabledSender, "disabled by default");
-    assert.equal(senderFromEnv({ GMAIL_SERVICE_ACCOUNT_JSON: json, OUTREACH_SENDER_EMAIL: MAILBOX }), disabledSender, "credentials alone enable nothing");
-    const broken = senderFromEnv({ OUTREACH_PROVIDER: "gmail", OUTREACH_SENDER_EMAIL: MAILBOX });
-    assert.equal(broken.enabled, false);
-    assert.match(broken.problem!, /GMAIL_SERVICE_ACCOUNT_JSON/);
-    const cfg = { outreachSender: { name: "A", email: MAILBOX, postalAddress: "1 Main St" }, publicApiUrl: "https://api.x", outreachSendingArmed: true };
-    assert.match(readinessErrors(cfg, broken).join(" "), /GMAIL_SERVICE_ACCOUNT_JSON is missing/, "the admin sees why");
-    assert.match(senderFromEnv({ OUTREACH_PROVIDER: "resend" }).problem!, /Unknown OUTREACH_PROVIDER "resend"/);
-    const gmail = senderFromEnv({ OUTREACH_PROVIDER: "gmail", GMAIL_SERVICE_ACCOUNT_JSON: json, OUTREACH_SENDER_EMAIL: MAILBOX });
+  test("sending stays disabled unless OUTREACH_PROVIDER=gmail is set, configured, and authorized", () => {
+    assert.equal(senderFromConfig({ ...gmailTestConfig(), outreachProvider: null }), disabledSender, "disabled by default, even with OAuth configured");
+    const unauthorized = senderFromConfig(gmailTestConfig());
+    assert.equal(unauthorized.enabled, false);
+    assert.match(unauthorized.problem!, /isn't authorized yet: authorize hello@reclaimbay\.example in the admin/);
+    assert.match(readinessErrors(ready, unauthorized).join(" "), /isn't authorized yet/, "the admin sees why");
+    assert.match(senderFromConfig({ ...gmailTestConfig(), outreachProvider: "resend" }).problem!, /Unknown OUTREACH_PROVIDER "resend"/);
+    const google = new FakeGoogle();
+    const gmail = senderFromConfig(authorizedConfig(google), google.fetch);
     assert.deepEqual([gmail.name, gmail.enabled, gmail.supportsIdempotency], ["gmail", true, true]);
-    assert.deepEqual(readinessErrors({ ...cfg, outreachSendingArmed: false }, gmail).length, 1, "the deployment arm is still required");
+    assert.equal(readinessErrors({ ...ready, outreachSendingArmed: false }, gmail).length, 1, "the deployment arm is still required");
+    assert.equal(google.calls.length, 0, "building the sender makes no call");
   });
 });
 
@@ -73,9 +63,9 @@ describe("the Gmail message", () => {
   test("is the reviewed plain text with the sender, recipient, unsubscribe headers, and outreach marker", () => {
     const raw = decodeRaw(buildRawMessage(message()));
     const [head, body] = raw.split("\r\n\r\n");
-    assert.match(head!, /^From: "Alex Rivera" <alex@reclaimbay\.example>$/m);
+    assert.match(head!, /^From: "Alex Rivera" <hello@reclaimbay\.example>$/m);
     assert.match(head!, /^To: service@shop\.example\.com$/m);
-    assert.match(head!, /^Reply-To: alex@reclaimbay\.example$/m);
+    assert.match(head!, /^Reply-To: hello@reclaimbay\.example$/m);
     assert.match(head!, /^Subject: Declined work at Shop Auto$/m);
     assert.match(head!, /^Content-Type: text\/plain; charset="UTF-8"$/m);
     assert.match(head!, new RegExp(`^X-ReclaimBay-Outreach: ${OUTREACH_ID}$`, "m"));
@@ -89,7 +79,7 @@ describe("the Gmail message", () => {
     const head = raw.split("\r\n\r\n")[0]!;
     assert.doesNotMatch(head, /^Bcc:/m);
     assert.match(head, /^Subject: Hi Bcc: victim@example\.com$/m);
-    assert.match(head, /^From: =\?UTF-8\?B\?[A-Za-z0-9+/=]+\?= <alex@reclaimbay\.example>$/m);
+    assert.match(head, /^From: =\?UTF-8\?B\?[A-Za-z0-9+/=]+\?= <hello@reclaimbay\.example>$/m);
   });
 });
 
@@ -111,6 +101,7 @@ describe("sending through Gmail", () => {
     const cases: [ConstructorParameters<typeof FakeGoogle> extends never ? never : { status: number; body: unknown } | "network", string, boolean?][] = [
       [{ status: 400, body: { error: { message: "Invalid To header", errors: [{ reason: "invalidArgument" }] } } }, "rejected", true],
       [{ status: 400, body: { error: { message: "Bad raw", errors: [{ reason: "badRequest" }] } } }, "rejected", false],
+      // Two 401s in a row: still refused after a fresh token.
       [{ status: 401, body: { error: { message: "Invalid Credentials", errors: [{ reason: "authError" }] } } }, "unavailable"],
       [{ status: 403, body: { error: { message: "Rate limit", errors: [{ reason: "userRateLimitExceeded" }] } } }, "unavailable"],
       [{ status: 403, body: { error: { message: "Disabled", errors: [{ reason: "domainPolicy" }] } } }, "unavailable"],
@@ -121,26 +112,55 @@ describe("sending through Gmail", () => {
     ];
     for (const [answer, expected, invalid] of cases) {
       const { google, client } = fakeGmail();
-      google.sendAnswers = [answer];
+      google.sendAnswers = answer !== "network" && answer.status === 401 ? [answer, answer] : [answer];
       const r = await gmailSender(client).send(message());
       assert.equal(r.status, expected, JSON.stringify(answer));
       if (r.status === "rejected") assert.equal(Boolean(r.invalidRecipient), invalid, JSON.stringify(answer));
     }
   });
 
-  test("an authentication failure means nothing was sent, and never leaks the key", async () => {
-    const { google, client, account } = fakeGmail();
-    google.tokenAnswer = { status: 401, body: { error: "unauthorized_client", error_description: "Client is unauthorized to retrieve access tokens" } };
+  test("an expired access token is refreshed from the stored authorization, without a second send", async () => {
+    const { google, client } = fakeGmail();
+    const sender = gmailSender(client);
+    assert.equal((await sender.send(message())).status, "accepted");
+    assert.equal(google.refreshCalls.length, 1);
+    google.expireAccessTokens();
+    assert.equal((await sender.send(message({ outreachId: "1b7e9a52-4d1f-4c4e-9a7d-2f5b8c1d3e4f" }))).status, "accepted");
+    assert.equal(google.refreshCalls.length, 2, "refreshed once, after Google refused the stale token");
+    assert.equal(google.sent.length, 2, "the refused attempt wasn't processed by Google, so one email each");
+
+    // A short-lived token is refreshed before use, too.
+    const short = fakeGmail();
+    short.google.accessTokenLifetime = 1;
+    const s2 = gmailSender(short.client);
+    await s2.send(message());
+    await s2.send(message({ outreachId: "2b7e9a52-4d1f-4c4e-9a7d-2f5b8c1d3e4f" }));
+    assert.ok(short.google.refreshCalls.length >= 2);
+  });
+
+  test("an authorization failure means nothing was sent, and never leaks a credential", async () => {
+    const { google, client, config } = fakeGmail();
+    google.validRefreshTokens.clear(); // revoked in the Google account
     const r = await gmailSender(client).send(message());
     assert.equal(r.status, "unavailable");
-    assert.match((r as { reason: string }).reason, /unauthorized_client.*domain-wide delegation/);
-    assert.ok(!(r as { reason: string }).reason.includes("PRIVATE KEY"));
-    assert.ok(!(r as { reason: string }).reason.includes(JSON.parse(account.json).private_key.slice(40, 80)));
+    assert.match((r as { reason: string }).reason, /revoked or has expired: reauthorize.*invalid_grant/);
+    assert.ok(!(r as { reason: string }).reason.includes(config.gmailOAuth.sealedRefreshToken!));
+    assert.ok(!(r as { reason: string }).reason.includes("test-client-secret"));
     assert.equal(google.sendCalls.length, 0);
 
     const net = fakeGmail();
     net.google.tokenAnswer = "network";
     assert.equal((await gmailSender(net.client).send(message())).status, "unavailable", "no token, so nothing could have been sent");
+  });
+
+  test("credentials for another Google account fail closed before anything is sent", async () => {
+    const { google, client } = fakeGmail();
+    google.account = "someone@gmail.com";
+    const r = await gmailSender(client).send(message());
+    assert.equal(r.status, "unavailable");
+    assert.match((r as { reason: string }).reason, /authorized as someone@gmail\.com, not the configured mailbox hello@reclaimbay\.example/);
+    assert.equal(google.sendCalls.length, 0);
+    assert.match((await gmailSender(client).check!())!, /not the configured mailbox/);
   });
 
   test("a different From than the configured mailbox is refused before calling Gmail", async () => {
@@ -180,9 +200,9 @@ describe("sending through Gmail", () => {
   });
 
   test("the client only ever uses the fetch it was given", async () => {
-    const { config } = fakeGmail();
-    const c = new GmailClient(config); // the global fetch, replaced in this test file
-    await assert.rejects(c.listMessages({}), /token request failed/);
+    const { credentials } = fakeGmail();
+    const c = new GmailClient(credentials); // the global fetch, replaced in this test file
+    await assert.rejects(c.listMessages({}), /Gmail profile request failed/);
     assert.equal(realCalls.length, 1);
     realCalls.length = 0;
   });

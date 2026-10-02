@@ -3,6 +3,7 @@ import { outreachControlPage, outreachDetailPage } from "../admin/outreachViews.
 import type { Config } from "../config.js";
 import type { Db } from "../db.js";
 import { confirmStuckSent, readinessErrors, sendingSwitch, setSendingSwitch, stuckMessages } from "../outreach/dispatch.js";
+import { STATE_COOKIE, authorizationUrl, gmailOAuthConfig, newOAuthState } from "../outreach/gmailAuth.js";
 import { outreachMetrics } from "../outreach/metrics.js";
 import { prepareEligibleOutreach, type PrepareReport } from "../outreach/prepare.js";
 import type { OutreachSender } from "../outreach/sender.js";
@@ -36,8 +37,21 @@ const pick = (body: Form | undefined, keys: string[]): Values =>
  * No route here sends: queued messages are sent by the dispatcher job
  * (npm run outreach:send), and only while the global switch is on.
  */
-export async function outreachRoutes(app: FastifyInstance, opts: { config: Config; db: Db; sender: OutreachSender }) {
+export async function outreachRoutes(app: FastifyInstance, opts: { config: Config; db: Db; sender: OutreachSender; googleFetch?: typeof fetch }) {
   const { config, db, sender } = opts;
+
+  /** What the admin sees about the Gmail provider: configuration, authorization, and a live check. */
+  const gmailStatus = async () => {
+    if (config.outreachProvider !== "gmail") return null;
+    const oauth = gmailOAuthConfig(config);
+    const canAuthorize = !("problem" in oauth) && Boolean(oauth.redirectUri);
+    const mailbox = config.outreachSender.email;
+    if ("problem" in oauth) return { mailbox, canAuthorize, authorized: false, problem: oauth.problem };
+    if (!oauth.redirectUri) return { mailbox, canAuthorize, authorized: false, problem: "PUBLIC_API_URL isn't configured, so Google can't send the authorization back." };
+    if (sender.problem) return { mailbox, canAuthorize, authorized: false, problem: sender.problem };
+    const live = sender.check ? await sender.check() : null;
+    return { mailbox, canAuthorize, authorized: live === null, problem: live };
+  };
   const draftOptions = { siteUrl: config.publicSiteUrl, sender: config.outreachSender };
   const writeLimit = { config: { rateLimit: { max: 60, timeWindow: "1 minute" } } };
 
@@ -51,15 +65,16 @@ export async function outreachRoutes(app: FastifyInstance, opts: { config: Confi
   };
 
   const renderControl = async (reply: FastifyReply, extra: { notice?: string; errors?: string[]; prepared?: PrepareReport } = {}) => {
-    const [sw, grouped, stuck, eligible, metrics] = await Promise.all([
+    const [sw, grouped, stuck, eligible, metrics, gmail] = await Promise.all([
       sendingSwitch(db),
       db.outreach.groupBy({ by: ["status"], _count: { _all: true } }),
       stuckMessages(db, sender),
       prepareEligibleOutreach(db, { draft: draftOptions, compliance: config, apply: false, limit: 1_000 }),
       outreachMetrics(db),
+      gmailStatus(),
     ]);
     const counts = Object.fromEntries(grouped.map((g) => [g.status, g._count._all]));
-    const page = outreachControlPage({ sw, readiness: readinessErrors(config, sender), counts, stuck, eligible, metrics, prepared: extra.prepared }, extra);
+    const page = outreachControlPage({ sw, readiness: readinessErrors(config, sender), counts, stuck, eligible, metrics, gmail, prepared: extra.prepared }, extra);
     return html(reply, page, reply.statusCode);
   };
 
@@ -76,6 +91,23 @@ export async function outreachRoutes(app: FastifyInstance, opts: { config: Confi
   app.get<{ Querystring: { done?: string } }>("/admin/outreach", (req, reply) =>
     renderControl(reply, { notice: req.query.done ? NOTICES[req.query.done] : undefined }),
   );
+
+  /**
+   * Starts Google authorization of the outreach mailbox: a random state in a
+   * signed, ten-minute cookie, then Google's consent screen. A plain link,
+   * not a form, so the admin's form-action policy doesn't block the redirect.
+   */
+  app.get("/admin/outreach/gmail/authorize", async (req, reply) => {
+    const oauth = gmailOAuthConfig(config);
+    if ("problem" in oauth || !oauth.redirectUri || !config.adminSecret) {
+      reply.code(400);
+      return renderControl(reply, { errors: ["problem" in oauth ? oauth.problem : "PUBLIC_API_URL isn't configured, so Google can't send the authorization back."] });
+    }
+    const { state, cookie } = newOAuthState(config.adminSecret);
+    reply.header("Set-Cookie", `${STATE_COOKIE}=${cookie}; Path=/oauth/gmail; HttpOnly; SameSite=Lax; Max-Age=600${config.secureCookies ? "; Secure" : ""}`);
+    req.log.info("gmail authorization started");
+    return reply.redirect(authorizationUrl(oauth, state, opts.googleFetch), 302);
+  });
 
   app.post<{ Body: Form }>("/admin/outreach/switch", writeLimit, async (req, reply) => {
     const enabled = req.body?.enabled === "1";

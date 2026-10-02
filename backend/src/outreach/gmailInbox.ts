@@ -125,7 +125,7 @@ export async function pollGmailInbox(
   client: GmailClient,
   opts: { apply: boolean; lookbackDays?: number; max?: number; now?: () => Date },
 ): Promise<InboxReport> {
-  const mailbox = client.config.mailbox;
+  const mailbox = client.mailbox;
   const max = opts.max ?? 200;
   const report: InboxReport = { checked: 0, items: [] };
   let pageToken: string | undefined;

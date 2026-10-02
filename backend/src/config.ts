@@ -36,6 +36,20 @@ export interface Config {
   publicApiUrl: string | null;
   /** New outreach sends per rolling 24 hours (OUTREACH_DAILY_LIMIT, 1-500; default 20). */
   outreachDailyLimit: number;
+  /** The outreach email provider (OUTREACH_PROVIDER). Null: sending disabled. */
+  outreachProvider: string | null;
+  /**
+   * Google OAuth for the Gmail provider. Secrets: never logged or rendered.
+   * The authorized mailbox is outreachSender.email.
+   */
+  gmailOAuth: {
+    clientId: string | null;
+    clientSecret: string | null;
+    /** GMAIL_TOKEN_ENCRYPTION_KEY: 32 random bytes, base64. */
+    tokenKey: string | null;
+    /** GMAIL_REFRESH_TOKEN_SEALED: the encrypted refresh token from the admin's authorization. */
+    sealedRefreshToken: string | null;
+  };
 }
 
 /** Shorter admin secrets are refused so a weak value can't be deployed by accident. */
@@ -75,5 +89,12 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     outreachSendingArmed: env.OUTREACH_SENDING_ENABLED === "1",
     publicApiUrl: env.PUBLIC_API_URL?.trim().replace(/\/+$/, "") || null,
     outreachDailyLimit: Math.min(500, Math.max(1, Number.parseInt(env.OUTREACH_DAILY_LIMIT ?? "20", 10) || 20)),
+    outreachProvider: env.OUTREACH_PROVIDER?.trim() || null,
+    gmailOAuth: {
+      clientId: env.GOOGLE_OAUTH_CLIENT_ID?.trim() || null,
+      clientSecret: env.GOOGLE_OAUTH_CLIENT_SECRET?.trim() || null,
+      tokenKey: env.GMAIL_TOKEN_ENCRYPTION_KEY?.trim() || null,
+      sealedRefreshToken: env.GMAIL_REFRESH_TOKEN_SEALED?.trim() || null,
+    },
   };
 }

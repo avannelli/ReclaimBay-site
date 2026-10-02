@@ -2,7 +2,8 @@
  * The seam an email provider plugs into. Selected by OUTREACH_PROVIDER; with
  * it unset (the default) the only sender refuses to send, and dispatch.ts
  * never calls a sender that isn't enabled. The one adapter is Google
- * Workspace (gmail.ts). Transactional providers checked (Resend, SendGrid,
+ * Workspace (gmail.ts), authorized by Google OAuth (gmailAuth.ts).
+ * Transactional providers checked (Resend, SendGrid,
  * Amazon SES) forbid cold outreach in their acceptable-use policies.
  *
  * A provider adapter must:
@@ -18,7 +19,9 @@
  * recordInboundReply() in service.ts.
  */
 
-import { GmailClient, gmailConfigFromEnv, gmailSender } from "./gmail.js";
+import type { Config } from "../config.js";
+import { GmailClient, gmailSender } from "./gmail.js";
+import { gmailCredentialsFromConfig } from "./gmailAuth.js";
 
 export interface OutgoingMessage {
   outreachId: string;
@@ -58,6 +61,8 @@ export interface OutreachSender {
   readonly supportsIdempotency: boolean;
   /** Why a configured provider is disabled (a configuration error), for the admin. */
   readonly problem?: string;
+  /** A live check that the provider can send now (credentials, account): null when it can, else why not. */
+  check?(): Promise<string | null>;
   send(message: OutgoingMessage): Promise<SendResult>;
 }
 
@@ -82,14 +87,18 @@ export const misconfiguredSender = (name: string, problem: string): OutreachSend
 
 /**
  * The sender the app uses, from OUTREACH_PROVIDER. Unset: disabled. A
- * provider whose configuration is incomplete is disabled too, with the reason.
+ * provider whose configuration or authorization is incomplete is disabled
+ * too, with the reason. `fetchImpl` carries every provider call (tests pass a fake).
  */
-export function senderFromEnv(env: NodeJS.ProcessEnv = process.env): OutreachSender {
-  const provider = env.OUTREACH_PROVIDER?.trim();
+export function senderFromConfig(
+  config: Pick<Config, "outreachProvider" | "gmailOAuth" | "outreachSender" | "publicApiUrl">,
+  fetchImpl: typeof fetch = globalThis.fetch,
+): OutreachSender {
+  const provider = config.outreachProvider;
   if (!provider) return disabledSender;
   if (provider === "gmail") {
-    const cfg = gmailConfigFromEnv(env);
-    return "problem" in cfg ? misconfiguredSender("gmail", cfg.problem) : gmailSender(new GmailClient(cfg));
+    const credentials = gmailCredentialsFromConfig(config, fetchImpl);
+    return "problem" in credentials ? misconfiguredSender("gmail", credentials.problem) : gmailSender(new GmailClient(credentials, fetchImpl));
   }
   return misconfiguredSender(provider.slice(0, 40), `Unknown OUTREACH_PROVIDER "${provider.slice(0, 40)}"; the only provider is "gmail".`);
 }

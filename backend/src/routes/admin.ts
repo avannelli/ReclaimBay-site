@@ -55,7 +55,7 @@ const PUBLIC_PATHS = new Set(["/admin/login", "/admin/logout"]);
  * Private admin at /admin, protected server-side by ADMIN_SECRET. The
  * secret never reaches the static frontend.
  */
-export async function adminRoutes(app: FastifyInstance, opts: { config: Config; db: Db; research?: ProcessDeps; sender: OutreachSender }) {
+export async function adminRoutes(app: FastifyInstance, opts: { config: Config; db: Db; research?: ProcessDeps; sender: OutreachSender; googleFetch?: typeof fetch }) {
   const { config, db } = opts;
   const secret = config.adminSecret;
 
@@ -316,7 +316,7 @@ export async function adminRoutes(app: FastifyInstance, opts: { config: Config; 
 
   // Discovery shares this scope's session check, origin check, and headers.
   await app.register(discoveryRoutes, { config, db, research: opts.research });
-  await app.register(outreachRoutes, { config, db, sender: opts.sender });
+  await app.register(outreachRoutes, { config, db, sender: opts.sender, googleFetch: opts.googleFetch });
 }
 
 const pick = (body: Form | undefined, keys: string[]): Values =>

@@ -1,24 +1,18 @@
 /*
- * A fake Google for Gmail adapter tests: the OAuth token endpoint (which
- * verifies the service account's JWT against a key pair generated for the
- * test) and the Gmail endpoints the adapter uses. Nothing here reaches the
- * network, and no real credential exists anywhere in the repository.
+ * A fake Google for Gmail tests: the OAuth 2.0 endpoints the official
+ * google-auth-library calls (code exchange, refresh, revoke), Gmail's
+ * profile, and the Gmail endpoints the adapter uses. Nothing here reaches
+ * the network, and no real credential exists anywhere in the repository:
+ * the client secret is a placeholder, and the encryption key and refresh
+ * token are made fresh for each test.
  */
-import { createVerify, generateKeyPairSync } from "node:crypto";
-import { GmailClient, gmailConfigFromEnv, type GmailConfig, type GmailMessage, type GmailPart } from "../../src/outreach/gmail.js";
+import { randomBytes } from "node:crypto";
+import type { Config } from "../../src/config.js";
+import { GmailClient, type GmailMessage, type GmailPart } from "../../src/outreach/gmail.js";
+import { GMAIL_SCOPES, gmailCredentialsFromConfig, gmailOAuthConfig, sealRefreshToken, type GmailCredentials, type GmailOAuthConfig } from "../../src/outreach/gmailAuth.js";
 
-export const MAILBOX = "alex@reclaimbay.example";
-
-/** A throwaway service account, made fresh for the test run. */
-export function testServiceAccount() {
-  const { privateKey, publicKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
-  const json = JSON.stringify({
-    type: "service_account",
-    client_email: "outreach@test-project.iam.gserviceaccount.com",
-    private_key: privateKey.export({ type: "pkcs8", format: "pem" }).toString(),
-  });
-  return { json, publicKey };
-}
+export const MAILBOX = "hello@reclaimbay.example";
+export const CLIENT_ID = "test-client.apps.googleusercontent.com";
 
 export interface FakeCall {
   url: string;
@@ -44,41 +38,76 @@ export function inbound(id: string, threadId: string, headers: Record<string, st
   };
 }
 
+const bodyText = (body: unknown) => (body instanceof URLSearchParams ? body.toString() : typeof body === "string" ? body : "");
+
 export class FakeGoogle {
   readonly calls: FakeCall[] = [];
   readonly sent: { id: string; threadId: string; raw: string; marker: string | null }[] = [];
   readonly inbox: GmailMessage[] = [];
+  readonly revoked: string[] = [];
   /** Answers for the next send calls, in order; default: success. */
   sendAnswers: Answer[] = [];
+  /** Overrides every token-endpoint answer (refresh and code exchange). */
   tokenAnswer: Answer | null = null;
   listAnswer: Answer | null = null;
+  /** The Google account the consent screen and Gmail's profile report. */
+  account = MAILBOX;
+  /** What the code exchange grants. */
+  grantedScopes: string[] = [...GMAIL_SCOPES];
+  issueRefreshToken = true;
+  /** Seconds an access token lives. */
+  accessTokenLifetime = 3600;
+  /** Refresh tokens Google accepts; revoking one (or clearing this) makes it invalid_grant. */
+  readonly validRefreshTokens = new Set<string>();
+  private readonly validAccessTokens = new Set<string>();
   private seq = 0;
 
-  constructor(private readonly publicKey: ReturnType<typeof testServiceAccount>["publicKey"]) {}
-
   readonly fetch = (async (input: string | URL | Request, init?: RequestInit) => {
-    const url = String(input);
+    const url = String(input instanceof Request ? input.url : input);
     const method = init?.method ?? "GET";
-    const body = typeof init?.body === "string" ? init.body : "";
+    const body = bodyText(init?.body);
     this.calls.push({ url, method, body });
     const reply = (a: Answer) => {
       if (a === "network") throw new TypeError("fetch failed");
       return new Response(JSON.stringify(a.body), { status: a.status, headers: { "content-type": "application/json" } });
     };
+    const header = (name: string) => new Headers(init?.headers).get(name);
 
     if (url === "https://oauth2.googleapis.com/token") {
       if (this.tokenAnswer) return reply(this.tokenAnswer);
-      const assertion = new URLSearchParams(body).get("assertion") ?? "";
-      const [h, c, sig] = assertion.split(".");
-      const valid = createVerify("RSA-SHA256").update(`${h}.${c}`).verify(this.publicKey, Buffer.from(sig ?? "", "base64url"));
-      const claims = JSON.parse(Buffer.from(c ?? "", "base64url").toString());
-      if (!valid || claims.sub !== MAILBOX || claims.aud !== "https://oauth2.googleapis.com/token") return reply({ status: 400, body: { error: "invalid_grant" } });
-      return reply({ status: 200, body: { access_token: `token-${++this.seq}`, expires_in: 3600 } });
+      const form = new URLSearchParams(body);
+      if (form.get("client_id") !== CLIENT_ID) return reply({ status: 401, body: { error: "invalid_client" } });
+      const access = `access-${++this.seq}`;
+      this.validAccessTokens.add(access);
+      if (form.get("grant_type") === "authorization_code") {
+        if (form.get("code") !== "good-code") return reply({ status: 400, body: { error: "invalid_grant" } });
+        const refresh = `refresh-${randomBytes(8).toString("hex")}`;
+        if (this.issueRefreshToken) this.validRefreshTokens.add(refresh);
+        return reply({
+          status: 200,
+          body: { access_token: access, expires_in: this.accessTokenLifetime, scope: this.grantedScopes.join(" "), token_type: "Bearer", ...(this.issueRefreshToken ? { refresh_token: refresh } : {}) },
+        });
+      }
+      if (form.get("grant_type") === "refresh_token") {
+        if (!this.validRefreshTokens.has(form.get("refresh_token") ?? "")) return reply({ status: 400, body: { error: "invalid_grant", error_description: "Token has been expired or revoked." } });
+        return reply({ status: 200, body: { access_token: access, expires_in: this.accessTokenLifetime, scope: GMAIL_SCOPES.join(" "), token_type: "Bearer" } });
+      }
+      return reply({ status: 400, body: { error: "unsupported_grant_type" } });
+    }
+    if (url.startsWith("https://oauth2.googleapis.com/revoke")) {
+      const token = new URL(url).searchParams.get("token") ?? "";
+      this.revoked.push(token);
+      this.validRefreshTokens.delete(token);
+      this.validAccessTokens.delete(token);
+      return reply({ status: 200, body: {} });
     }
 
     const api = "https://gmail.googleapis.com/gmail/v1/users/me";
     if (!url.startsWith(api)) throw new Error(`unexpected request to ${url}`);
+    const bearer = header("authorization")?.replace(/^Bearer /, "") ?? "";
+    if (!this.validAccessTokens.has(bearer)) return reply({ status: 401, body: { error: { message: "Invalid Credentials", errors: [{ reason: "authError" }] } } });
     const path = url.slice(api.length);
+    if (path === "/profile") return reply({ status: 200, body: { emailAddress: this.account } });
     if (path === "/messages/send" && method === "POST") {
       const answer = this.sendAnswers.shift();
       const raw = JSON.parse(body).raw as string;
@@ -96,9 +125,7 @@ export class FakeGoogle {
       if (this.listAnswer) return reply(this.listAnswer);
       const params = new URLSearchParams(path.slice("/messages?".length));
       const messages =
-        params.get("labelIds") === "SENT"
-          ? this.sent.map((s) => ({ id: s.id, threadId: s.threadId }))
-          : this.inbox.map((m) => ({ id: m.id, threadId: m.threadId }));
+        params.get("labelIds") === "SENT" ? this.sent.map((s) => ({ id: s.id, threadId: s.threadId })) : this.inbox.map((m) => ({ id: m.id, threadId: m.threadId }));
       return reply({ status: 200, body: { messages } });
     }
     const msg = /^\/messages\/([^?]+)\?/.exec(path)?.[1];
@@ -116,18 +143,47 @@ export class FakeGoogle {
     throw new Error(`unexpected Gmail call ${method} ${path}`);
   }) as typeof fetch;
 
+  /** Every access token issued so far stops working (as after expiry). */
+  expireAccessTokens() {
+    this.validAccessTokens.clear();
+  }
+
   get sendCalls() {
     return this.calls.filter((c) => c.url.endsWith("/messages/send"));
   }
   get tokenCalls() {
     return this.calls.filter((c) => c.url === "https://oauth2.googleapis.com/token");
   }
+  get refreshCalls() {
+    return this.tokenCalls.filter((c) => new URLSearchParams(c.body).get("grant_type") === "refresh_token");
+  }
 }
 
-/** A Gmail client and its fake Google, configured like production. */
+export type GmailTestConfig = Pick<Config, "outreachProvider" | "gmailOAuth" | "outreachSender" | "publicApiUrl">;
+
+/** A configuration like production's, with a fresh key and no authorization yet. */
+export function gmailTestConfig(over: Partial<GmailTestConfig["gmailOAuth"]> = {}): GmailTestConfig {
+  return {
+    outreachProvider: "gmail",
+    outreachSender: { name: "Alex Rivera", email: MAILBOX, postalAddress: "1 Main St, Ventura, CA 93001" },
+    publicApiUrl: "https://api.reclaimbay.example",
+    gmailOAuth: { clientId: CLIENT_ID, clientSecret: "test-client-secret", tokenKey: randomBytes(32).toString("base64"), sealedRefreshToken: null, ...over },
+  };
+}
+
+/** An authorized configuration: a refresh token Google accepts, sealed as the admin flow would. */
+export function authorizedConfig(google: FakeGoogle): GmailTestConfig {
+  const config = gmailTestConfig();
+  const refresh = `refresh-${randomBytes(8).toString("hex")}`;
+  google.validRefreshTokens.add(refresh);
+  config.gmailOAuth.sealedRefreshToken = sealRefreshToken(refresh, gmailOAuthConfig(config) as GmailOAuthConfig);
+  return config;
+}
+
+/** A Gmail client and its fake Google, configured and authorized like production. */
 export function fakeGmail() {
-  const account = testServiceAccount();
-  const google = new FakeGoogle(account.publicKey);
-  const config = gmailConfigFromEnv({ GMAIL_SERVICE_ACCOUNT_JSON: account.json, OUTREACH_SENDER_EMAIL: MAILBOX }) as GmailConfig;
-  return { google, account, config, client: new GmailClient(config, google.fetch) };
+  const google = new FakeGoogle();
+  const config = authorizedConfig(google);
+  const credentials = gmailCredentialsFromConfig(config, google.fetch) as GmailCredentials;
+  return { google, config, credentials, client: new GmailClient(credentials, google.fetch) };
 }

@@ -24,7 +24,8 @@ import {
   outreachTransitionErrors,
   type DraftContext,
 } from "../../src/outreach/lifecycle.js";
-import { SendingDisabledError, disabledSender, senderFromEnv } from "../../src/outreach/sender.js";
+import { SendingDisabledError, disabledSender, senderFromConfig } from "../../src/outreach/sender.js";
+import { loadConfig } from "../../src/config.js";
 import { listUnsubscribeHeaders, messageComplianceErrors, senderIdentityErrors, unsubscribeUrl, type MessageForCompliance } from "../../src/outreach/compliance.js";
 import { readinessErrors } from "../../src/outreach/dispatch.js";
 import { OUTREACH_ELIGIBLE, STATUSES, statusRequirementErrors, transitionErrors, type StatusContext } from "../../src/prospectStatus.js";
@@ -224,7 +225,7 @@ describe("outreach message generation", () => {
 describe("no sending in this version", () => {
   test("the only sender refuses to send", async () => {
     assert.equal(disabledSender.enabled, false);
-    assert.equal(senderFromEnv({ RESEND_API_KEY: "re_x", OUTREACH_SENDING_ENABLED: "1" }), disabledSender, "no environment can enable a provider in this version");
+    assert.equal(senderFromConfig(loadConfig({ DATABASE_URL: "postgres://x", RESEND_API_KEY: "re_x", OUTREACH_SENDING_ENABLED: "1" })), disabledSender, "without OUTREACH_PROVIDER nothing can send");
     await assert.rejects(
       disabledSender.send({ outreachId: "x", idempotencyKey: "outreach-x", attempt: 1, firstAttemptAt: new Date(), to: "a@b.co", from: { name: "A", email: "c@d.co" }, replyTo: "c@d.co", subject: "s", text: "b", headers: {} }),
       SendingDisabledError,
@@ -239,13 +240,18 @@ describe("no sending in this version", () => {
     // Only the Gmail adapter talks to the network, and only through the fetch it is given.
     const dir = new URL("../../src/outreach/", import.meta.url);
     const files = readdirSync(dir)
-      .filter((f) => f !== "gmail.ts")
+      // sender.ts only hands the injected fetch to the Gmail layer.
+      .filter((f) => f !== "gmail.ts" && f !== "gmailAuth.ts" && f !== "sender.ts")
       .map((f) => [f, readFileSync(new URL(f, dir), "utf8")] as const);
     files.push(["adminOutreach.ts", readFileSync(new URL("../../src/routes/adminOutreach.ts", import.meta.url), "utf8")]);
-    for (const [f, src] of files) assert.doesNotMatch(src, /\bfetch\b|from "node:(net|tls|http|https|dgram)"|nodemailer/i, f);
+    // Passing an injected fetch along is fine; calling one is not.
+    for (const [f, src] of files) assert.doesNotMatch(src, /\bfetch\(|from "node:(net|tls|http|https|dgram)"|nodemailer/i, f);
     const gmail = readFileSync(new URL("gmail.ts", dir), "utf8");
     assert.doesNotMatch(gmail, /from "node:(net|tls|http|https|dgram)"|nodemailer|smtp\.gmail\.com/i);
-    assert.equal((gmail.match(/\bthis\.fetchImpl\(/g) ?? []).length, 2, "the token call and the API call, both through the injected fetch");
+    assert.equal((gmail.match(/\bthis\.fetchImpl\(/g) ?? []).length, 1, "the API call, through the injected fetch");
+    const auth = readFileSync(new URL("gmailAuth.ts", dir), "utf8");
+    assert.doesNotMatch(auth, /from "node:(net|tls|http|https|dgram)"|nodemailer|createSign|private_key/i, "no hand-rolled OAuth signing");
+    assert.match(auth, /fetchImplementation: fetchImpl/, "the official OAuth library uses the injected fetch");
   });
 });
 

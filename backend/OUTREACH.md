@@ -227,13 +227,48 @@ are read from the mailbox instead (see below).
 
 [`src/outreach/gmail.ts`](src/outreach/gmail.ts) is the sender, and
 [`src/outreach/gmailInbox.ts`](src/outreach/gmailInbox.ts) the mailbox
-reader. They have no dependencies beyond Node.
+reader. Both get their credentials from
+[`src/outreach/gmailAuth.ts`](src/outreach/gmailAuth.ts), so neither depends
+on how the mailbox was authorized.
 
-**Authentication.** A Google Cloud service account with domain-wide
-delegation impersonates the outreach mailbox. It signs a short JWT and gets a
-one-hour access token. There is no password, no SMTP, and no refresh token
-to store. Scopes: `gmail.send` and `gmail.readonly`. Nothing modifies or
-deletes mail.
+**Authentication: Google OAuth 2.0 user authorization.** The outreach
+mailbox is authorized once, by a person signed in as that mailbox, through
+Google's standard authorization-code flow with offline access. This uses
+Google's official `google-auth-library`. There is no password, no SMTP, and no
+service-account key: the Workspace organization policy
+`iam.disableServiceAccountKeyCreation` blocks keys, and it should stay on.
+- **Scopes:** exactly `gmail.send` and `gmail.readonly`. Nothing modifies or
+  deletes mail.
+- **Right account only.** Before its first call, and on every admin check,
+  the client confirms the account with Gmail's own profile. Any account other
+  than `OUTREACH_SENDER_EMAIL` fails closed.
+- **Fail closed.** Access tokens are refreshed automatically. If the
+  authorization is revoked or expires, nothing is sent: the message stays
+  queued, the batch stops, and the admin **Outreach** page says
+  "Reauthorization required".
+
+**Authorizing the mailbox (once, and again after a revocation):**
+1. In the admin's **Outreach** page, choose **Authorize
+   hello@reclaimbay.com with Google**.
+2. The server sets a random state (32 bytes) in an HMAC-signed,
+   ten-minute, HttpOnly cookie, and sends you to Google. Google is asked for
+   offline access, only the two Gmail scopes, `prompt=consent`, and a hint for
+   the mailbox and its domain.
+3. Sign in as the outreach mailbox and allow both permissions.
+4. Google returns to `PUBLIC_API_URL/oauth/gmail/callback`. The server:
+   - checks the state against the cookie (single use);
+   - exchanges the code;
+   - checks that both scopes were granted and the account is the mailbox.
+     A grant for another account is revoked at once, and nothing is issued.
+5. The page shows the refresh token **sealed** once: encrypted with
+   AES-256-GCM under `GMAIL_TOKEN_ENCRYPTION_KEY`, and bound to this OAuth
+   client and mailbox. Store it as `GMAIL_REFRESH_TOKEN_SEALED` in the host's
+   secret store and restart. The plain refresh token is never shown, logged,
+   or stored anywhere else.
+
+The sealed value is kept in the host's secret store, not the database: the
+app can't write to that store, so this one copy step is the price of
+needing no schema change.
 
 **What Gmail tells us, and how certain it is:**
 
@@ -274,9 +309,12 @@ example every 5 minutes. It is a dry run by default; `--apply` records.
 | Variable | Value |
 | -------- | ----- |
 | `OUTREACH_PROVIDER` | `gmail` |
-| `GMAIL_SERVICE_ACCOUNT_JSON` | The service account's JSON key, raw or base64. A secret: set it in the host's secret store |
-| `OUTREACH_SENDER_EMAIL` | The Workspace mailbox to send from and read; the account the service account impersonates |
-| `OUTREACH_SENDER_NAME`, `OUTREACH_POSTAL_ADDRESS`, `PUBLIC_API_URL` | As above |
+| `OUTREACH_SENDER_EMAIL` | The Workspace mailbox to send from and read (`hello@reclaimbay.com`), and the only account that may be authorized |
+| `GOOGLE_OAUTH_CLIENT_ID` | The OAuth client's ID |
+| `GOOGLE_OAUTH_CLIENT_SECRET` | The OAuth client's secret. A secret: host secret store only |
+| `GMAIL_TOKEN_ENCRYPTION_KEY` | 32 random bytes, base64, for sealing the refresh token: `node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"`. A secret |
+| `GMAIL_REFRESH_TOKEN_SEALED` | The sealed value from the authorization page. A secret |
+| `OUTREACH_SENDER_NAME`, `OUTREACH_POSTAL_ADDRESS`, `PUBLIC_API_URL` | As above. `PUBLIC_API_URL` is also where Google returns |
 | `OUTREACH_DAILY_LIMIT` | New sends per rolling 24 hours (default 20) |
 | `OUTREACH_SENDING_ENABLED` | `1` to arm the deployment |
 
@@ -284,17 +322,23 @@ example every 5 minutes. It is a dry run by default; `--apply` records.
 1. Use a dedicated outreach mailbox. A separate sending domain or subdomain
    protects the main domain's reputation, at the cost of warming it up. Set
    up SPF, DKIM (Admin console > Gmail > Authenticate email), and DMARC for it.
-2. In a Google Cloud project owned by the Workspace organization:
+2. In the Google Cloud project owned by the Workspace organization:
    - enable the Gmail API;
-   - create a service account and a JSON key;
-   - mark the OAuth consent screen **Internal**, so the Gmail scopes need no
-     Google review.
-3. In the Admin console (Security > API controls > Domain-wide delegation),
-   authorize the service account's client ID for
-   `https://www.googleapis.com/auth/gmail.send` and
-   `https://www.googleapis.com/auth/gmail.readonly`.
-4. Set the variables above. The admin **Outreach** page lists anything still
-   missing.
+   - set the OAuth consent screen's user type to **Internal**, so only
+     accounts in the organization can authorize and the Gmail scopes need no
+     Google review;
+   - add the two scopes above;
+   - create an **OAuth client ID** of type **Web application** with the
+     authorized redirect URI `PUBLIC_API_URL/oauth/gmail/callback` (for
+     example `https://api.reclaimbay.com/oauth/gmail/callback`).
+3. Set the variables above, all except `GMAIL_REFRESH_TOKEN_SEALED`, and deploy.
+4. Authorize the mailbox from the admin **Outreach** page, store
+   `GMAIL_REFRESH_TOKEN_SEALED`, and restart. The page then shows
+   "Authorized as hello@reclaimbay.com" after a live check with Gmail.
+
+No service account, service-account key, or domain-wide delegation is used.
+A service account left over from earlier setup can be deleted, and its
+domain-wide delegation entry removed.
 
 ## Replies and opt-outs
 
@@ -334,11 +378,13 @@ Already supported:
 
 Still required:
 1. **Set up Google Workspace** as described above (mailbox, SPF, DKIM,
-   DMARC, service account, delegation).
-2. **Configure the sender:** `OUTREACH_PROVIDER`,
-   `GMAIL_SERVICE_ACCOUNT_JSON`, `OUTREACH_SENDER_NAME`,
-   `OUTREACH_SENDER_EMAIL`, `OUTREACH_POSTAL_ADDRESS`, and `PUBLIC_API_URL`.
-   The backend must be reachable there, so unsubscribe links work.
+   DMARC, the Internal consent screen, and the OAuth client).
+2. **Configure the sender:** `OUTREACH_PROVIDER`, `GOOGLE_OAUTH_CLIENT_ID`,
+   `GOOGLE_OAUTH_CLIENT_SECRET`, `GMAIL_TOKEN_ENCRYPTION_KEY`,
+   `OUTREACH_SENDER_NAME`, `OUTREACH_SENDER_EMAIL`, `OUTREACH_POSTAL_ADDRESS`,
+   and `PUBLIC_API_URL`. The backend must be reachable there, so the OAuth
+   callback and unsubscribe links work. Then authorize the mailbox and set
+   `GMAIL_REFRESH_TOKEN_SEALED`.
 3. **Reprepare** any draft made before the sender was configured. Queueing
    refuses it, because it lacks the postal address.
 4. **Classify replies.** `outreach:inbox` records them unclassified. A

@@ -2,12 +2,12 @@
  * Google Workspace (Gmail API) provider: sending, and the mailbox reads that
  * stand in for an ESP's events (see gmailInbox.ts).
  *
- * Authentication: a Google Cloud service account with domain-wide
- * delegation, impersonating the outreach mailbox (OUTREACH_SENDER_EMAIL). It
- * signs a JWT (RS256) and exchanges it for a one-hour access token
- * (developers.google.com/identity/protocols/oauth2/service-account). No
- * password, no SMTP, no stored refresh token. The key comes only from the
- * environment and never appears in logs or results.
+ * Authentication comes from GmailCredentials (gmailAuth.ts): Google OAuth 2.0
+ * user authorization of the outreach mailbox, with access tokens refreshed
+ * automatically. No password, no SMTP, no service-account key. Before its
+ * first call the client confirms, from Gmail's own profile, that the
+ * credentials belong to the configured mailbox; any other account fails
+ * closed.
  *
  * Scopes: gmail.send (send) and gmail.readonly (verify retries, read
  * bounces and replies). Nothing here modifies or deletes mail.
@@ -20,126 +20,84 @@
  *     header since the first attempt, and sends only if it isn't there;
  *   - no delivery receipts, no complaint events: never reported.
  */
-import { createPrivateKey, createSign, type KeyObject } from "node:crypto";
+import { GMAIL_SCOPES, GmailError, gmailProfileEmail, type GmailCredentials } from "./gmailAuth.js";
 import type { OutgoingMessage, OutreachSender, SendResult } from "./sender.js";
 
-export const GMAIL_SCOPES = ["https://www.googleapis.com/auth/gmail.send", "https://www.googleapis.com/auth/gmail.readonly"];
+export { GMAIL_SCOPES, GmailError };
 export const OUTREACH_HEADER = "X-ReclaimBay-Outreach";
-const TOKEN_URL = "https://oauth2.googleapis.com/token";
 const API = "https://gmail.googleapis.com/gmail/v1/users/me";
 const TIMEOUT_MS = 30_000;
 
-export interface GmailConfig {
-  serviceAccountEmail: string;
-  privateKey: KeyObject;
-  /** The Workspace mailbox to send from and read: OUTREACH_SENDER_EMAIL. */
-  mailbox: string;
-}
-
-/**
- * OUTREACH_PROVIDER=gmail needs GMAIL_SERVICE_ACCOUNT_JSON (the service
- * account's JSON key, raw or base64) and OUTREACH_SENDER_EMAIL.
- */
-export function gmailConfigFromEnv(env: NodeJS.ProcessEnv): GmailConfig | { problem: string } {
-  const raw = env.GMAIL_SERVICE_ACCOUNT_JSON?.trim();
-  if (!raw) return { problem: "Gmail isn't configured: GMAIL_SERVICE_ACCOUNT_JSON is missing." };
-  let key: { client_email?: unknown; private_key?: unknown };
-  try {
-    key = JSON.parse(raw.startsWith("{") ? raw : Buffer.from(raw, "base64").toString("utf8"));
-  } catch {
-    return { problem: "Gmail isn't configured: GMAIL_SERVICE_ACCOUNT_JSON isn't a service account JSON key." };
-  }
-  if (typeof key.client_email !== "string" || typeof key.private_key !== "string") {
-    return { problem: "Gmail isn't configured: the service account key has no client_email or private_key." };
-  }
-  let privateKey: KeyObject;
-  try {
-    privateKey = createPrivateKey(key.private_key);
-  } catch {
-    return { problem: "Gmail isn't configured: the service account's private_key can't be read." };
-  }
-  const mailbox = env.OUTREACH_SENDER_EMAIL?.trim().toLowerCase();
-  if (!mailbox) return { problem: "Gmail isn't configured: OUTREACH_SENDER_EMAIL (the Workspace mailbox) is missing." };
-  return { serviceAccountEmail: key.client_email, privateKey, mailbox };
-}
-
-/** A Gmail API failure, classified. Never carries credentials. */
-export class GmailError extends Error {
-  constructor(
-    readonly kind: "auth" | "quota" | "invalid" | "server" | "network",
-    message: string,
-    readonly status: number | null = null,
-  ) {
-    super(message);
-  }
-}
-
-const b64url = (b: Buffer | string) => Buffer.from(b).toString("base64url");
-
-/** A minimal Gmail REST client: token, send, and read-only lookups. */
+/** A minimal Gmail REST client over any GmailCredentials: send and read-only lookups. */
 export class GmailClient {
-  private token: { value: string; expires: number } | null = null;
+  private verified: Promise<void> | null = null;
 
   constructor(
-    readonly config: GmailConfig,
+    readonly credentials: GmailCredentials,
     private readonly fetchImpl: typeof fetch = globalThis.fetch,
-    private readonly clock: () => number = Date.now,
   ) {}
 
-  private async accessToken(): Promise<string> {
-    if (this.token && this.token.expires > this.clock() + 60_000) return this.token.value;
-    const now = Math.floor(this.clock() / 1000);
-    const header = b64url(JSON.stringify({ alg: "RS256", typ: "JWT" }));
-    const claims = b64url(
-      JSON.stringify({ iss: this.config.serviceAccountEmail, sub: this.config.mailbox, scope: GMAIL_SCOPES.join(" "), aud: TOKEN_URL, iat: now, exp: now + 3600 }),
-    );
-    const signature = createSign("RSA-SHA256").update(`${header}.${claims}`).sign(this.config.privateKey).toString("base64url");
-    let res: Response;
-    try {
-      res = await this.fetchImpl(TOKEN_URL, {
-        method: "POST",
-        headers: { "content-type": "application/x-www-form-urlencoded" },
-        body: new URLSearchParams({ grant_type: "urn:ietf:params:oauth:grant-type:jwt-bearer", assertion: `${header}.${claims}.${signature}` }).toString(),
-        signal: AbortSignal.timeout(TIMEOUT_MS),
-      });
-    } catch (err) {
-      // Nothing was sent: there was no token to send with.
-      throw new GmailError("auth", `Google token request failed: ${(err as Error).message}`);
-    }
-    const body = (await res.json().catch(() => ({}))) as { access_token?: string; expires_in?: number; error?: string };
-    if (!res.ok || !body.access_token) {
-      // e.g. unauthorized_client: domain-wide delegation isn't granted for these scopes.
-      throw new GmailError("auth", `Google refused the service account (${body.error ?? res.status}). Check domain-wide delegation and scopes.`, res.status);
-    }
-    this.token = { value: body.access_token, expires: this.clock() + (body.expires_in ?? 3600) * 1000 };
-    return body.access_token;
+  get mailbox() {
+    return this.credentials.mailbox;
   }
 
-  /** One Gmail API call; errors become GmailError by kind. */
+  /**
+   * Confirms the credentials belong to the configured mailbox (once per
+   * client; again after a failure). Throws GmailError("auth") otherwise.
+   */
+  verifyAccount(): Promise<void> {
+    this.verified ??= (async () => {
+      const account = await gmailProfileEmail(this.fetchImpl, await this.credentials.accessToken());
+      if (account !== this.mailbox) {
+        throw new GmailError("auth", `Gmail is authorized as ${account}, not the configured mailbox ${this.mailbox}. Reauthorize as ${this.mailbox}.`);
+      }
+    })().catch((err) => {
+      this.verified = null;
+      throw err;
+    });
+    return this.verified;
+  }
+
+  /**
+   * A live check for the admin: a fresh access token from the stored
+   * authorization, and the account re-verified with Gmail. Nothing cached.
+   */
+  recheck(): Promise<void> {
+    this.verified = null;
+    this.credentials.invalidate();
+    return this.verifyAccount();
+  }
+
+  /** One Gmail API call; errors become GmailError by kind. A stale access token is refreshed once. */
   async call<T>(path: string, init: { method?: string; body?: unknown } = {}): Promise<T> {
-    const token = await this.accessToken();
-    let res: Response;
-    try {
-      res = await this.fetchImpl(`${API}${path}`, {
-        method: init.method ?? "GET",
-        headers: { authorization: `Bearer ${token}`, ...(init.body ? { "content-type": "application/json" } : {}) },
-        body: init.body ? JSON.stringify(init.body) : undefined,
-        signal: AbortSignal.timeout(TIMEOUT_MS),
-      });
-    } catch (err) {
-      throw new GmailError("network", `Gmail request failed: ${(err as Error).message}`);
+    await this.verifyAccount();
+    for (let attempt = 1; ; attempt++) {
+      const token = await this.credentials.accessToken();
+      let res: Response;
+      try {
+        res = await this.fetchImpl(`${API}${path}`, {
+          method: init.method ?? "GET",
+          headers: { authorization: `Bearer ${token}`, ...(init.body ? { "content-type": "application/json" } : {}) },
+          body: init.body ? JSON.stringify(init.body) : undefined,
+          signal: AbortSignal.timeout(TIMEOUT_MS),
+        });
+      } catch (err) {
+        throw new GmailError("network", `Gmail request failed: ${(err as Error).message}`);
+      }
+      if (res.ok) return (await res.json()) as T;
+      const body = (await res.json().catch(() => ({}))) as { error?: { message?: string; errors?: { reason?: string }[] } };
+      const reason = body.error?.errors?.[0]?.reason ?? "";
+      const message = `Gmail ${res.status}${reason ? ` ${reason}` : ""}: ${body.error?.message ?? res.statusText}`.slice(0, 400);
+      if (res.status === 401) {
+        // Google rejected the token before doing anything, so one retry with a fresh token is safe.
+        this.credentials.invalidate();
+        if (attempt === 1) continue;
+        throw new GmailError("auth", message, res.status);
+      }
+      if (res.status === 403 || res.status === 429) throw new GmailError(res.status === 403 && reason === "domainPolicy" ? "auth" : "quota", message, res.status);
+      if (res.status >= 500) throw new GmailError("server", message, res.status);
+      throw new GmailError("invalid", message, res.status);
     }
-    if (res.ok) return (await res.json()) as T;
-    const body = (await res.json().catch(() => ({}))) as { error?: { message?: string; errors?: { reason?: string }[] } };
-    const reason = body.error?.errors?.[0]?.reason ?? "";
-    const message = `Gmail ${res.status}${reason ? ` ${reason}` : ""}: ${body.error?.message ?? res.statusText}`.slice(0, 400);
-    if (res.status === 401) {
-      this.token = null;
-      throw new GmailError("auth", message, res.status);
-    }
-    if (res.status === 403 || res.status === 429) throw new GmailError(res.status === 403 && reason === "domainPolicy" ? "auth" : "quota", message, res.status);
-    if (res.status >= 500) throw new GmailError("server", message, res.status);
-    throw new GmailError("invalid", message, res.status);
   }
 
   send(raw: string) {
@@ -252,8 +210,16 @@ export function gmailSender(client: GmailClient): OutreachSender {
     enabled: true,
     // Safe retries: a retry verifies Sent first (findSentAttempt).
     supportsIdempotency: true,
+    async check() {
+      try {
+        await client.recheck();
+        return null;
+      } catch (err) {
+        return err instanceof GmailError ? err.message : `Gmail can't be reached: ${(err as Error).message}`;
+      }
+    },
     async send(m) {
-      if (m.from.email.toLowerCase() !== client.config.mailbox) {
+      if (m.from.email.toLowerCase() !== client.mailbox) {
         return { status: "unavailable", reason: `The sender ${m.from.email} isn't the configured Gmail mailbox.` };
       }
       if (m.attempt > 1) {

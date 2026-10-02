@@ -78,13 +78,13 @@ describe("outreach sending (service)", { skip: skipReason }, () => {
     assert.equal(sender.calls.length, 1);
     const m = sender.calls[0]!;
     assert.equal(m.to, p.email);
-    assert.deepEqual(m.from, { name: "Alex Rivera", email: "alex@reclaimbay.example" });
-    assert.equal(m.replyTo, "alex@reclaimbay.example");
+    assert.deepEqual(m.from, { name: "Alex Rivera", email: "hello@reclaimbay.example" });
+    assert.equal(m.replyTo, "hello@reclaimbay.example");
     assert.equal(m.subject, o.subject);
     assert.equal(m.text, o.body, "exactly the stored, reviewed text");
     assert.match(m.text, /1 Main St, Ventura, CA 93001/);
     assert.equal(m.idempotencyKey, `outreach-${o.id}`);
-    assert.equal(m.headers["List-Unsubscribe"], `<https://api.reclaimbay.example/u/${o.unsubscribeToken}>, <mailto:alex@reclaimbay.example?subject=unsubscribe>`);
+    assert.equal(m.headers["List-Unsubscribe"], `<https://api.reclaimbay.example/u/${o.unsubscribeToken}>, <mailto:hello@reclaimbay.example?subject=unsubscribe>`);
     assert.equal(m.headers["List-Unsubscribe-Post"], "List-Unsubscribe=One-Click");
 
     assert.deepEqual(report.sent, [{ outreachId: o.id, providerMessageId: `msg-${o.id}` }]);

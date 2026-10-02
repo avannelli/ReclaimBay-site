@@ -1,13 +1,19 @@
 import assert from "node:assert/strict";
+import { randomBytes } from "node:crypto";
 import { after, afterEach, before, beforeEach, describe, test } from "node:test";
+import type { FastifyInstance } from "fastify";
+import { buildApp } from "../../src/app.js";
+import { loadConfig } from "../../src/config.js";
 import type { Db } from "../../src/db.js";
 import { dispatchQueued } from "../../src/outreach/dispatch.js";
 import { gmailSender } from "../../src/outreach/gmail.js";
+import { gmailOAuthConfig, openSealedToken, type GmailOAuthConfig } from "../../src/outreach/gmailAuth.js";
+import { senderFromConfig } from "../../src/outreach/sender.js";
 import { pollGmailInbox } from "../../src/outreach/gmailInbox.js";
 import { createOutreachDraft, queueOutreach } from "../../src/outreach/service.js";
 import { addEvidence, createProspect } from "../../src/prospects.js";
-import { MAILBOX, fakeGmail, inbound } from "../fixtures/fakeGmail.js";
-import { freshDb, readyForm, skipReason, truncate } from "./helpers.js";
+import { CLIENT_ID, FakeGoogle, MAILBOX, fakeGmail, inbound } from "../fixtures/fakeGmail.js";
+import { TEST_DATABASE_URL, freshDb, readyForm, skipReason, truncate } from "./helpers.js";
 import { CFG, OPTS, switchOn } from "./outreachHelpers.js";
 
 /*
@@ -197,5 +203,168 @@ describe("outreach through Gmail", { skip: skipReason }, () => {
     assert.ok(again.items.every((i) => ["duplicate", "ignored", "unmatched"].includes(i.result)), JSON.stringify(again.items.map((i) => i.result)));
     assert.equal(google.sendCalls.length, 4, "reading the mailbox never sends");
     void MAILBOX;
+  });
+});
+
+describe("authorizing the Gmail mailbox (HTTP)", { skip: skipReason }, () => {
+  const SECRET = "integration-test-secret-0123456789";
+  const FORM = { "content-type": "application/x-www-form-urlencoded" };
+  const KEY = randomBytes(32).toString("base64");
+  let db: Db;
+  let realCalls: string[] = [];
+  const realFetch = globalThis.fetch;
+  const apps: FastifyInstance[] = [];
+  const env = (over: Record<string, string> = {}) => ({
+    DATABASE_URL: TEST_DATABASE_URL,
+    ALLOWED_ORIGIN: "https://reclaimbay.com",
+    ADMIN_SECRET: SECRET,
+    TRUST_PROXY_HOPS: "0",
+    OUTREACH_PROVIDER: "gmail",
+    GOOGLE_OAUTH_CLIENT_ID: CLIENT_ID,
+    GOOGLE_OAUTH_CLIENT_SECRET: "test-client-secret",
+    GMAIL_TOKEN_ENCRYPTION_KEY: KEY,
+    PUBLIC_API_URL: "https://api.reclaimbay.example",
+    OUTREACH_SENDER_EMAIL: MAILBOX,
+    OUTREACH_SENDER_NAME: "Alex Rivera",
+    OUTREACH_POSTAL_ADDRESS: "1 Main St, Ventura, CA 93001",
+    ...over,
+  });
+  /** The app as it would be deployed with this environment, every Google call going to the fake. */
+  const start = async (google: FakeGoogle, over: Record<string, string> = {}) => {
+    const app = await buildApp(loadConfig(env(over)), db, false, { googleFetch: google.fetch });
+    apps.push(app);
+    const login = await app.inject({ method: "POST", url: "/admin/login", headers: FORM, payload: new URLSearchParams({ secret: SECRET }).toString() });
+    const cookie = String(login.headers["set-cookie"]).split(";")[0]!;
+    return { app, get: (url: string) => app.inject({ method: "GET", url, headers: { cookie } }) };
+  };
+  /** Starts authorization as the admin; returns Google's URL and the state cookie. */
+  const begin = async (get: (url: string) => Promise<{ statusCode: number; headers: Record<string, unknown> }>) => {
+    const res = await get("/admin/outreach/gmail/authorize");
+    assert.equal(res.statusCode, 302);
+    const setCookie = String(res.headers["set-cookie"]);
+    assert.match(setCookie, /^rb_gmail_oauth=[^;]+; Path=\/oauth\/gmail; HttpOnly; SameSite=Lax; Max-Age=600/);
+    return { google: new URL(String(res.headers.location)), stateCookie: setCookie.split(";")[0]! };
+  };
+  const sealedFrom = (html: string) => /<textarea[^>]*>([^<]+)<\/textarea>/.exec(html)?.[1] ?? null;
+
+  before(async () => {
+    db = await freshDb();
+  });
+  beforeEach(async () => {
+    await truncate(db);
+    realCalls = [];
+    globalThis.fetch = (async (url: unknown) => {
+      realCalls.push(String(url));
+      throw new Error("real network call");
+    }) as typeof fetch;
+  });
+  afterEach(() => {
+    globalThis.fetch = realFetch;
+    assert.deepEqual(realCalls, [], "no real network call");
+  });
+  after(async () => {
+    for (const a of apps) await a.close();
+    await db?.$disconnect();
+  });
+
+  test("an admin authorizes the mailbox once; the refresh token is only ever shown sealed", async () => {
+    const google = new FakeGoogle();
+    const { app, get } = await start(google);
+    const page = (await get("/admin/outreach")).body;
+    assert.match(page, /authorized yet/);
+    assert.match(page, /Authorize hello@reclaimbay\.example with Google/);
+
+    const { google: url, stateCookie } = await begin(get);
+    assert.equal(url.origin, "https://accounts.google.com");
+    assert.equal(url.searchParams.get("access_type"), "offline");
+    const state = url.searchParams.get("state")!;
+
+    // Google sends the admin back. The admin session cookie isn't sent on this redirect (SameSite=Strict).
+    const callback = (q: string, cookie?: string) => app.inject({ method: "GET", url: `/oauth/gmail/callback?${q}`, headers: cookie ? { cookie } : {} });
+    assert.equal((await callback(`state=${state}&code=good-code`)).statusCode, 400, "no state cookie: refused");
+    assert.equal((await callback("state=wrong&code=good-code", stateCookie)).statusCode, 400, "wrong state: refused");
+    assert.equal(google.tokenCalls.length, 0, "nothing exchanged for a refused callback");
+
+    const ok = await callback(`state=${state}&code=good-code`, stateCookie);
+    assert.equal(ok.statusCode, 200);
+    assert.match(ok.body, /hello@reclaimbay\.example<\/b> is authorized/);
+    assert.match(String(ok.headers["set-cookie"]), /rb_gmail_oauth=; Path=\/oauth\/gmail; .*Max-Age=0/, "the state is single-use");
+    assert.equal(ok.headers["cache-control"], "no-store");
+    const sealed = sealedFrom(ok.body)!;
+    const refresh = openSealedToken(sealed, gmailOAuthConfig(loadConfig(env())) as GmailOAuthConfig)!;
+    assert.ok(google.validRefreshTokens.has(refresh));
+    assert.ok(!ok.body.includes(refresh), "the plain refresh token is never shown");
+
+    // Once stored as GMAIL_REFRESH_TOKEN_SEALED (and the service restarted), the admin sees it verified live.
+    const authorized = await start(google, { GMAIL_REFRESH_TOKEN_SEALED: sealed });
+    const live = (await authorized.get("/admin/outreach")).body;
+    assert.match(live, /Authorized as hello@reclaimbay\.example/);
+    assert.match(live, /Reauthorize hello@reclaimbay\.example with Google/);
+    assert.equal(google.sendCalls.length, 0, "authorizing never sends");
+  });
+
+  test("the wrong Google account is refused, its access revoked, and nothing is issued", async () => {
+    const google = new FakeGoogle();
+    google.account = "personal@gmail.com";
+    const { app, get } = await start(google);
+    const { google: url, stateCookie } = await begin(get);
+    const res = await app.inject({ method: "GET", url: `/oauth/gmail/callback?state=${url.searchParams.get("state")}&code=good-code`, headers: { cookie: stateCookie } });
+    assert.equal(res.statusCode, 400);
+    assert.match(res.body, /That was personal@gmail\.com, not hello@reclaimbay\.example/);
+    assert.equal(sealedFrom(res.body), null);
+    assert.equal(google.revoked.length, 1);
+    assert.equal(google.validRefreshTokens.size, 0);
+  });
+
+  test("a cancelled consent changes nothing", async () => {
+    const google = new FakeGoogle();
+    const { app, get } = await start(google);
+    const { google: url, stateCookie } = await begin(get);
+    const res = await app.inject({ method: "GET", url: `/oauth/gmail/callback?state=${url.searchParams.get("state")}&error=access_denied`, headers: { cookie: stateCookie } });
+    assert.equal(res.statusCode, 400);
+    assert.match(res.body, /Authorization cancelled/);
+    assert.equal(google.tokenCalls.length, 0);
+  });
+
+  test("a revoked authorization fails closed: the admin says reauthorize, and nothing is sent", async () => {
+    const google = new FakeGoogle();
+    const { app, get } = await start(google);
+    const { google: url, stateCookie } = await begin(get);
+    const ok = await app.inject({ method: "GET", url: `/oauth/gmail/callback?state=${url.searchParams.get("state")}&code=good-code`, headers: { cookie: stateCookie } });
+    const sealed = sealedFrom(ok.body)!;
+    const config = loadConfig(env({ GMAIL_REFRESH_TOKEN_SEALED: sealed, OUTREACH_SENDING_ENABLED: "1" }));
+
+    // A queued message, with sending switched on.
+    const site = "https://revoked.example.com";
+    const p = await createProspect(db, readyForm({ businessName: "Revoked Auto", website: site, phoneSourceUrl: `${site}/c`, email: "owner@revoked.example.com", emailSourceUrl: `${site}/c` }));
+    await addEvidence(db, p.id, { signalKey: "independent_shop", sourceUrl: `${site}/about`, excerpt: "Family owned." });
+    const { outreach } = await createOutreachDraft(db, p.id, { siteUrl: "https://reclaimbay.com", sender: config.outreachSender });
+    await queueOutreach(db, outreach.id, config);
+    const sender = senderFromConfig(config, google.fetch);
+    await switchOn(db, sender);
+
+    // The mailbox owner revokes access in their Google account.
+    google.validRefreshTokens.clear();
+    const report = await dispatchQueued(db, { config, sender });
+    assert.equal(report.unavailable.length, 1);
+    assert.match(report.stoppedBecause!, /revoked or has expired: reauthorize/);
+    assert.equal(google.sendCalls.length, 0);
+    const stored = await db.outreach.findUniqueOrThrow({ where: { id: outreach.id } });
+    assert.deepEqual([stored.status, stored.sendAttempts, stored.sendStartedAt], ["queued", 0, null], "untouched, ready once reauthorized");
+
+    const page = (await (await start(google, { GMAIL_REFRESH_TOKEN_SEALED: sealed })).get("/admin/outreach")).body;
+    assert.match(page, /Reauthorization required\./);
+  });
+
+  test("without OUTREACH_PROVIDER, or with Gmail half-configured, nothing can send and the admin says why", async () => {
+    const google = new FakeGoogle();
+    const none = await start(google, { OUTREACH_PROVIDER: "" });
+    const page = (await none.get("/admin/outreach")).body;
+    assert.match(page, /No email provider is configured/);
+    assert.doesNotMatch(page, /Authorize hello/);
+    const half = await start(google, { GOOGLE_OAUTH_CLIENT_SECRET: "" });
+    assert.match((await half.get("/admin/outreach")).body, /GOOGLE_OAUTH_CLIENT_SECRET is missing/);
+    assert.equal((await half.get("/admin/outreach/gmail/authorize")).statusCode, 400);
+    assert.equal(google.calls.length, 0);
   });
 });
