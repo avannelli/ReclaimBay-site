@@ -36,8 +36,6 @@ export const undatedSplitNote = (
 ) =>
   `${count.toLocaleString("en-US")} ${count === 1 ? "opportunity" : "opportunities"} (${money(value)}) ${count === 1 ? "has" : "have"} no usable date and ${count === 1 ? "is" : "are"} excluded from the recent/older split.`;
 
-export const formatPercent = (ratio: number) => `${Math.round(ratio * 100)}%`;
-
 export const formatDate = (d: Date) =>
   d.toLocaleDateString("en-US", {
     year: "numeric",

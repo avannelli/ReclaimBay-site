@@ -33,12 +33,9 @@ import {
   fieldErrors,
   fmtDate,
   fmtDay,
-  notice,
   obsBadge,
   options,
   pageHead,
-  qualificationBadge,
-  section,
   signalLabel,
   stepper,
 } from "./ui.js";

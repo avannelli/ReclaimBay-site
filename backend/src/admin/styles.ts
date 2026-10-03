@@ -70,8 +70,8 @@ code { font:12px ui-monospace,SFMono-Regular,Consolas,monospace; background:var(
 .lede { color:var(--ink-2); margin-top:6px; max-width:75ch; font-size:15.5px; }
 .actions { display:flex; gap:8px; flex-wrap:wrap; align-items:center; }
 .section { margin-top:36px; }
-.section > h2, .sec-h { font-size:12.5px; font-weight:700; letter-spacing:.06em; text-transform:uppercase; color:var(--muted); margin:0 0 10px; display:flex; align-items:baseline; gap:10px; }
-.section > h2 .aside, .sec-h .aside { text-transform:none; letter-spacing:0; font-weight:400; }
+.section > h2 { font-size:12.5px; font-weight:700; letter-spacing:.06em; text-transform:uppercase; color:var(--muted); margin:0 0 10px; display:flex; align-items:baseline; gap:10px; }
+.section > h2 .aside { text-transform:none; letter-spacing:0; font-weight:400; }
 .card { background:var(--surface); border:1px solid var(--line); border-radius:var(--radius); padding:16px 18px; box-shadow:var(--shadow); }
 .card + .card { margin-top:14px; }
 .card-h { font-size:12px; font-weight:700; letter-spacing:.05em; text-transform:uppercase; color:var(--muted); margin-bottom:8px; }
@@ -204,7 +204,6 @@ table.tbl { width:100%; border-collapse:collapse; }
 
 /* ---------- forms ---------- */
 label.lbl, .field > label { display:block; font-size:12.5px; font-weight:600; color:var(--ink-2); margin-bottom:4px; }
-.field .req-mark { color:var(--neg); }
 input[type=text], input[type=password], input[type=search], select, textarea { width:100%; min-height:36px; padding:7px 10px; border:1px solid var(--line-2); border-radius:6px; background:var(--surface); color:var(--ink); font:inherit; }
 textarea { min-height:84px; resize:vertical; }
 input[readonly] { background:var(--surface-2); font:12px ui-monospace,Consolas,monospace; }

@@ -286,15 +286,6 @@ export async function ingestBusinesses(
 
 // ---------- discovery runs ----------
 
-export interface DiscoveryRunInput {
-  provider: string;
-  region: string;
-  city?: string | null;
-  businessType?: string | null;
-  /** "core" or "core,adjacent". */
-  tiers?: string | null;
-}
-
 const field = (v: unknown, max: number) => (typeof v === "string" ? v.replace(/\s+/g, " ").trim().slice(0, max) : "");
 
 /** "core", "core,adjacent", or an array of tiers; anything else is ignored. */
@@ -1320,13 +1311,6 @@ export async function queuePosition(db: Db, id: string) {
     previous: at > 0 ? pick(active[at - 1]) : null,
     next: pick(at === -1 ? active[0] : active[at + 1]),
   };
-}
-
-export async function candidateStatusCounts(db: Db) {
-  const grouped = await db.discoveryCandidate.groupBy({ by: ["status"], _count: { _all: true } });
-  const counts: Partial<Record<CandidateStatus, number>> = {};
-  for (const g of grouped) counts[g.status] = g._count._all;
-  return counts;
 }
 
 export const recentRuns = (db: Db, take = 8) =>

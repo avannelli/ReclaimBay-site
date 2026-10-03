@@ -63,8 +63,6 @@ export const ATTEMPTED_STATUSES: readonly OutreachStatus[] = ["sent", "delivered
 /** Sent with no reply and no bounce: a follow-up may be prepared. */
 export const AWAITING_REPLY: readonly OutreachStatus[] = ["sent", "delivered"];
 
-export const isOpen = (s: OutreachStatus) => OPEN_STATUSES.includes(s);
-
 export const OUTREACH_KINDS = ["initial", "follow_up"] as const;
 export type OutreachKind = (typeof OUTREACH_KINDS)[number];
 export const OUTREACH_KIND_LABELS: Record<OutreachKind, string> = { initial: "First message", follow_up: "Follow-up" };
