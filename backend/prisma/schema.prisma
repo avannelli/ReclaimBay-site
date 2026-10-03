@@ -224,6 +224,7 @@ model Prospect {
   notes         ProspectNote[]
   statusChanges ProspectStatusChange[]
   outreach      Outreach[]
+  invitations   Invitation[]
 
   @@index([status, score])
   @@index([score])
@@ -288,13 +289,17 @@ model AnalyticsSession {
   id                 String   @id @default(uuid()) @db.Uuid
   anonymousSessionId String   @unique @db.Uuid
   prospectId         String?  @db.Uuid
+  // The invitation this browser arrived through (first touch, like prospectId).
+  invitationId       String?  @db.Uuid
   firstSeenAt        DateTime @default(now())
   lastSeenAt         DateTime @default(now())
 
-  prospect Prospect?      @relation(fields: [prospectId], references: [id], onDelete: SetNull)
-  events   ProductEvent[]
+  prospect   Prospect?      @relation(fields: [prospectId], references: [id], onDelete: SetNull)
+  invitation Invitation?    @relation(fields: [invitationId], references: [id], onDelete: SetNull)
+  events     ProductEvent[]
 
   @@index([prospectId])
+  @@index([invitationId])
   @@index([lastSeenAt])
 }
 
@@ -706,6 +711,7 @@ model Outreach {
   followUpOf Outreach?       @relation("FollowUp", fields: [followUpOfId], references: [id], onDelete: Restrict)
   followUps  Outreach[]      @relation("FollowUp")
   events     OutreachEvent[]
+  invitation Invitation?
 
   @@index([prospectId, createdAt])
   @@index([status, statusChangedAt])
@@ -749,4 +755,32 @@ model OutreachControlChange {
   createdAt      DateTime @default(now())
 
   @@index([createdAt])
+}
+
+// An invitation to try ReclaimBay, for one outreach contact attempt: its
+// first message (a follow-up reuses it). Only a SHA-256 hash of the public
+// token is stored; the token itself lives in the link alone. Opens are
+// counted here; activation is measured from ProductEvent (a real scan in a
+// session that arrived through the invitation). Never deleted: revoking
+// keeps the history. Rules in src/invitations/.
+model Invitation {
+  id            String    @id @default(uuid()) @db.Uuid
+  tokenHash     String    @unique @db.Char(64)
+  prospectId    String    @db.Uuid
+  outreachId    String    @unique @db.Uuid
+  // The outreach message's campaign, frozen when the invitation is made.
+  campaign      String?   @db.VarChar(64)
+  createdAt     DateTime  @default(now())
+  revokedAt     DateTime?
+  revokeReason  String?   @db.VarChar(200)
+  firstOpenedAt DateTime?
+  lastOpenedAt  DateTime?
+  openCount     Int       @default(0)
+
+  prospect Prospect           @relation(fields: [prospectId], references: [id], onDelete: Cascade)
+  outreach Outreach           @relation(fields: [outreachId], references: [id], onDelete: Cascade)
+  sessions AnalyticsSession[]
+
+  @@index([prospectId])
+  @@index([campaign])
 }

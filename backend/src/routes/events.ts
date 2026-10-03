@@ -4,9 +4,11 @@ import type { FastifyInstance } from "fastify";
 import type { Config } from "../config.js";
 import type { Db } from "../db.js";
 import { eventBodySchema, exportTypeError, type EventBody } from "../validation.js";
+import { registerInvitationOpen } from "./invitations.js";
 
 /**
- * POST /api/events: anonymous, behavioral-only analytics.
+ * POST /api/events: anonymous, behavioral-only analytics. Also the site's
+ * other public call, POST /api/invitations/open (routes/invitations.ts).
  *
  * Registered in its own scope so CORS and rate limiting apply here and not
  * to the admin pages.
@@ -26,6 +28,8 @@ export async function eventRoutes(app: FastifyInstance, opts: { config: Config; 
     max: 120,
     timeWindow: "1 minute",
   });
+
+  registerInvitationOpen(app, db);
 
   app.post<{ Body: EventBody }>(
     "/api/events",

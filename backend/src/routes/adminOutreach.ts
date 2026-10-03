@@ -4,6 +4,7 @@ import type { Config } from "../config.js";
 import type { Db } from "../db.js";
 import { confirmStuckSent, dailyCapacity, readinessErrors, sendingStatus, sendingSwitch, setSendingSwitch, stuckMessages } from "../outreach/dispatch.js";
 import { STATE_COOKIE, authorizationUrl, gmailCredentialsFromConfig, gmailOAuthConfig, newOAuthState } from "../outreach/gmailAuth.js";
+import { invitationForOutreach, revokeInvitationForOutreach } from "../invitations/service.js";
 import { outreachMetrics } from "../outreach/metrics.js";
 import { prepareEligibleOutreach, type PrepareReport } from "../outreach/prepare.js";
 import type { OutreachSender } from "../outreach/sender.js";
@@ -26,6 +27,8 @@ const NOTICES: Record<string, string> = {
   confirmed: "Recorded as sent.",
   switched_on: "Sending switched on.",
   switched_off: "Sending switched off. No further message will be sent.",
+  invitation_revoked: "Invitation revoked. Its link no longer works; everything it recorded is kept.",
+  invitation_already_revoked: "This invitation was already revoked; nothing changed.",
 };
 
 const pick = (body: Form | undefined, keys: string[]): Values =>
@@ -62,9 +65,9 @@ export async function outreachRoutes(app: FastifyInstance, opts: { config: Confi
   const notFound = (reply: FastifyReply) => reply.code(404).type("text/plain").send("Not found");
 
   const renderDetail = async (reply: FastifyReply, id: string, extra: { notice?: string; errors?: string[]; values?: Values } = {}) => {
-    const detail = await getOutreachDetail(db, id, config);
+    const [detail, invitation] = await Promise.all([getOutreachDetail(db, id, config), invitationForOutreach(db, id)]);
     if (!detail) return notFound(reply);
-    return html(reply, outreachDetailPage({ detail, ...extra }), reply.statusCode);
+    return html(reply, outreachDetailPage({ detail, invitation, ...extra }), reply.statusCode);
   };
 
   const renderControl = async (reply: FastifyReply, extra: { notice?: string; errors?: string[]; prepared?: PrepareReport } = {}) => {
@@ -167,6 +170,33 @@ export async function outreachRoutes(app: FastifyInstance, opts: { config: Confi
   action("reply", "reply", (id, body) => recordReply(db, id, { outcome: body.outcome, summary: body.summary, requireOutcome: true }), ["outcome", "summary"]);
   action("classify", "classified", (id, body) => classifyReply(db, id, body.outcome), ["outcome"]);
   action("confirm-sent", "confirmed", (id) => confirmStuckSent(db, id, sender.name));
+
+  /**
+   * Revokes the message's invitation: needs a reason and an explicit
+   * confirmation. The message, the prospect, and eligibility are untouched;
+   * nothing is sent. Repeating it changes nothing (the first reason stays).
+   */
+  app.post<{ Params: { id: string }; Body: Form }>("/admin/outreach/:id/invitation/revoke", writeLimit, async (req, reply) => {
+    const { id } = req.params;
+    if (!UUID_RE.test(id)) return notFound(reply);
+    const body = req.body ?? {};
+    const reason = typeof body.reason === "string" ? body.reason.trim() : "";
+    const errors = [
+      ...(reason ? [] : ["Give a reason for revoking the invitation."]),
+      ...(body.confirm === "1" ? [] : ["Confirm that the invitation link should stop working."]),
+    ];
+    if (errors.length) {
+      reply.code(400);
+      return renderDetail(reply, id, { errors, values: { intent: "revoke", reason } });
+    }
+    try {
+      const { changed } = await revokeInvitationForOutreach(db, id, reason);
+      req.log.info({ outreachId: id, changed }, "invitation revoked");
+      return reply.redirect(`/admin/outreach/${id}?done=${changed ? "invitation_revoked" : "invitation_already_revoked"}`, 303);
+    } catch (err) {
+      return handleError(err, reply, (errs) => renderDetail(reply, id, { errors: errs, values: { intent: "revoke", reason } }));
+    }
+  });
 
   app.post<{ Params: { id: string } }>("/admin/outreach/:id/follow-up", writeLimit, async (req, reply) => {
     const { id } = req.params;

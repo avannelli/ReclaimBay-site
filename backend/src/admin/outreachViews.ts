@@ -9,6 +9,9 @@ import {
   REPLY_OUTCOME_LABELS,
   type OutreachStatus,
 } from "../outreach/lifecycle.js";
+import type { invitationForOutreach } from "../invitations/service.js";
+import { INVITATION_STATUS_LABELS, INVITATION_STATUS_MEANINGS, type InvitationStatus } from "../invitations/status.js";
+import { hideInvitationTokens } from "../invitations/tokens.js";
 import type { FunnelRow } from "../outreach/metrics.js";
 import type { SendingStatus } from "../outreach/dispatch.js";
 import type { PrepareReport } from "../outreach/prepare.js";
@@ -83,7 +86,63 @@ const factRow = (f: OutreachFact) => `<article class="ev">
   <div class="meta"><span>${f.signalKey ? `Signal <code>${esc(f.signalKey)}</code>` : "Stored prospect field"}</span>${f.sourceUrl ? `<span>Source: ${extLink(f.sourceUrl)}</span>` : ""}</div>
 </article>`;
 
-export function outreachDetailPage(opts: { detail: Detail; notice?: string; errors?: string[]; values?: Values }): string {
+type InvitationView = NonNullable<Awaited<ReturnType<typeof invitationForOutreach>>>;
+
+/** Each status pairs its tone with a glyph and words (the .vd pills of the review pages). */
+const INVITATION_TONE: Record<InvitationStatus, [string, string]> = {
+  not_opened: ["vd-quiet", "○"],
+  opened: ["vd-info", "◔"],
+  activated: ["vd-pos", "✓"],
+  revoked: ["vd-neg", "✕"],
+};
+
+/**
+ * The invitation in a first message: its status and what it recorded, and
+ * Revoke behind the same two-step disclosure as Discovery's Disregard, with
+ * a reason and an explicit confirmation. Never the token or its hash.
+ */
+function invitationSection(o: Detail, inv: InvitationView | null | undefined, values: Values, errors: string[]): string {
+  if (o.kind !== "initial") {
+    return o.followUpOf
+      ? section("invitation", "Invitation", `<p class="small muted" style="margin:0">A follow-up uses the invitation of <a href="/admin/outreach/${esc(o.followUpOf.id)}">the first message</a>.</p>`)
+      : "";
+  }
+  if (!inv) return section("invitation", "Invitation", `<div class="card">${emptyState("No invitation for this message.")}</div>`);
+  const [tone, glyph] = INVITATION_TONE[inv.status];
+  const facts: [string, string][] = [
+    ["Created", fmtDate(inv.createdAt)],
+    ["First opened", fmtDate(inv.firstOpenedAt)],
+    ["Last opened", fmtDate(inv.lastOpenedAt)],
+    ["Opens", String(inv.openCount)],
+    ["Activated", fmtDate(inv.activatedAt)],
+    ...(inv.revokedAt ? ([["Revoked", fmtDate(inv.revokedAt)], ["Reason", esc(inv.revokeReason ?? "")]] as [string, string][]) : []),
+  ];
+  const own = values.intent === "revoke";
+  const revoke = inv.revokedAt
+    ? ""
+    : `<details class="rv-disregard" style="margin-top:14px"${own ? " open" : ""}><summary class="btn btn-danger">× Revoke invitation…</summary>
+  <form method="post" action="/admin/outreach/${esc(o.id)}/invitation/revoke" class="rv-reason-form" novalidate>
+    <input type="hidden" name="intent" value="revoke">
+    <p class="small" style="margin:0 0 10px">The link stops working for anyone who has it. Everything it recorded is kept, and the message itself doesn't change.</p>
+    <label class="lbl" for="f-rreason">Why? <span class="muted" style="font-weight:400">(kept on the record)</span></label>
+    <input id="f-rreason" type="text" name="reason" value="${esc(own ? values.reason : "")}" maxlength="200"${own && errors.length ? ' aria-invalid="true"' : ""}>
+    <label class="small" style="display:flex;gap:8px;align-items:center;margin-top:10px"><input type="checkbox" name="confirm" value="1"> Yes, stop this invitation link from working.</label>
+    ${own ? errors.map((e) => `<div class="ferr">${esc(e)}</div>`).join("") : ""}
+    <div style="margin-top:10px"><button type="submit" class="btn-danger">Revoke invitation</button></div>
+  </form></details>`;
+  return section(
+    "invitation",
+    "Invitation",
+    `<div class="card">
+  <p style="margin:0 0 10px"><span class="vd ${tone}"><span aria-hidden="true">${glyph}</span> ${esc(INVITATION_STATUS_LABELS[inv.status])}</span> <span class="small muted">${esc(INVITATION_STATUS_MEANINGS[inv.status])}</span></p>
+  <dl class="kv">${facts.map(([k, v]) => `<dt>${esc(k)}</dt><dd>${v}</dd>`).join("")}</dl>
+  <p class="small muted" style="margin:10px 0 0">An open is counted each time the invitation page loads. Activated means a visitor who arrived through the link ran a real scan (the sample report doesn't count).</p>
+  ${revoke}
+</div>`,
+  );
+}
+
+export function outreachDetailPage(opts: { detail: Detail; invitation?: InvitationView | null; notice?: string; errors?: string[]; values?: Values }): string {
   const { detail: o, values = {} } = opts;
   const id = esc(o.id);
   const fe = fieldErrors(opts.errors);
@@ -166,8 +225,14 @@ ${section(
     ${o.followUps.map((f) => `<dt>Follow-up</dt><dd><a href="/admin/outreach/${esc(f.id)}">${esc(f.subject)}</a> ${outreachBadge(f.status)}</dd>`).join("")}
   </dl></div>
 </div>
-<div class="card" style="margin-top:14px"><pre class="msg">${esc(o.body)}</pre></div>`,
+<div class="card" style="margin-top:14px"><pre class="msg">${esc(hideInvitationTokens(o.body))}</pre>${
+    hideInvitationTokens(o.body) !== o.body
+      ? `<p class="small muted" style="margin:10px 0 0">The invitation link is hidden here, so opening it from the admin can&#39;t count as the business&#39;s visit. The email carries the full link.</p>`
+      : ""
+  }</div>`,
 )}
+
+${invitationSection(o, opts.invitation, values, opts.errors ?? [])}
 
 ${section("facts", "Evidence used", `<p class="small muted" style="margin:-4px 0 10px">Every personal detail in the message comes from one of these stored facts.</p>${factList}`)}
 
@@ -180,7 +245,7 @@ ${section(
     <dt>Sent</dt><dd>${fmtDate(o.sentAt)}${o.provider ? ` <span class="muted small">${esc(o.provider)} ${esc(o.providerMessageId)}</span>` : ""}</dd>
     <dt>Delivered</dt><dd>${fmtDate(o.deliveredAt)}</dd>
     <dt>Bounced / failed</dt><dd>${fmtDate(o.failedAt)}${o.failureReason ? ` · ${esc(o.failureReason)}` : ""}</dd>
-    <dt>Reply</dt><dd>${fmtDate(o.repliedAt)}${o.status === "replied" ? ` · <b>${esc(o.replyOutcome ? REPLY_OUTCOME_LABELS[o.replyOutcome] : "Not yet classified")}</b>` : ""}${o.replySummary ? `<div class="small">${esc(o.replySummary)}</div>` : ""}</dd>
+    <dt>Reply</dt><dd>${fmtDate(o.repliedAt)}${o.status === "replied" ? ` · <b>${esc(o.replyOutcome ? REPLY_OUTCOME_LABELS[o.replyOutcome] : "Not yet classified")}</b>` : ""}${o.replySummary ? `<div class="small">${esc(hideInvitationTokens(o.replySummary))}</div>` : ""}</dd>
     <dt>Cancelled</dt><dd>${fmtDate(o.cancelledAt)}${o.cancelReason ? ` · ${esc(o.cancelReason)}` : ""}</dd>
   </dl>
   <h3 class="card-h" style="margin-top:16px">Events</h3>
@@ -231,6 +296,9 @@ const METRIC_COLUMNS: [keyof FunnelRow, string][] = [
   ["negative", "Negative"],
   ["unsubscribed", "Unsubscribed"],
   ["complained", "Complaints"],
+  ["invited", "Invited"],
+  ["opened", "Opened"],
+  ["activated", "Activated"],
   ["meetings", "Meetings"],
   ["proposals", "Proposals"],
   ["customers", "Customers"],
@@ -376,7 +444,7 @@ ${
 <details class="disc" id="messages"><summary><h2>Messages by status</h2><span class="disc-sum">${plural(total, "message", "messages")}</span></summary><div class="disc-body"><dl class="metrics">${counts}</dl></div></details>
 <details class="disc" id="funnel"><summary><h2>Funnel by campaign</h2><span class="disc-sum">drafted to customer</span></summary><div class="disc-body">
 <div class="scroll"><table class="tbl"><caption class="sr-only">Outreach funnel by campaign</caption><thead><tr><th scope="col">Campaign</th>${METRIC_COLUMNS.map(([, l]) => `<th scope="col" class="num">${esc(l)}</th>`).join("")}</tr></thead><tbody>${metricRows}</tbody></table></div>
-<p class="small muted">Computed from the stored messages, their events, and prospect status history. Outcomes (meetings to lost) count prospects that ever reached that status, by the campaign of their first sent message. Delivered counts only what a provider reports; Gmail reports no deliveries, so with Gmail it stays 0 and "sent, not bounced" is the closest measure. Revenue isn't recorded yet.</p>
+<p class="small muted">Computed from the stored messages, their events, and prospect status history. Outcomes (meetings to lost) count prospects that ever reached that status, by the campaign of their first sent message. Delivered counts only what a provider reports; Gmail reports no deliveries, so with Gmail it stays 0 and "sent, not bounced" is the closest measure. Invited counts invitations made; Opened, those opened at least once; Activated, those where a visitor who arrived through the link ran a real scan after opening it (the sample report doesn't count). Revenue isn't recorded yet.</p>
 </div></details>
 </section>`;
 

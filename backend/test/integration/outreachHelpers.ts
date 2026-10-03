@@ -3,7 +3,9 @@
  * handed and answers from a script; it never touches the network. There is
  * no real provider in the codebase to call by mistake.
  */
+import assert from "node:assert/strict";
 import type { Db } from "../../src/db.js";
+import { hashInvitationToken } from "../../src/invitations/tokens.js";
 import { dispatchQueued, setSendingSwitch, type SendingConfig } from "../../src/outreach/dispatch.js";
 import type { OutgoingMessage, OutreachSender, SendResult } from "../../src/outreach/sender.js";
 import { queueOutreach } from "../../src/outreach/service.js";
@@ -36,6 +38,25 @@ export function mockSender(answer: (m: OutgoingMessage, call: number) => SendRes
 }
 
 export const switchOn = (db: Db, sender: OutreachSender) => setSendingSwitch(db, true, "Integration test.", CFG, sender);
+
+/**
+ * A drafted first message's own invitation. Drafting makes it (Stage 4D), so
+ * this takes the token the message links and checks it against the stored
+ * hash, rather than making another (which, rightly, returns created: false).
+ */
+export async function draftedInvitation(db: Db, outreach: { id: string; body: string }) {
+  const token = /\/invite#([A-Za-z0-9_-]{43})(?![A-Za-z0-9_-])/.exec(outreach.body)?.[1];
+  assert.ok(token, "the drafted first message links its invitation");
+  const invitation = await db.invitation.findUniqueOrThrow({ where: { outreachId: outreach.id } });
+  assert.equal(invitation.tokenHash, hashInvitationToken(token), "the link's token is the invitation's");
+  return { token, invitation };
+}
+
+/**
+ * A first message without an invitation, as drafted before Stage 4D: for tests
+ * of createInvitationForOutreach itself, and of a message that has none.
+ */
+export const withoutInvitation = (db: Db, outreachId: string) => db.invitation.deleteMany({ where: { outreachId } });
 
 /** Queues a draft and sends it through the real dispatcher with the mock provider. */
 export async function queueAndSend(db: Db, outreachId: string, sender: MockSender = mockSender()) {

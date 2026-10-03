@@ -64,6 +64,20 @@ function sessionId(): string | null {
   return id;
 }
 
+/**
+ * The same anonymous browser ID the events carry, for the invitation page
+ * (lib/invitation.ts): one session, so a visitor's later scans stay
+ * attributed to the invitation they arrived through.
+ */
+export function analyticsSessionId(): string | null {
+  if (typeof window === "undefined") return null;
+  try {
+    return sessionId();
+  } catch {
+    return null;
+  }
+}
+
 function readAttribution(): Attribution {
   try {
     const parsed: unknown = JSON.parse(storageGet("local", ATTRIBUTION_KEY) ?? "null");

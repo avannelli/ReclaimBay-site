@@ -4,6 +4,7 @@ import { describe, test } from "node:test";
 import {
   FOLLOW_UP_TEMPLATE,
   INTRO_TEMPLATE,
+  LEGACY_FOLLOW_UP_TEMPLATE,
   campaignOf,
   composeFollowUp,
   composeIntro,
@@ -31,6 +32,7 @@ import { readinessErrors } from "../../src/outreach/dispatch.js";
 import { OUTREACH_ELIGIBLE, STATUSES, statusRequirementErrors, transitionErrors, type StatusContext } from "../../src/prospectStatus.js";
 
 const SITE = "https://smithauto.example.com/";
+const INVITE = "https://reclaimbay.com/invite#Ab3_xY-9Zq0Wv8UtsRqPonMlKjIhGfEdCbA7654321x";
 const input = (over: Partial<ComposeInput> = {}): ComposeInput => ({
   businessName: "Smith Auto",
   city: "Springfield",
@@ -48,7 +50,7 @@ const input = (over: Partial<ComposeInput> = {}): ComposeInput => ({
     { signalKey: "general_repair_services", sourceUrl: SITE, excerpt: "Names brakes, engine diagnostics, A/C: …Brake Service Diagnostics A/C Repairs…" },
     { signalKey: "digital_inspections", sourceUrl: `${SITE}inspections`, excerpt: "Our digital inspections include photos." },
   ],
-  referralUrl: "https://reclaimbay.com/?ref=rb_abcdefghijkl&campaign=outreach-intro-t1",
+  link: INVITE,
   sender: { name: null, postalAddress: null },
   ...over,
 });
@@ -146,17 +148,16 @@ describe("outreach message generation", () => {
     const m = composeIntro(input());
     assert.equal(m.template, INTRO_TEMPLATE);
     assert.equal(m.campaign, campaignOf(INTRO_TEMPLATE));
-    assert.equal(m.campaign, "outreach-intro-t1");
-    assert.equal(m.subject, "Declined work at Smith Auto");
+    assert.equal(m.campaign, "outreach-intro-t2");
+    assert.equal(m.subject, "Quick question about Smith Auto");
     assert.match(m.body, /^Hi Smith Auto team,/);
-    assert.match(m.body, /I came across Smith Auto in Springfield, IL while looking for independent auto repair shops\./);
-    assert.match(m.body, /I saw that you handle brakes, engine diagnostics, and A\/C, and that you offer digital inspections\./);
-    assert.ok(m.body.includes("https://reclaimbay.com/?ref=rb_abcdefghijkl&campaign=outreach-intro-t1"));
+    assert.match(m.body, /I came across Smith Auto while researching independent shops in Springfield\./);
+    assert.match(m.body, /We built ReclaimBay to help shops identify revenue that may be getting left behind in declined work\./);
+    assert.match(m.body, /I made a free ReclaimBay report available for Smith Auto so you can run your own information through it and see what turns up\./);
+    assert.match(m.body, /No account or commitment required\./);
+    assert.ok(m.body.includes(`Get your free report: ${INVITE}\n`), "the one call to action is the invitation link");
     assert.match(m.body, /reply "no thanks" and we won't contact Smith Auto again/);
-    assert.deepEqual(
-      m.evidence.map((f) => f.key),
-      ["business_name", "recipient", "location", "independent_shop", "general_repair_services", "digital_inspections"],
-    );
+    assert.deepEqual(m.evidence.map((f) => f.key), ["business_name", "recipient", "independent_shop", "location"]);
     const sources = new Set(input().evidence.map((e) => e.sourceUrl));
     for (const f of m.evidence) {
       if (f.signalKey) assert.ok(f.sourceUrl && sources.has(f.sourceUrl) && f.excerpt, `${f.key} carries its evidence`);
@@ -164,25 +165,34 @@ describe("outreach message generation", () => {
     assert.equal(m.evidence.find((f) => f.key === "recipient")!.sourceUrl, `${SITE}contact`);
   });
 
-  test("a signal without evidence, a 'no', or an unknown is never mentioned", () => {
-    const noEvidence = composeIntro(input({ evidence: input().evidence.filter((e) => e.signalKey !== "digital_inspections") }));
-    assert.doesNotMatch(noEvidence.body, /inspection/i);
-    assert.ok(!noEvidence.evidence.some((f) => f.key === "digital_inspections"));
-
-    const no = composeIntro(input({ signals: [...input().signals.filter((s) => s.key !== "digital_inspections"), { key: "digital_inspections", value: "no" }] }));
-    assert.doesNotMatch(no.body, /inspection/i);
-
-    const notIndependent = composeIntro(input({ evidence: input().evidence.filter((e) => e.signalKey !== "independent_shop") }));
-    assert.match(notIndependent.body, /looking for auto repair shops/);
-    assert.doesNotMatch(notIndependent.body, /independent/);
-
-    const noCity = composeIntro(input({ city: null, state: null }));
-    assert.match(noCity.body, /I came across Smith Auto while looking/);
+  test("the first message claims nothing it can't support: no amount, no analysis, one link, no pressure", () => {
+    const m = composeIntro(input({ sender: { name: "Alex", postalAddress: "1 Main St, Ventura, CA 93001" } }));
+    assert.doesNotMatch(m.body, /\$|\d+%|\b(we|I) (found|analy[sz]ed|calculated)\b/i, "no figures and no analysis of the business");
+    assert.doesNotMatch(m.body, /today|hurry|limited|expires|book a|calendar|meeting|price|\/mo/i, "no urgency, meeting, or pricing");
+    assert.equal(m.body.match(/https?:\/\//g)?.length, 1, "exactly one link");
+    assert.ok(m.body.length < 900, "short");
   });
 
-  test("general repair without named services stays general", () => {
-    const m = composeIntro(input({ evidence: input().evidence.map((e) => (e.signalKey === "general_repair_services" ? { ...e, excerpt: "Full-service repair shop." } : e)) }));
-    assert.match(m.body, /I saw that you do general repair work and offer digital inspections\./);
+  test("a signal without evidence, a 'no', or an unknown is never mentioned, and nothing is invented without a city", () => {
+    const notIndependent = composeIntro(input({ evidence: input().evidence.filter((e) => e.signalKey !== "independent_shop") }));
+    assert.match(notIndependent.body, /while researching auto repair shops in Springfield\./);
+    assert.doesNotMatch(notIndependent.body, /independent/);
+    assert.ok(!notIndependent.evidence.some((f) => f.key === "independent_shop"));
+
+    const unknown = composeIntro(input({ signals: input().signals.filter((s) => s.key !== "independent_shop") }));
+    assert.doesNotMatch(unknown.body, /independent/);
+
+    const noCity = composeIntro(input({ city: null, state: null }));
+    assert.match(noCity.body, /I came across Smith Auto while researching independent shops\.\n/);
+    assert.ok(!noCity.evidence.some((f) => f.key === "location"));
+  });
+
+  test("services and inspections are recorded as facts but not used by intro@t2", () => {
+    const keys = outreachFacts(input()).map((f) => f.key);
+    assert.ok(keys.includes("general_repair_services") && keys.includes("digital_inspections"));
+    const m = composeIntro(input());
+    assert.doesNotMatch(m.body, /inspection|brakes|diagnostics|A\/C/i);
+    assert.ok(!m.evidence.some((f) => f.key === "general_repair_services" || f.key === "digital_inspections"));
   });
 
   test("excerpts are references, never quoted into the message", () => {
@@ -190,7 +200,7 @@ describe("outreach message generation", () => {
     for (const e of input().evidence) assert.ok(!m.body.includes(e.excerpt), e.signalKey);
   });
 
-  test("website-condition facts are recorded but not used by intro@t1", () => {
+  test("website-condition facts are recorded but not used by intro@t2", () => {
     const withSite = input({
       signals: [...input().signals, { key: "website_not_https", value: "yes" }, { key: "no_online_booking", value: "yes" }],
       evidence: [...input().evidence, { signalKey: "website_not_https", sourceUrl: SITE, excerpt: "http only" }, { signalKey: "no_online_booking", sourceUrl: SITE, excerpt: "No scheduler." }],
@@ -209,16 +219,33 @@ describe("outreach message generation", () => {
     assert.match(signed, /1 Main St, Ventura, CA 93001$/);
   });
 
+  test("a business name is used as plain text: it can't add a line, a link, or markup the message doesn't already have", () => {
+    const m = composeIntro(input({ businessName: `<a href="https://evil.example">Smith</a> Auto` }));
+    assert.equal(m.subject, `Quick question about <a href="https://evil.example">Smith</a> Auto`, "kept as text; the message is sent as plain text");
+    assert.ok(m.body.includes(`Get your free report: ${INVITE}\n`), "the link is still the invitation, unchanged");
+    assert.equal(m.body.split("Get your free report:").length, 2, "one call to action");
+  });
+
   test("generation is deterministic", () => {
     assert.deepEqual(composeIntro(input()), composeIntro(input()));
   });
 
-  test("a follow-up refers to the first message by date and keeps the thread subject", () => {
-    const m = composeFollowUp(input(), { subject: "Declined work at Smith Auto", sentAt: new Date("2026-10-02T15:00:00Z") });
+  test("a follow-up refers to the first message by date, keeps the thread subject, and carries the link it is given", () => {
+    const m = composeFollowUp(input(), { subject: "Quick question about Smith Auto", sentAt: new Date("2026-10-02T15:00:00Z") }, { reusesInvitation: true });
     assert.equal(m.template, FOLLOW_UP_TEMPLATE);
-    assert.equal(m.subject, "Re: Declined work at Smith Auto");
+    assert.equal(m.template, "follow-up@t2");
+    assert.equal(m.subject, "Re: Quick question about Smith Auto");
     assert.match(m.body, /Following up on my note from 2026-10-02/);
-    assert.equal(composeFollowUp(input(), { subject: "Re: x", sentAt: new Date() }).subject, "Re: x");
+    assert.ok(m.body.includes(INVITE), "the first message's own invitation link");
+    assert.equal(composeFollowUp(input(), { subject: "Re: x", sentAt: new Date() }, { reusesInvitation: true }).subject, "Re: x");
+
+    // A first message made before invitations: the follow-up keeps the referral link, under its own template.
+    const referral = "https://reclaimbay.com/?ref=rb_abcdefghijkl&campaign=outreach-follow-up-t1";
+    const legacy = composeFollowUp(input({ link: referral }), { subject: "Declined work at Smith Auto", sentAt: new Date("2026-10-02T15:00:00Z") }, { reusesInvitation: false });
+    assert.equal(legacy.template, LEGACY_FOLLOW_UP_TEMPLATE);
+    assert.equal(legacy.campaign, "outreach-follow-up-t1");
+    assert.ok(legacy.body.includes(referral));
+    assert.ok(!legacy.body.includes("/invite#"));
   });
 });
 

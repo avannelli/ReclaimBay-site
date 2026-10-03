@@ -7,6 +7,7 @@
  * sent message. Revenue isn't recorded anywhere yet (billing comes later).
  */
 import type { Db } from "../db.js";
+import { invitationActivations } from "../invitations/service.js";
 import { NEGATIVE_REPLIES, POSITIVE_REPLIES } from "./lifecycle.js";
 
 export interface FunnelRow {
@@ -25,6 +26,12 @@ export interface FunnelRow {
   unclassified: number;
   unsubscribed: number;
   complained: number;
+  /** Invitations made for this campaign. */
+  invited: number;
+  /** Invitations opened at least once (however many times). */
+  opened: number;
+  /** Invitations activated: a real scan by a visitor who arrived through one (invitationActivations). */
+  activated: number;
   meetings: number;
   proposals: number;
   customers: number;
@@ -46,6 +53,9 @@ const empty = (campaign: string): FunnelRow => ({
   unclassified: 0,
   unsubscribed: 0,
   complained: 0,
+  invited: 0,
+  opened: 0,
+  activated: 0,
   meetings: 0,
   proposals: 0,
   customers: 0,
@@ -84,6 +94,17 @@ export async function outreachMetrics(db: Db): Promise<FunnelRow[]> {
       if (m.events.some((e) => e.type === "complained")) r.complained++;
     }
     if (m.sentAt && !firstCampaign.has(m.prospectId)) firstCampaign.set(m.prospectId, m.campaign);
+  }
+
+  // Invitations, by the campaign frozen on each; activation by its one definition.
+  const invitations = await db.invitation.findMany({ select: { id: true, campaign: true, firstOpenedAt: true } });
+  const activations = await invitationActivations(db, invitations.map((i) => i.id));
+  for (const i of invitations) {
+    for (const r of [row(i.campaign), total]) {
+      r.invited++;
+      if (i.firstOpenedAt) r.opened++;
+      if (activations.has(i.id)) r.activated++;
+    }
   }
 
   const history = await db.prospectStatusChange.findMany({

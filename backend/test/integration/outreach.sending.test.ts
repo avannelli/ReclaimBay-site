@@ -512,7 +512,7 @@ describe("outreach sending (service)", { skip: skipReason }, () => {
     // Prepared but never queued: drafted, not queued.
     await draft((await prospect()).id);
     const rows = await outreachMetrics(db);
-    const t = rows.find((r) => r.campaign === "outreach-intro-t1")!;
+    const t = rows.find((r) => r.campaign === "outreach-intro-t2")!;
     assert.deepEqual(
       { drafted: t.drafted, queued: t.queued, entered: t.prospectsEntered, sent: t.sent, delivered: t.delivered, bounced: t.bounced, replied: t.replied, positive: t.positive, negative: t.negative, meetings: t.meetings, proposals: t.proposals, customers: t.customers, lost: t.lost },
       { drafted: 5, queued: 4, entered: 4, sent: 4, delivered: 1, bounced: 1, replied: 2, positive: 1, negative: 1, meetings: 1, proposals: 1, customers: 1, lost: 1 },
@@ -607,7 +607,7 @@ describe("outreach sending (HTTP)", { skip: skipReason }, () => {
 
     assert.match(page, /<h2 id="attention-h">Needs attention<\/h2>/);
     assert.match(page, new RegExp(`Replies to classify <span class="q-count">1</span>[\\s\\S]*?href="/admin/outreach/${o.id}"`));
-    assert.match(page, new RegExp(`Refused by the provider, last 7 days <span class="q-count">1</span>[\\s\\S]*?href="/admin/outreach/${refused.id}">Declined work at Smith &#38; &#60;Sons&#62; Auto</a>`));
+    assert.match(page, new RegExp(`Refused by the provider, last 7 days <span class="q-count">1</span>[\\s\\S]*?href="/admin/outreach/${refused.id}">Quick question about Smith &#38; &#60;Sons&#62; Auto</a>`));
     assert.match(page, /552 &#60;message&#62; too large/);
     assert.doesNotMatch(page, /<Sons>|<message>/, "provider text and business names are escaped");
     assert.match(page, /<details class="disc" id="funnel"><summary><h2>Funnel by campaign<\/h2>/, "measurement stays one click away");

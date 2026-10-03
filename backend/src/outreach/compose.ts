@@ -10,12 +10,19 @@
  *
  * Unknown, "no", and unevidenced signals produce no fact, so the message
  * can't mention them. Excerpts are kept as references, never quoted into
- * the message. What the message says about ReclaimBay itself is fixed text
- * taken from the public site.
+ * the message. What the message says about ReclaimBay itself is fixed text.
+ *
+ * Links: a first message links its invitation (/invite#<token>); a follow-up
+ * reuses the link its first message carried. A follow-up to a message made
+ * before invitations existed keeps the prospect's referral link
+ * (follow-up@t1), as it always did.
  */
 
-export const INTRO_TEMPLATE = "intro@t1";
-export const FOLLOW_UP_TEMPLATE = "follow-up@t1";
+export const INTRO_TEMPLATE = "intro@t2";
+/** A follow-up that reuses its first message's invitation link. */
+export const FOLLOW_UP_TEMPLATE = "follow-up@t2";
+/** A follow-up to a first message without an invitation (made before invitations existed): the referral link. */
+export const LEGACY_FOLLOW_UP_TEMPLATE = "follow-up@t1";
 
 /** The referral link's campaign for a template ("intro@t1" -> "outreach-intro-t1"). */
 export const campaignOf = (template: string) => `outreach-${template.replace(/[^a-z0-9]+/gi, "-").toLowerCase()}`;
@@ -29,8 +36,12 @@ export interface ComposeInput {
   emailSourceUrl: string;
   signals: readonly { key: string; value: string }[];
   evidence: readonly { signalKey: string; sourceUrl: string; excerpt: string }[];
-  /** The prospect's referral link, built by the caller with this template's campaign. */
-  referralUrl: string;
+  /**
+   * The one link the message carries: for a first message, its invitation
+   * (/invite#<token>); for a follow-up, the link its first message carried,
+   * or the referral link when that message had no invitation.
+   */
+  link: string;
   sender: { name: string | null; postalAddress: string | null };
 }
 
@@ -136,10 +147,11 @@ function signOff(input: ComposeInput): string {
 }
 
 /**
- * The first message (intro@t1). It uses the facts that bear on declined
- * work: independence, general repair (and the services named), and digital
- * inspections. Website-condition facts are recorded but not used: ReclaimBay
- * doesn't fix websites, so they aren't a reason to write.
+ * The first message (intro@t2): short and low-pressure, with one link, the
+ * business's invitation. It uses only what the record establishes: the
+ * business's name, its city (when known), and that it is an independent
+ * shop (when that is evidenced). It claims no amount and no analysis of the
+ * business: the report is theirs to run.
  */
 export function composeIntro(input: ComposeInput): ComposedMessage {
   const facts = new Map(outreachFacts(input).map((f) => [f.key, f]));
@@ -152,30 +164,21 @@ export function composeIntro(input: ComposeInput): ComposedMessage {
   const name = input.businessName;
   use("business_name");
   use("recipient");
-  const location = use("location");
   const independent = use("independent_shop");
-  const repair = use("general_repair_services");
-  const inspections = use("digital_inspections");
-
-  const services = repair ? servicesFromExcerpt(repair.excerpt ?? "").slice(0, 3) : [];
-  const where = location ? ` in ${[input.city, input.state].filter(Boolean).join(", ")}` : "";
-  const opening = `I came across ${name}${where} while looking for ${independent ? "independent " : ""}auto repair shops.`;
-  const work = repair
-    ? services.length
-      ? ` I saw that you handle ${list(services)}${inspections ? ", and that you offer digital inspections" : ""}.`
-      : ` I saw that you do general repair work${inspections ? " and offer digital inspections" : ""}.`
-    : inspections
-      ? " I saw that you offer digital inspections."
-      : "";
+  const location = input.city ? use("location") : undefined;
 
   const body = [
     `Hi ${name} team,`,
     "",
-    `${opening}${work}`,
+    `I came across ${name} while researching ${independent ? "independent shops" : "auto repair shops"}${location ? ` in ${input.city}` : ""}.`,
     "",
-    "Work that customers decline or put off is easy to lose track of. ReclaimBay reads the declined or deferred work report from your shop management system and shows its total value, the highest-value jobs, and where that value is concentrated. The file is analyzed privately in your browser and never uploaded.",
+    "We built ReclaimBay to help shops identify revenue that may be getting left behind in declined work.",
     "",
-    `If you'd like to see what's in yours, you can try it here: ${input.referralUrl}`,
+    `I made a free ReclaimBay report available for ${name} so you can run your own information through it and see what turns up.`,
+    "",
+    "No account or commitment required.",
+    "",
+    `Get your free report: ${input.link}`,
     "",
     signOff(input),
   ].join("\n");
@@ -183,27 +186,33 @@ export function composeIntro(input: ComposeInput): ComposedMessage {
   return {
     template: INTRO_TEMPLATE,
     campaign: campaignOf(INTRO_TEMPLATE),
-    subject: `Declined work at ${name}`,
+    subject: `Quick question about ${name}`,
     body,
     evidence: used,
   };
 }
 
-/** A follow-up (follow-up@t1) to a message that was sent and not answered. */
-export function composeFollowUp(input: ComposeInput, original: { subject: string; sentAt: Date }): ComposedMessage {
+/**
+ * A follow-up to a message that was sent and not answered. It carries the
+ * link given: the first message's own invitation link (follow-up@t2), or,
+ * for a first message made before invitations, the referral link
+ * (follow-up@t1).
+ */
+export function composeFollowUp(input: ComposeInput, original: { subject: string; sentAt: Date }, opts: { reusesInvitation: boolean }): ComposedMessage {
   const facts = new Map(outreachFacts(input).map((f) => [f.key, f]));
   const used = ["business_name", "recipient"].map((k) => facts.get(k)!);
   const day = original.sentAt.toISOString().slice(0, 10);
   const body = [
     `Hi ${input.businessName} team,`,
     "",
-    `Following up on my note from ${day} about declined work. If it would help to see the total value of the work your customers have declined or put off, ReclaimBay shows it from your declined-work report, analyzed privately in your browser: ${input.referralUrl}`,
+    `Following up on my note from ${day} about declined work. If it would help to see the total value of the work your customers have declined or put off, ReclaimBay shows it from your declined-work report, analyzed privately in your browser: ${input.link}`,
     "",
     signOff(input),
   ].join("\n");
+  const template = opts.reusesInvitation ? FOLLOW_UP_TEMPLATE : LEGACY_FOLLOW_UP_TEMPLATE;
   return {
-    template: FOLLOW_UP_TEMPLATE,
-    campaign: campaignOf(FOLLOW_UP_TEMPLATE),
+    template,
+    campaign: campaignOf(template),
     subject: original.subject.startsWith("Re: ") ? original.subject : `Re: ${original.subject}`,
     body,
     evidence: used,

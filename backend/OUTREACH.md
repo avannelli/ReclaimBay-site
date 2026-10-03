@@ -5,10 +5,10 @@ what happened to it, and what came of it.
 
 **What ReclaimBay sells in outreach:** recovering revenue from declined and
 deferred repair work at independent repair shops. The first message
-(`intro@t1`) says only what the product does today: it reads the shop's
-declined or deferred work report and shows its total value, the
-highest-value jobs, and where that value is concentrated, privately in the
-browser. It never mentions websites, invents figures, or promises results.
+(`intro@t2`) is short and low-pressure: it invites the shop to run its own
+declined-work data through ReclaimBay, with one link, its invitation. It
+never mentions websites, invents figures, claims an analysis of the business,
+or promises results.
 
 **Sending is off by default.** The one provider is Google Workspace through
 the Gmail API (see [Google Workspace (Gmail)](#google-workspace-gmail)). It
@@ -76,7 +76,7 @@ Archived, or Customer **cancels any open message**.
 | Field | Holds |
 | ----- | ----- |
 | `prospectId`, `kind`, `followUpOfId` | The prospect; `initial` or `follow_up`; the message a follow-up answers |
-| `template`, `campaign` | `intro@t1` / `follow-up@t1`; the referral-link campaign (`outreach-intro-t1`) |
+| `template`, `campaign` | `intro@t2` / `follow-up@t2` (`intro@t1` / `follow-up@t1` before invitations); the campaign (`outreach-intro-t2`) |
 | `subject`, `body`, `evidence`, `generatedAt` | The message as generated and reviewed, and the stored facts it relies on |
 | `recipientEmail`, `recipientSourceUrl` | The published business email and where it was found |
 | `senderName`, `senderEmail` | Who it was prepared for |
@@ -130,10 +130,11 @@ A follow-up can be drafted for a sent or delivered message without a reply
 [`src/outreach/compose.ts`](src/outreach/compose.ts) is deterministic: no
 model and no network. Every personal detail comes from a fact the record
 supports: a stored field, or a signal recorded **yes** with evidence. The
-message names services only from research's own vocabulary, never quotes
-excerpts, and uses fixed text from the public site for ReclaimBay itself. It
-ends with the sender's name, an opt-out instruction ("reply 'no thanks'"),
-and the sender's postal address.
+first message (`intro@t2`) uses only the business's name, its city when
+known, and that it is independent when that is evidenced; it never quotes
+excerpts. Its one link is its invitation (see [Invitations](#invitations)).
+Every message ends with the sender's name, an opt-out instruction ("reply 'no
+thanks'"), and the sender's postal address.
 
 ### Automatic preparation
 
@@ -391,6 +392,61 @@ domain-wide delegation entry removed.
   client's one-click request. It suppresses the address, makes the prospect
   Do not contact, and logs `unsubscribed`. Repeating it is harmless, and the
   response is the same for unknown tokens.
+
+## Invitations
+
+An invitation is the link a contacted business follows into ReclaimBay:
+`https://reclaimbay.com/invite#<token>`. The service is in
+[`src/invitations/`](src/invitations/), the page is the site's `/invite`, and the
+admin shows each first message's invitation and can revoke it. Accounts and
+signup are a separate, later milestone, so an invitation leads into the
+existing anonymous product.
+
+```
+First message:  Prospect -> Outreach -> Invitation -> /invite#<token> -> visits -> activation
+Follow-up:      Outreach (follow-up) -> reuses its first message's Invitation, same link
+```
+
+- **Made with the first message.** Drafting a first message makes its
+  invitation in the same transaction (`createInvitationInTx`), and writes its
+  link into the message. If either fails, neither exists, so there is never a
+  first message without its invitation, or a second invitation for one.
+- **Follow-ups reuse it.** The token is stored nowhere but in the first
+  message's text, so a follow-up takes the link from there, accepted only when
+  its hash is the invitation's. No follow-up makes an invitation. A follow-up
+  to a message whose invitation was revoked is refused: its link no longer
+  works.
+- **Messages made before invitations** (`intro@t1`) are left exactly as they
+  are: no invitation is invented for them and their text isn't changed. They
+  queue and send as before, with the referral link (`?ref=`), which still
+  attributes visits to the prospect. Their follow-ups keep the referral link
+  too (`follow-up@t1`). To give such a business an invitation instead,
+  discard the unsent draft and prepare it again.
+- **Local links.** Links use `PUBLIC_SITE_URL` (default
+  `https://reclaimbay.com`); set `PUBLIC_SITE_URL=http://localhost:3000` in
+  `backend/.env` for invitation links that open the local site.
+
+- **One per contact attempt.** An invitation belongs to a first message,
+  made while it is unsent (unique per message; a follow-up reuses it). It is
+  made only where drafting is allowed: the same eligibility decision
+  (`eligibility.ts`). Making one sends and queues nothing.
+- **The token.** 32 random bytes as 43 base64url characters, in the URL
+  fragment, which browsers never send to a server. Only its SHA-256 is stored
+  (`Invitation.tokenHash`), so the token is returned once, when the
+  invitation is made, and can't be recovered. The link carries nothing else:
+  no ids, name, email, or campaign.
+- **Opening.** Counts the open (`firstOpenedAt`, `lastOpenedAt`, `openCount`)
+  and links the visitor's anonymous analytics session to the invitation and
+  its prospect, first touch only, exactly as a `?ref=` link does. A malformed,
+  unknown, or revoked link, or one for a business that is Do not contact or
+  whose address is suppressed, gets the same "not active" answer and records
+  nothing. The answer reveals only whether it's active and the business's own
+  public name.
+- **Revoking** stops the link and keeps the record (`revokedAt`,
+  `revokeReason`). Repeating it changes nothing.
+- **Activation** is measured, not stored: the first real (not sample)
+  `scan_completed` in a session that arrived through the invitation, at or
+  after its first open (`invitationActivations`).
 
 ## The Outreach page
 

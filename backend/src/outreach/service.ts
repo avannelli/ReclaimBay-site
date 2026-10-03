@@ -21,7 +21,9 @@ import type { Prisma } from "../generated/prisma/client.js";
 import type { Status } from "../prospectStatus.js";
 import { FIELD_LIMITS, ProspectError, changeStatusInTx, referralUrl } from "../prospects.js";
 import type { ComplianceConfig } from "./compliance.js";
-import { campaignOf, composeFollowUp, composeIntro, FOLLOW_UP_TEMPLATE, INTRO_TEMPLATE, type ComposedMessage } from "./compose.js";
+import { createInvitationInTx, sentInvitationLink } from "../invitations/service.js";
+import { invitationUrl, newInvitationToken } from "../invitations/tokens.js";
+import { campaignOf, composeFollowUp, composeIntro, LEGACY_FOLLOW_UP_TEMPLATE, type ComposedMessage } from "./compose.js";
 import {
   ATTEMPTED_STATUSES,
   OPEN_STATUSES,
@@ -55,16 +57,31 @@ const prospectForDraft = (tx: Tx | Db, id: string) =>
 /**
  * Everything a draft needs, checked (eligibility.ts decides): why it can't
  * be drafted, or the message it would be. Reads only.
+ *
+ * Links: a first message carries `invitationLink`, its invitation made in the
+ * same transaction (a preview, which makes none, shows a placeholder). A
+ * follow-up reuses the link its first message carried; a first message made
+ * before invitations had none, so its follow-up keeps the referral link. A
+ * follow-up whose first message's invitation was revoked is refused: its link
+ * no longer works.
  */
-async function planDraft(tx: Tx | Db, prospectId: string, opts: DraftOptions) {
+async function planDraft(tx: Tx | Db, prospectId: string, opts: DraftOptions, invitationLink?: string) {
   const p = await prospectForDraft(tx, prospectId);
   if (!p) throw new ProspectError(["Prospect not found."], "not_found");
   const kind: OutreachKind = opts.followUpOfId ? "follow_up" : "initial";
   const { errors, open, original } = await outreachEligibility(tx, { stage: "prepare", kind, prospect: p, followUpOfId: opts.followUpOfId });
 
+  let link = invitationLink ?? `${opts.siteUrl.replace(/\/+$/, "")}/invite#(the invitation, made when the draft is stored)`;
+  let reusesInvitation = false;
+  if (kind === "follow_up" && original && !errors.length) {
+    const sent = await sentInvitationLink(tx, original);
+    if (sent.kind === "revoked") errors.push("The first message's invitation was revoked, so a follow-up would link to a page that no longer works.");
+    else if (sent.kind === "link") [link, reusesInvitation] = [sent.url, true];
+    else link = referralUrl(opts.siteUrl, p.referralCode, campaignOf(LEGACY_FOLLOW_UP_TEMPLATE));
+  }
+
   let message: ComposedMessage | null = null;
   if (!errors.length) {
-    const template = kind === "initial" ? INTRO_TEMPLATE : FOLLOW_UP_TEMPLATE;
     const composeInput = {
       businessName: p.businessName!,
       city: p.city,
@@ -74,10 +91,10 @@ async function planDraft(tx: Tx | Db, prospectId: string, opts: DraftOptions) {
       emailSourceUrl: p.emailSourceUrl!,
       signals: p.signals,
       evidence: p.evidence,
-      referralUrl: referralUrl(opts.siteUrl, p.referralCode, campaignOf(template)),
+      link,
       sender: { name: opts.sender.name, postalAddress: opts.sender.postalAddress },
     };
-    message = kind === "initial" ? composeIntro(composeInput) : composeFollowUp(composeInput, { subject: original!.subject, sentAt: original!.sentAt! });
+    message = kind === "initial" ? composeIntro(composeInput) : composeFollowUp(composeInput, { subject: original!.subject, sentAt: original!.sentAt! }, { reusesInvitation });
   }
   return { prospect: p, kind, errors, open, original, message };
 }
@@ -96,12 +113,17 @@ const isUniqueClash = (err: unknown, field: string) =>
  * Generates and stores a draft for the prospect. Idempotent: when the
  * prospect already has an open message, that one is returned unchanged
  * (created: false). Never sends.
+ *
+ * A first message gets its invitation in the same transaction
+ * (createInvitationInTx): its link is written into the message, only the
+ * token's hash is stored, and if either part fails neither exists.
  */
 export async function createOutreachDraft(db: Db, prospectId: string, opts: DraftOptions) {
   const now = opts.now ?? new Date();
   try {
     return await db.$transaction(async (tx) => {
-      const plan = await planDraft(tx, prospectId, opts);
+      const token = opts.followUpOfId ? null : newInvitationToken();
+      const plan = await planDraft(tx, prospectId, opts, token ? invitationUrl(opts.siteUrl, token) : undefined);
       if (plan.open) return { outreach: plan.open, created: false };
       if (plan.errors.length || !plan.message) throw new ProspectError(plan.errors);
       const m = plan.message;
@@ -129,6 +151,7 @@ export async function createOutreachDraft(db: Db, prospectId: string, opts: Draf
         },
       });
       await logOutreachEvent(tx, outreach.id, "drafted", `${m.template}, ${m.evidence.length} fact(s)`, now);
+      if (token) await createInvitationInTx(tx, outreach.id, opts.siteUrl, now, token);
       return { outreach, created: true };
     });
   } catch (err) {

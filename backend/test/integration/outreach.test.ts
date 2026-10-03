@@ -4,6 +4,7 @@ import type { FastifyInstance } from "fastify";
 import { buildApp } from "../../src/app.js";
 import { loadConfig } from "../../src/config.js";
 import type { Db } from "../../src/db.js";
+import { hashInvitationToken } from "../../src/invitations/tokens.js";
 import { ingestBusinesses } from "../../src/discovery/service.js";
 import type { OutreachFact } from "../../src/outreach/compose.js";
 import {
@@ -84,12 +85,18 @@ describe("outreach (service)", { skip: skipReason }, () => {
     assert.equal(o.prospectId, p.id);
     assert.equal(o.status, "draft");
     assert.equal(o.kind, "initial");
-    assert.equal(o.template, "intro@t1");
-    assert.equal(o.campaign, "outreach-intro-t1");
+    assert.equal(o.template, "intro@t2");
+    assert.equal(o.campaign, "outreach-intro-t2");
     assert.equal(o.recipientEmail, EMAIL);
     assert.equal(o.recipientSourceUrl, `${WEBSITE}/contact`);
-    assert.equal(o.subject, "Declined work at Smith Auto");
-    assert.ok(o.body.includes(`https://reclaimbay.com/?ref=${p.referralCode}&campaign=outreach-intro-t1`));
+    assert.equal(o.subject, "Quick question about Smith Auto");
+    // Its one link is its own invitation, made with it: the stored hash is the hash of the token in the link.
+    const token = /https:\/\/reclaimbay\.com\/invite#([A-Za-z0-9_-]{43})\n/.exec(o.body)?.[1];
+    assert.ok(token, "the message links its invitation");
+    const invitation = await db.invitation.findUniqueOrThrow({ where: { outreachId: o.id } });
+    assert.equal(invitation.tokenHash, hashInvitationToken(token));
+    assert.equal(invitation.campaign, "outreach-intro-t2");
+    assert.ok(!o.body.includes("?ref="), "no referral link alongside it");
     assert.equal(o.openForProspectId, p.id);
     assert.ok(o.generatedAt instanceof Date);
     assert.equal(o.sentAt, null);
@@ -104,9 +111,14 @@ describe("outreach (service)", { skip: skipReason }, () => {
     const p = await prospect();
     const { outreach: o } = await createOutreachDraft(db, p.id, OPTS);
     const facts = o.evidence as unknown as OutreachFact[];
-    assert.deepEqual(facts.map((f) => f.key), ["business_name", "recipient", "location", "independent_shop", "general_repair_services"]);
+    // intro@t2 relies on the business, its address, that it is independent, and its city, in the order it says them.
+    assert.deepEqual(facts.map((f) => f.key), ["business_name", "recipient", "independent_shop", "location"]);
     assert.doesNotMatch(o.body, /inspection/i);
     const evidence = await db.prospectEvidence.findMany({ where: { prospectId: p.id } });
+    // General repair is still evidenced and still supports a fact; intro@t2 just doesn't mention services.
+    assert.ok(evidence.some((e) => e.signalKey === "general_repair_services"), "the prospect's general-repair evidence is kept");
+    assert.ok(!facts.some((f) => f.key === "general_repair_services"));
+    assert.doesNotMatch(o.body, /brakes|diagnostics|general repair/i, "the message names no services");
     for (const f of facts.filter((f) => f.signalKey)) {
       assert.ok(evidence.some((e) => e.signalKey === f.signalKey && e.sourceUrl === f.sourceUrl && e.excerpt === f.excerpt), f.key);
     }
@@ -166,7 +178,7 @@ describe("outreach (service)", { skip: skipReason }, () => {
     assert.equal(follow.created, true);
     assert.equal(follow.outreach.kind, "follow_up");
     assert.equal(follow.outreach.followUpOfId, first.id);
-    assert.equal(follow.outreach.subject, "Re: Declined work at Smith Auto");
+    assert.equal(follow.outreach.subject, "Re: Quick question about Smith Auto");
     const dup = await createOutreachDraft(db, p.id, OPTS);
     assert.equal(dup.created, false, "the open follow-up is returned, not a second message");
     assert.equal(dup.outreach.id, follow.outreach.id);
@@ -259,7 +271,7 @@ describe("outreach (service)", { skip: skipReason }, () => {
     await queueOutreach(db, outreach.id, CFG);
     const history = await db.prospectStatusChange.findMany({ where: { prospectId: p.id }, orderBy: { createdAt: "asc" } });
     assert.deepEqual(history.map((h) => h.toStatus), ["new", "qualified", "ready_to_contact"]);
-    assert.match(history.at(-1)!.reason!, /Outreach queued \(intro@t1\)/);
+    assert.match(history.at(-1)!.reason!, /Outreach queued \(intro@t2\)/);
     assert.equal((await db.outreach.findUniqueOrThrow({ where: { id: outreach.id } })).status, "queued");
   });
 
@@ -357,11 +369,11 @@ describe("outreach (admin HTTP)", { skip: skipReason }, () => {
 
     const view = (await get(`/admin/outreach/${o.id}?done=drafted`)).body;
     assert.match(view, /Draft prepared from the stored evidence\. Nothing was sent\./);
-    assert.match(view, /Declined work at Smith Auto/);
-    assert.match(view, /I came across Smith Auto in Springfield, IL while looking for independent auto repair shops/);
+    assert.match(view, /Quick question about Smith Auto/);
+    assert.match(view, /I came across Smith Auto while researching independent shops in Springfield\./);
     assert.match(view, /Evidence used/);
     assert.match(view, /Family owned\./);
-    assert.match(view, /<code>intro@t1<\/code>/);
+    assert.match(view, /<code>intro@t2<\/code>/);
     assert.match(view, /Discard/);
     assert.doesNotMatch(view, /Record a reply/, "a draft has no reply to record");
 
