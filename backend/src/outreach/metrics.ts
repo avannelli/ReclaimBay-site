@@ -12,6 +12,8 @@ import { NEGATIVE_REPLIES, POSITIVE_REPLIES } from "./lifecycle.js";
 export interface FunnelRow {
   campaign: string;
   drafted: number;
+  /** Approved for sending (each message once, even if later cancelled). */
+  queued: number;
   prospectsEntered: number;
   sent: number;
   delivered: number;
@@ -32,6 +34,7 @@ export interface FunnelRow {
 const empty = (campaign: string): FunnelRow => ({
   campaign,
   drafted: 0,
+  queued: 0,
   prospectsEntered: 0,
   sent: 0,
   delivered: 0,
@@ -52,7 +55,7 @@ const empty = (campaign: string): FunnelRow => ({
 /** One row per campaign, plus a total row ("all"). */
 export async function outreachMetrics(db: Db): Promise<FunnelRow[]> {
   const messages = await db.outreach.findMany({
-    select: { prospectId: true, campaign: true, status: true, sentAt: true, deliveredAt: true, replyOutcome: true, events: { select: { type: true } } },
+    select: { prospectId: true, campaign: true, status: true, queuedAt: true, sentAt: true, deliveredAt: true, replyOutcome: true, events: { select: { type: true } } },
     orderBy: { createdAt: "asc" },
   });
   const rows = new Map<string, FunnelRow>();
@@ -66,6 +69,7 @@ export async function outreachMetrics(db: Db): Promise<FunnelRow[]> {
   for (const m of messages) {
     for (const r of [row(m.campaign), total]) {
       r.drafted++;
+      if (m.queuedAt) r.queued++;
       if (m.sentAt) r.sent++;
       if (m.deliveredAt) r.delivered++;
       if (m.status === "bounced") r.bounced++;

@@ -10,8 +10,9 @@ import {
   type OutreachStatus,
 } from "../outreach/lifecycle.js";
 import type { FunnelRow } from "../outreach/metrics.js";
+import type { SendingStatus } from "../outreach/dispatch.js";
 import type { PrepareReport } from "../outreach/prepare.js";
-import type { getOutreachDetail, prospectOutreach } from "../outreach/service.js";
+import type { getOutreachDetail, outreachAttention, prospectOutreach } from "../outreach/service.js";
 import { FIELD_LIMITS } from "../prospects.js";
 import { appPage } from "./views.js";
 import { crumbs, emptyState, errorSummary, esc, extLink, fieldErrors, fmtDate, notice, options, pageHead, section, statusBadge } from "./ui.js";
@@ -194,8 +195,17 @@ ${actions.length ? section("actions", "Actions", `<div class="stack">${actions.j
 
 export interface ControlPageData {
   sw: { enabled: boolean; reason: string; at: Date | null };
-  /** Everything blocking sending, the switch aside. */
+  /** Whether mail is going out now, and why not (dispatch.ts sendingStatus). */
+  status: SendingStatus;
+  /** Everything blocking sending, the switch aside: what must be fixed before it can be switched on. */
   readiness: string[];
+  /** The same, plus the provider's live check. */
+  blockers: string[];
+  /** The daily limit as the dispatcher counts it. */
+  capacity: { used: number; limit: number; remaining: number };
+  attention: Awaited<ReturnType<typeof outreachAttention>>;
+  /** The enabled provider's name; null when none can send. */
+  provider: string | null;
   counts: Partial<Record<OutreachStatus, number>>;
   stuck: { id: string; subject: string; recipientEmail: string; sendStartedAt: Date | null; lastSendError: string | null }[];
   eligible: PrepareReport;
@@ -210,6 +220,7 @@ export interface ControlPageData {
 
 const METRIC_COLUMNS: [keyof FunnelRow, string][] = [
   ["drafted", "Drafted"],
+  ["queued", "Queued"],
   ["prospectsEntered", "Prospects reached"],
   ["sent", "Sent"],
   ["delivered", "Delivered"],
@@ -238,53 +249,147 @@ function gmailCard(g: NonNullable<ControlPageData["gmail"]>): string {
   return status + action;
 }
 
+const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
+
+/** One "needs attention" group: a heading with its count, a short why, and the messages (linked). Items are already escaped. */
+function attentionGroup(tone: "warn" | "neg", glyph: string, title: string, total: number, why: string, items: string[]): string {
+  if (!total) return "";
+  const more = total > items.length ? `<li class="muted">and ${total - items.length} more</li>` : "";
+  return `<div class="o-attn t-${tone}"><h3><span aria-hidden="true">${glyph}</span> ${esc(title)} <span class="q-count">${total}</span></h3><p class="q-hint">${esc(why)}</p><ul>${items.join("")}${more}</ul></div>`;
+}
+
 export function outreachControlPage(d: ControlPageData, opts: { notice?: string; errors?: string[] } = {}): string {
   const fe = fieldErrors(opts.errors);
-  const switchCard = d.sw.enabled
-    ? `<p><b>Sending is ON.</b> <span class="small muted">${esc(d.sw.reason)} · ${fmtDate(d.sw.at)}</span></p>
-<form method="post" action="/admin/outreach/switch" class="row"><input type="hidden" name="enabled" value="0"><button class="btn-danger" type="submit">Stop all sending now</button><span class="small muted">Takes effect before the next message.</span></form>`
-    : `<p><b>Sending is OFF.</b> <span class="small muted">${esc(d.sw.reason)}${d.sw.at ? ` · ${fmtDate(d.sw.at)}` : ""}</span></p>
-${
-  d.readiness.length
-    ? `<p class="small" style="margin:0"><b>It can't be switched on until:</b></p><ul class="small" style="margin:4px 0 0">${d.readiness.map((e) => `<li>${esc(e)}</li>`).join("")}</ul>`
-    : `<form method="post" action="/admin/outreach/switch" class="row" style="align-items:flex-end"><input type="hidden" name="enabled" value="1">
-  <div style="flex:1;min-width:240px"><label class="lbl" for="f-reason">Reason</label><input id="f-reason" type="text" name="reason" maxlength="500"></div>
-  <button type="submit">Switch sending on</button></form>`
-}`;
-  const counts = OUTREACH_STATUSES.map((s) => `<div><dt>${esc(OUTREACH_STATUS_LABELS[s])}</dt><dd>${d.counts[s] ?? 0}</dd></div>`).join("");
-  const stuck = d.stuck.length
-    ? `<ul class="small">${d.stuck.map((s) => `<li><a href="/admin/outreach/${esc(s.id)}">${esc(s.subject)}</a> to ${esc(s.recipientEmail)} · started ${fmtDate(s.sendStartedAt)}${s.lastSendError ? ` · ${esc(s.lastSendError)}` : ""}</li>`).join("")}</ul>`
-    : `<p class="small muted" style="margin:0">None.</p>`;
+  const s = d.status;
+  const a = d.attention;
+
+  // The one action that matters now: stop while on; switch on only when everything else is ready.
+  const action = d.sw.enabled
+    ? `<form method="post" action="/admin/outreach/switch"><input type="hidden" name="enabled" value="0"><button class="btn-danger" type="submit">Stop all sending now</button><div class="small muted" style="margin-top:4px">Takes effect before the next message.</div></form>`
+    : d.readiness.length
+      ? ""
+      : `<form method="post" action="/admin/outreach/switch" class="row" style="align-items:flex-end"><input type="hidden" name="enabled" value="1">
+  <div style="flex:1;min-width:220px"><label class="lbl" for="f-reason">Reason for switching on</label><input id="f-reason" type="text" name="reason" maxlength="500" required></div>
+  <button type="submit">Switch sending on</button></form>`;
+  const notReady =
+    !d.sw.enabled && d.readiness.length
+      ? `<div class="o-blockers"><p><b>Sending can't be switched on until:</b></p><ul>${d.readiness.map((e) => `<li>${esc(e)}</li>`).join("")}</ul></div>`
+      : "";
+  // Blocked by the provider's authorization: the fix is further down this page, so point to it.
+  const providerFix = d.sw.enabled && s.tone === "neg" && Boolean(d.gmail && !d.gmail.authorized && d.gmail.canAuthorize);
+  const statusBlock = `<section class="o-status t-${s.tone}" aria-labelledby="sending-h">
+  <div class="o-status-main">
+    <h2 id="sending-h" class="o-status-l"><span aria-hidden="true">${s.glyph}</span> ${esc(s.label)}</h2>
+    <p class="o-status-d">${esc(s.detail)}${providerFix ? ` <a href="#provider">Fix it under Email provider ↓</a>` : ""}</p>
+    <p class="small muted" style="margin:0">Switch: ${esc(d.sw.reason)}${d.sw.at ? ` · ${fmtDate(d.sw.at)}` : ""} · Last message sent: ${a.lastSentAt ? fmtDate(a.lastSentAt) : "never"}</p>
+  </div>
+  ${action ? `<div class="o-status-act">${action}</div>` : ""}
+  ${notReady}
+</section>`;
+
+  const tile = (tone: "pos" | "warn" | "info", glyph: string, n: string, label: string, hint: string, zero: boolean) =>
+    `<div class="q-tile t-${tone}${zero ? " zero" : ""}"><span class="q-tile-n">${n}</span><span class="q-tile-l"><span aria-hidden="true">${glyph}</span> ${esc(label)}</span><span class="q-tile-h">${esc(hint)}</span></div>`;
+  const c = d.capacity;
+  const eligibleN = d.eligible.drafted.length;
+  const drafts = d.counts.draft ?? 0;
+  const queued = d.counts.queued ?? 0;
+  const tiles = `<section class="q-tiles" aria-label="Outreach at a glance">
+${tile("pos", "✓", String(eligibleN), "Eligible now", "can get a first draft", eligibleN === 0)}
+${tile("info", "✎", String(drafts), "Drafts", "prepared, not yet queued", drafts === 0)}
+${tile("info", "→", String(queued), "Queued", "waiting to be sent", queued === 0)}
+${tile(c.remaining === 0 ? "warn" : "info", "✉", `${c.used} / ${c.limit}`, "Sent, last 24 hours", `${c.remaining} left under the daily limit`, c.used === 0)}
+</section>`;
+
+  const msg = (id: string, subject: string, extra: string) => `<li><a href="/admin/outreach/${esc(id)}">${esc(subject)}</a> <span class="small muted">${extra}</span></li>`;
+  const attention = [
+    attentionGroup(
+      "warn",
+      "⚠",
+      "Send outcome unknown",
+      d.stuck.length,
+      "The provider may or may not have sent these. Check it, then record It was sent or discard the message.",
+      d.stuck.slice(0, 20).map((m) => msg(m.id, m.subject, `to ${esc(m.recipientEmail)} · started ${fmtDate(m.sendStartedAt)}${m.lastSendError ? ` · ${esc(m.lastSendError)}` : ""}`)),
+    ),
+    attentionGroup(
+      "warn",
+      "↩",
+      "Replies to classify",
+      a.replyCount,
+      "Read each reply and record how they answered. An opt-out must be honoured promptly.",
+      a.replies.map((m) => msg(m.id, m.subject, `from ${esc(m.recipientEmail)} · ${fmtDate(m.repliedAt)}`)),
+    ),
+    attentionGroup(
+      "neg",
+      "✕",
+      "Refused by the provider, last 7 days",
+      a.failureCount,
+      "Not sent. An invalid address is suppressed; anything else can be prepared again once the cause is fixed.",
+      a.failures.map((m) => msg(m.id, m.subject, `to ${esc(m.recipientEmail)} · ${fmtDate(m.failedAt)}${m.failureReason ? ` · ${esc(m.failureReason)}` : ""}`)),
+    ),
+  ].filter(Boolean);
+  const attentionBlock = attention.length ? section("attention", "Needs attention", `<div class="stack">${attention.join("\n")}</div>`) : "";
+
   const prepared = d.prepared
     ? `<div class="callout" style="margin-bottom:12px">Prepared ${d.prepared.drafted.length} draft(s)${d.prepared.queued.length ? `, queued ${d.prepared.queued.length}` : ""}.${d.prepared.notQueued.length ? ` ${d.prepared.notQueued.length} not queued: ${esc(d.prepared.notQueued[0]!.reasons.join(" "))}` : ""}</div>`
     : "";
+  const skipped = d.eligible.skipped;
+  const prepare = section(
+    "prepare",
+    "Prepare messages",
+    `<div class="card">${prepared}
+<p style="margin:0 0 12px">${eligibleN ? `<b>${plural(eligibleN, "prospect is", "prospects are")} eligible</b> for a first message now.` : "<b>No prospect is eligible</b> for a first message now."} <span class="muted">Each draft is written from that prospect's stored evidence; nothing is sent here.</span></p>
+${
+  eligibleN
+    ? `<div class="row"><form method="post" action="/admin/outreach/prepare" class="inline-form"><button type="submit">Prepare ${plural(eligibleN, "draft", "drafts")}</button></form>
+<form method="post" action="/admin/outreach/prepare" class="inline-form"><input type="hidden" name="queue" value="1"><button class="btn-secondary" type="submit">Prepare and queue</button></form></div>
+<p class="small muted" style="margin:10px 0 0">Queueing checks the sender identity and each message's opt-out and postal address. Queued messages are sent only while sending is on.</p>`
+    : ""
+}
+${
+  skipped.length
+    ? `<details class="o-why"><summary>Why ${plural(skipped.length, "other prospect isn't", "other prospects aren't")} eligible</summary><ul class="small">${skipped
+        .slice(0, 50)
+        .map((p) => `<li><a href="/admin/prospects/${esc(p.prospectId)}#outreach">${esc(p.businessName ?? "Prospect")}</a>: ${esc(p.reasons.join(" "))}</li>`)
+        .join("")}</ul></details>`
+    : ""
+}</div>`,
+  );
+
+  const provider = section(
+    "provider",
+    "Email provider",
+    `<div class="card">${
+      d.gmail
+        ? gmailCard(d.gmail)
+        : d.provider
+          ? `<p style="margin:0"><b>${esc(d.provider)}</b> is configured.</p>`
+          : `<p style="margin:0"><b>No email provider is configured.</b> <span class="small muted">Set OUTREACH_PROVIDER=gmail and its credentials (see OUTREACH.md). Until then nothing can be sent.</span></p>`
+    }</div>`,
+  );
+
+  const counts = OUTREACH_STATUSES.map((st) => `<div><dt>${esc(OUTREACH_STATUS_LABELS[st])}</dt><dd>${d.counts[st] ?? 0}</dd></div>`).join("");
   const metricRows = d.metrics
     .map((r) => `<tr><td><code>${esc(r.campaign)}</code></td>${METRIC_COLUMNS.map(([k]) => `<td class="num">${r[k]}</td>`).join("")}</tr>`)
     .join("");
+  const total = Object.values(d.counts).reduce((n, v) => n + (v ?? 0), 0);
+  const details = `<section class="section" aria-label="Details">
+<details class="disc" id="messages"><summary><h2>Messages by status</h2><span class="disc-sum">${plural(total, "message", "messages")}</span></summary><div class="disc-body"><dl class="metrics">${counts}</dl></div></details>
+<details class="disc" id="funnel"><summary><h2>Funnel by campaign</h2><span class="disc-sum">drafted to customer</span></summary><div class="disc-body">
+<div class="scroll"><table class="tbl"><caption class="sr-only">Outreach funnel by campaign</caption><thead><tr><th scope="col">Campaign</th>${METRIC_COLUMNS.map(([, l]) => `<th scope="col" class="num">${esc(l)}</th>`).join("")}</tr></thead><tbody>${metricRows}</tbody></table></div>
+<p class="small muted">Computed from the stored messages, their events, and prospect status history. Outcomes (meetings to lost) count prospects that ever reached that status, by the campaign of their first sent message. Delivered counts only what a provider reports; Gmail reports no deliveries, so with Gmail it stays 0 and "sent, not bounced" is the closest measure. Revenue isn't recorded yet.</p>
+</div></details>
+</section>`;
 
   return appPage(
     "Outreach · ReclaimBay admin",
     "outreach",
     `${notice(opts.notice)}${errorSummary(opts.errors, fe, "Not done")}
-${pageHead({ title: "Outreach", lede: "Preparing, sending, and measuring outreach. Every number below is computed from the stored messages, their events, and prospect status history." })}
-${section("switch", "Sending", `<div class="card">${switchCard}</div>`)}
-${d.gmail ? section("gmail", "Gmail", `<div class="card">${gmailCard(d.gmail)}</div>`) : ""}
-${section(
-  "prepare",
-  "Automatic preparation",
-  `<div class="card">${prepared}
-<p style="margin:0 0 10px"><b>${d.eligible.drafted.length}</b> prospect(s) can get a first draft now (checked ${d.eligible.checked}; ${d.eligible.skipped.length} not eligible).</p>
-<div class="row"><form method="post" action="/admin/outreach/prepare" class="inline-form"><button type="submit">Prepare drafts for all eligible prospects</button></form>
-<form method="post" action="/admin/outreach/prepare" class="inline-form"><input type="hidden" name="queue" value="1"><button class="btn-secondary" type="submit">Prepare and queue</button></form></div>
-<p class="small muted" style="margin-top:10px">Queueing checks the sender identity and each message's opt-out and postal address. Queued messages are sent only while sending is on.</p></div>`,
-)}
-${section("queue", "Messages", `<div class="card"><dl class="metrics">${counts}</dl></div>`)}
-${section("stuck", "Send outcome unknown", `<div class="card">${stuck}</div>`)}
-${section(
-  "funnel",
-  "Funnel by campaign",
-  `<div class="scroll"><table class="tbl"><thead><tr><th scope="col">Campaign</th>${METRIC_COLUMNS.map(([, l]) => `<th scope="col" class="num">${esc(l)}</th>`).join("")}</tr></thead><tbody>${metricRows}</tbody></table></div>
-<p class="small muted">Outcomes (meetings to lost) count prospects that ever reached that status, by the campaign of their first sent message. Delivered counts only what a provider reports; Gmail reports no deliveries, so with Gmail it stays 0 and "sent, not bounced" is the closest measure. Revenue isn't recorded yet.</p>`,
-)}`,
+${pageHead({ title: "Outreach", lede: "Approved prospects get one personal email each, written from their stored evidence. Nothing is sent unless sending is switched on." })}
+${statusBlock}
+${tiles}
+${attentionBlock}
+${prepare}
+${provider}
+${details}`,
   );
 }

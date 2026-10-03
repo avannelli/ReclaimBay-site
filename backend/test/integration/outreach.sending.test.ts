@@ -4,7 +4,7 @@ import type { FastifyInstance } from "fastify";
 import { buildApp } from "../../src/app.js";
 import { loadConfig } from "../../src/config.js";
 import type { Db } from "../../src/db.js";
-import { confirmStuckSent, dispatchQueued, sendingSwitch, setSendingSwitch, stuckMessages } from "../../src/outreach/dispatch.js";
+import { confirmStuckSent, dailyCapacity, dispatchQueued, sendingSwitch, setSendingSwitch, stuckMessages } from "../../src/outreach/dispatch.js";
 import { outreachMetrics } from "../../src/outreach/metrics.js";
 import { prepareEligibleOutreach } from "../../src/outreach/prepare.js";
 import { disabledSender } from "../../src/outreach/sender.js";
@@ -12,9 +12,11 @@ import {
   applyProviderEvent,
   classifyReply,
   createOutreachDraft,
+  previewOutreachDraft,
   queueOutreach,
   recordInboundReply,
   recordReply,
+  unsubscribeOutreach,
 } from "../../src/outreach/service.js";
 import { addEvidence, changeStatus, createProspect, updateProspect, formValuesOf } from "../../src/prospects.js";
 import { TEST_DATABASE_URL, WEBSITE, freshDb, readyForm, skipReason, truncate } from "./helpers.js";
@@ -198,6 +200,137 @@ describe("outreach sending (service)", { skip: skipReason }, () => {
     assert.equal(await db.outreachEvent.count({ where: { providerEventId: { not: null } } }), 2);
   });
 
+  test("concurrent reports about one message are applied one at a time, and none of them throws", async () => {
+    const p = await prospect();
+    const o = await draft(p.id);
+    await queueAndSend(db, o.id);
+    const pm = `msg-${o.id}`;
+    const reports = [
+      { provider: "mock", type: "delivered" as const, providerMessageId: pm, providerEventId: "d-1" },
+      { provider: "mock", type: "delivered" as const, providerMessageId: pm, providerEventId: "d-1" },
+      { provider: "mock", type: "bounced" as const, providerMessageId: pm, providerEventId: "b-1", reason: "550 no such user" },
+      { provider: "mock", type: "complained" as const, providerMessageId: pm, providerEventId: "c-1" },
+      { provider: "mock", type: "complained" as const, providerMessageId: pm, providerEventId: "c-2" },
+    ];
+    const results = await Promise.all(reports.map((r) => applyProviderEvent(db, r)));
+    assert.ok(results.every((r) => r.outreachId === o.id));
+    // Delivered then bounced, or bounced first and the late delivery ignored: bounced either way.
+    assert.equal(await status(o.id), "bounced");
+    assert.equal(await db.outreachEvent.count({ where: { providerEventId: "d-1" } }), 1);
+    assert.equal(await db.outreachEvent.count({ where: { outreachId: o.id, type: "complained" } }), 1, "two complaint notifications, one complaint");
+    assert.equal(await db.outreachEvent.count({ where: { outreachId: o.id, type: "bounced" } }), 1);
+    assert.ok(await db.emailSuppression.findUnique({ where: { email: p.email! } }));
+    assert.equal(await prospectStatus(p.id), "do_not_contact");
+    await assert.rejects(createOutreachDraft(db, p.id, OPTS), /never be contacted/, "nothing in those reports makes the business eligible again");
+  });
+
+  test("the dispatcher's own record and the provider's sent report racing: the send is recorded once", async () => {
+    const p = await prospect();
+    const o = await draft(p.id);
+    let webhook: Promise<unknown> = Promise.resolve();
+    const sender = mockSender((m) => {
+      // The provider's notification arrives while the dispatcher records the same send.
+      webhook = applyProviderEvent(db, { provider: "mock", type: "sent", outreachId: m.outreachId, providerMessageId: `msg-${m.outreachId}`, providerEventId: "s-1" });
+      return { status: "accepted", providerMessageId: `msg-${m.outreachId}` };
+    });
+    const report = await queueAndSend(db, o.id, sender);
+    const fromWebhook = (await webhook) as { result: string };
+    assert.equal(report.sent.length, 1);
+    assert.ok(["recorded", "duplicate"].includes(fromWebhook.result));
+    assert.equal(sender.calls.length, 1);
+    assert.equal(await db.outreachEvent.count({ where: { outreachId: o.id, type: "sent" } }), 1);
+    const stored = await db.outreach.findUniqueOrThrow({ where: { id: o.id } });
+    assert.equal(stored.status, "sent");
+    assert.equal(stored.providerMessageId, `msg-${o.id}`);
+    assert.equal(await prospectStatus(p.id), "contacted");
+  });
+
+  test("copies of one reply arriving together are recorded once; a reply and a bounce together, one wins", async () => {
+    const p = await prospect();
+    const o = await draft(p.id);
+    await queueAndSend(db, o.id);
+    const copies = await Promise.all([1, 2, 3].map(() => recordInboundReply(db, { fromEmail: p.email!, inReplyToProviderMessageId: `msg-${o.id}`, summary: "Interested" })));
+    assert.deepEqual(copies.map((r) => r.result).sort(), ["duplicate", "duplicate", "recorded"]);
+    assert.equal(await db.outreachEvent.count({ where: { outreachId: o.id, type: "replied" } }), 1);
+    assert.equal(await prospectStatus(p.id), "engaged");
+
+    const q = await prospect();
+    const m = await draft(q.id);
+    await queueAndSend(db, m.id);
+    const [reply, bounce] = await Promise.all([
+      recordInboundReply(db, { fromEmail: q.email!, inReplyToProviderMessageId: `msg-${m.id}` }),
+      applyProviderEvent(db, { provider: "mock", type: "bounced", providerMessageId: `msg-${m.id}`, providerEventId: "b-race" }),
+    ]);
+    assert.deepEqual([reply.result, bounce.result].sort(), ["ignored", "recorded"]);
+    assert.ok(["replied", "bounced"].includes(await status(m.id)));
+  });
+
+  test("an opt-out arriving twice at once is logged once, and the address stays suppressed", async () => {
+    const p = await prospect();
+    const o = await draft(p.id);
+    await queueAndSend(db, o.id);
+    const r = await Promise.all([1, 2].map(() => unsubscribeOutreach(db, o.id, "with the link in an outreach email")));
+    assert.deepEqual(r.map((x) => x.result).sort(), ["duplicate", "recorded"]);
+    assert.equal(await db.outreachEvent.count({ where: { outreachId: o.id, type: "unsubscribed" } }), 1);
+    assert.equal((await db.emailSuppression.findUniqueOrThrow({ where: { email: p.email! } })).reason, "unsubscribed");
+    assert.equal(await prospectStatus(p.id), "do_not_contact");
+  });
+
+  test("a claimed send survives a restart: a new dispatcher never sends it again", async () => {
+    const p = await prospect();
+    const o = await draft(p.id);
+    await queueOutreach(db, o.id, CFG);
+    // A dispatcher claimed it and the process died before the provider answered.
+    const claimedAt = new Date(Date.now() - 11 * 60 * 1000);
+    await db.outreach.update({ where: { id: o.id }, data: { sendStartedAt: claimedAt, sendAttempts: 1 } });
+    const fresh = mockSender();
+    await switchOn(db, fresh);
+    const report = await dispatchQueued(db, { config: CFG, sender: fresh });
+    assert.equal(fresh.calls.length, 0, "the claim is in the database, not in a process");
+    assert.deepEqual(report.sent, []);
+    assert.equal(await status(o.id), "queued");
+    assert.deepEqual((await stuckMessages(db, fresh)).map((s) => s.id), [o.id], "listed for a person instead");
+    const cap = await dailyCapacity(db, CFG, new Date());
+    assert.equal(cap.used, 1, "it counts against the daily limit once");
+  });
+
+  test("preparing, queueing, and sending give the same reason for the same problem", async () => {
+    // The problem: a required criterion is no longer confirmed. Qualified and Ready to
+    // contact require "Meets criteria", so (as a person would) the prospect is first moved
+    // back to New, the one status that allows an unconfirmed criterion, and then edited.
+    const unconfirm = async (id: string) => {
+      const current = await db.prospect.findUniqueOrThrow({ where: { id }, include: { signals: true } });
+      for (const s of current.status === "ready_to_contact" ? ["qualified", "new"] : current.status === "qualified" ? ["new"] : []) await changeStatus(db, id, s, null);
+      await updateProspect(db, id, { ...formValuesOf(current), signal_independent_shop: "unknown" });
+      assert.equal((await db.prospect.findUniqueOrThrow({ where: { id } })).status, "new");
+    };
+    const reason = /Outreach requires Qualification "Meets criteria"; this prospect is Unverified/;
+
+    // Sending: queued while qualified, unconfirmed afterwards.
+    const p = await prospect();
+    const o = await draft(p.id);
+    await queueOutreach(db, o.id, CFG);
+    await unconfirm(p.id);
+    assert.equal(await status(o.id), "queued", "moving back to New doesn't close outreach, so the send step must catch it");
+    const sender = mockSender();
+    await switchOn(db, sender);
+    const report = await dispatchQueued(db, { config: CFG, sender });
+    assert.equal(sender.calls.length, 0);
+    assert.match(report.cancelled[0]!.reasons.join(" "), reason);
+    assert.equal(await status(o.id), "cancelled");
+
+    // Preparing: the same prospect can't get a new draft, for the same reason.
+    assert.match((await previewOutreachDraft(db, p.id, OPTS)).errors.join(" "), reason);
+    await assert.rejects(createOutreachDraft(db, p.id, OPTS), reason);
+
+    // Queueing: a draft made while qualified can't be queued once unconfirmed, for the same reason.
+    const q = await prospect();
+    const m = await draft(q.id);
+    await unconfirm(q.id);
+    await assert.rejects(queueOutreach(db, m.id, CFG), reason);
+    assert.equal(await status(m.id), "draft");
+  });
+
   test("a bounce suppresses the address and cancels any queued message to it, on any prospect", async () => {
     const shared = "front@sharedinbox.example.com";
     const a = await prospect({ email: shared });
@@ -376,11 +509,13 @@ describe("outreach sending (service)", { skip: skipReason }, () => {
     await recordReply(db, c!.o.id, { outcome: "not_interested" });
     for (const s of ["meeting", "proposal", "customer"]) await changeStatus(db, a!.p.id, s, null);
     void d;
+    // Prepared but never queued: drafted, not queued.
+    await draft((await prospect()).id);
     const rows = await outreachMetrics(db);
     const t = rows.find((r) => r.campaign === "outreach-intro-t1")!;
     assert.deepEqual(
-      { drafted: t.drafted, entered: t.prospectsEntered, sent: t.sent, delivered: t.delivered, bounced: t.bounced, replied: t.replied, positive: t.positive, negative: t.negative, meetings: t.meetings, proposals: t.proposals, customers: t.customers, lost: t.lost },
-      { drafted: 4, entered: 4, sent: 4, delivered: 1, bounced: 1, replied: 2, positive: 1, negative: 1, meetings: 1, proposals: 1, customers: 1, lost: 1 },
+      { drafted: t.drafted, queued: t.queued, entered: t.prospectsEntered, sent: t.sent, delivered: t.delivered, bounced: t.bounced, replied: t.replied, positive: t.positive, negative: t.negative, meetings: t.meetings, proposals: t.proposals, customers: t.customers, lost: t.lost },
+      { drafted: 5, queued: 4, entered: 4, sent: 4, delivered: 1, bounced: 1, replied: 2, positive: 1, negative: 1, meetings: 1, proposals: 1, customers: 1, lost: 1 },
     );
     assert.equal(rows.find((r) => r.campaign === "all")!.sent, 4);
   });
@@ -450,9 +585,46 @@ describe("outreach sending (HTTP)", { skip: skipReason }, () => {
     assert.equal((await db.outreachControlChange.findFirstOrThrow()).sendingEnabled, false);
   });
 
+  test("the control page answers at a glance: on or off, what's waiting, today's limit, and what needs a person", async () => {
+    // A reply nobody has classified, and a message the provider refused for a business whose name needs escaping.
+    const { o } = await sentMessage();
+    await recordInboundReply(db, { fromEmail: o.recipientEmail, inReplyToProviderMessageId: o.providerMessageId });
+    const site = "https://sons.example.com";
+    const p2 = await createProspect(db, readyForm({ businessName: "Smith & <Sons> Auto", website: site, phoneSourceUrl: `${site}/contact`, email: "shop@sons.example.com", emailSourceUrl: `${site}/contact` }));
+    const { outreach: refused } = await createOutreachDraft(db, p2.id, OPTS);
+    await queueAndSend(db, refused.id, mockSender(() => ({ status: "rejected", reason: "552 <message> too large" })));
+    await db.outreachControlChange.create({ data: { sendingEnabled: false, reason: "Switched off.", createdAt: new Date(Date.now() + 1_000) } });
+
+    const page = (await get("/admin/outreach")).body;
+    assert.match(page, /<section class="o-status t-quiet" aria-labelledby="sending-h">/);
+    assert.match(page, /<h2 id="sending-h" class="o-status-l"><span aria-hidden="true">○<\/span> Sending is OFF<\/h2>/);
+    assert.match(page, /Sending can't be switched on until:[\s\S]*No email provider is configured\./);
+    assert.match(page, /<section class="q-tiles" aria-label="Outreach at a glance">/);
+    // The refused business can get a new message (nothing reached it); two sends started count against the limit.
+    assert.match(page, /<span class="q-tile-n">1<\/span><span class="q-tile-l"><span aria-hidden="true">✓<\/span> Eligible now<\/span>/);
+    assert.match(page, /<span class="q-tile-n">2 \/ 20<\/span><span class="q-tile-l"><span aria-hidden="true">✉<\/span> Sent, last 24 hours<\/span><span class="q-tile-h">18 left under the daily limit<\/span>/);
+    assert.match(page, /Last message sent: \d{4}-\d{2}-\d{2} \d{2}:\d{2} UTC/);
+
+    assert.match(page, /<h2 id="attention-h">Needs attention<\/h2>/);
+    assert.match(page, new RegExp(`Replies to classify <span class="q-count">1</span>[\\s\\S]*?href="/admin/outreach/${o.id}"`));
+    assert.match(page, new RegExp(`Refused by the provider, last 7 days <span class="q-count">1</span>[\\s\\S]*?href="/admin/outreach/${refused.id}">Declined work at Smith &#38; &#60;Sons&#62; Auto</a>`));
+    assert.match(page, /552 &#60;message&#62; too large/);
+    assert.doesNotMatch(page, /<Sons>|<message>/, "provider text and business names are escaped");
+    assert.match(page, /<details class="disc" id="funnel"><summary><h2>Funnel by campaign<\/h2>/, "measurement stays one click away");
+    assert.match(page, /<th scope="col" class="num">Queued<\/th>/);
+
+    // Switched on earlier, and the provider is gone since: the page says nothing can be sent, and offers only Stop.
+    await db.outreachControlChange.create({ data: { sendingEnabled: true, reason: "Launch.", createdAt: new Date(Date.now() + 2_000) } });
+    const blocked = (await get("/admin/outreach")).body;
+    assert.match(blocked, /<section class="o-status t-neg"/);
+    assert.match(blocked, /<span aria-hidden="true">✕<\/span> Sending is ON, but blocked<\/h2>\s*<p class="o-status-d">Nothing can be sent: /);
+    assert.match(blocked, />Stop all sending now<\/button>/);
+    assert.doesNotMatch(blocked, /Switch sending on<\/button>/);
+  });
+
   test("the admin prepares drafts for every eligible prospect from one button", async () => {
     await createProspect(db, readyForm({ email: "service@smithauto.example.com", emailSourceUrl: `${WEBSITE}/contact` }));
-    assert.match((await get("/admin/outreach")).body, /<b>1<\/b> prospect\(s\) can get a first draft now/);
+    assert.match((await get("/admin/outreach")).body, /<b>1 prospect is eligible<\/b> for a first message now/);
     const res = await post("/admin/outreach/prepare");
     assert.equal(res.statusCode, 200);
     assert.match(res.body, /Prepared 1 draft\(s\)/);

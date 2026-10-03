@@ -6,7 +6,7 @@
  *   1. OUTREACH_SENDING_ENABLED=1 in the environment (the deployment arm)
  *   2. the global switch, on in the admin (append-only; off by default, and
  *      switching it off takes effect before the next message)
- *   3. an enabled provider (none exists yet: see sender.ts)
+ *   3. an enabled provider (OUTREACH_PROVIDER; see sender.ts)
  * plus a complete sender identity (name, email, postal address, unsubscribe
  * link).
  *
@@ -23,8 +23,9 @@ import type { Config } from "../config.js";
 import type { Db } from "../db.js";
 import { ProspectError } from "../prospects.js";
 import { listUnsubscribeHeaders, senderIdentityErrors, unsubscribeUrl } from "./compliance.js";
-import { moveOutreachInTx, recordSentInTx, sendEligibilityErrors } from "./service.js";
-import { suppressEmail } from "./records.js";
+import { messageEligibilityErrors } from "./eligibility.js";
+import { moveOutreachInTx, recordSentInTx } from "./service.js";
+import { lockOutreach, suppressEmail } from "./records.js";
 import type { OutgoingMessage, OutreachSender, SendResult } from "./sender.js";
 import type { Prisma } from "../generated/prisma/client.js";
 
@@ -62,6 +63,35 @@ export function readinessErrors(cfg: SendingConfig, sender: OutreachSender): str
 export async function sendingBlockers(db: Db | Tx, cfg: SendingConfig, sender: OutreachSender) {
   const sw = await sendingSwitch(db);
   return [...(sw.enabled ? [] : ["The global sending switch is off."]), ...readinessErrors(cfg, sender)];
+}
+
+export interface SendingStatus {
+  tone: "pos" | "warn" | "neg" | "quiet";
+  glyph: string;
+  label: string;
+  detail: string;
+}
+
+/**
+ * Whether mail is actually going out, and if not, why: the first thing an
+ * operator needs. The switch can be on while something else blocks sending
+ * (an unarmed deployment, a provider that can't send) or while the daily
+ * limit is used up, and each of those says so.
+ */
+export function sendingStatus(s: { switchOn: boolean; blockers: readonly string[]; remaining: number; limit: number; queued: number }): SendingStatus {
+  if (!s.switchOn) {
+    return { tone: "quiet", glyph: "○", label: "Sending is OFF", detail: "Nothing is sent. Messages can still be prepared and queued; they wait until sending is switched on." };
+  }
+  if (s.blockers.length) return { tone: "neg", glyph: "✕", label: "Sending is ON, but blocked", detail: `Nothing can be sent: ${s.blockers[0]}` };
+  if (s.remaining === 0) {
+    return { tone: "warn", glyph: "⏸", label: "Sending is ON, paused by the daily limit", detail: `All ${s.limit} sends for the last 24 hours are used. Sending resumes as that window moves on.` };
+  }
+  return {
+    tone: "pos",
+    glyph: "●",
+    label: "Sending is ON",
+    detail: `${s.queued ? `${s.queued} queued.` : "Nothing is queued."} ${s.remaining} of ${s.limit} daily sends left.`,
+  };
 }
 
 /**
@@ -105,6 +135,13 @@ export interface DispatchReport {
 
 /** New sends started in the last 24 hours (each message counts once, however many attempts). */
 export const sentInLastDay = (tx: Tx | Db, now: Date) => tx.outreach.count({ where: { sendStartedAt: { gte: new Date(now.getTime() - DAY_MS) } } });
+
+/** The daily limit as it stands now: the same count the dispatcher enforces. */
+export async function dailyCapacity(tx: Tx | Db, cfg: Pick<SendingConfig, "outreachDailyLimit">, now: Date) {
+  const limit = cfg.outreachDailyLimit ?? DEFAULT_DAILY_LIMIT;
+  const used = await sentInLastDay(tx, now);
+  return { used, limit, remaining: Math.max(0, limit - used) };
+}
 
 const toMessage = (
   o: { id: string; recipientEmail: string; subject: string; body: string; unsubscribeToken: string | null },
@@ -170,7 +207,7 @@ export async function dispatchQueued(db: Db, opts: DispatchOptions): Promise<Dis
       if (blockers.length) return { kind: "stop", reason: blockers.join(" ") };
       const o = await tx.outreach.findUnique({ where: { id }, include: { prospect: { include: { signals: true } } } });
       if (!o || o.status !== "queued") return { kind: "skip" };
-      const errors = await sendEligibilityErrors(tx, o, cfg, "send");
+      const errors = await messageEligibilityErrors(tx, o, cfg, "send");
       if (errors.length) {
         // Possibly sent already: never cancel it silently; it waits for a person.
         if (o.sendStartedAt) return { kind: "held", reasons: errors };
@@ -185,9 +222,8 @@ export async function dispatchQueued(db: Db, opts: DispatchOptions): Promise<Dis
       if (o.sendStartedAt === null) {
         // The daily limit, counted under a lock so concurrent dispatchers can't both take the last slot.
         await tx.$executeRaw`SELECT pg_advisory_xact_lock(${CLAIM_LOCK})`;
-        const limit = cfg.outreachDailyLimit ?? DEFAULT_DAILY_LIMIT;
-        const used = await sentInLastDay(tx, now);
-        if (used >= limit) return { kind: "stop", reason: `The daily sending limit is reached (${used} of ${limit} in the last 24 hours).` };
+        const { used, limit, remaining } = await dailyCapacity(tx, cfg, now);
+        if (remaining === 0) return { kind: "stop", reason: `The daily sending limit is reached (${used} of ${limit} in the last 24 hours).` };
       }
       // Compare-and-set on the attempt count: exactly one dispatcher wins each attempt.
       const { count } = await tx.outreach.updateMany({
@@ -225,6 +261,8 @@ export async function dispatchQueued(db: Db, opts: DispatchOptions): Promise<Dis
     }
     const at = clock();
     await db.$transaction(async (tx) => {
+      // A provider event about this message may be recorded at this very moment: one after the other.
+      await lockOutreach(tx, id);
       if (result.status === "accepted") {
         await recordSentInTx(tx, id, sender.name, result.providerMessageId, at);
         report.sent.push({ outreachId: id, providerMessageId: result.providerMessageId });

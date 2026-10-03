@@ -18,19 +18,15 @@ import { randomBytes } from "node:crypto";
 import type { Db } from "../db.js";
 import type { Config } from "../config.js";
 import type { Prisma } from "../generated/prisma/client.js";
-import { STATUS_LABELS, type Status } from "../prospectStatus.js";
-import { FIELD_LIMITS, ProspectError, changeStatusInTx, referralUrl, scoringInputFromRecord } from "../prospects.js";
-import { hasPublicContact, scoreProspect } from "../scoring.js";
-import { messageComplianceErrors, senderIdentityErrors, type ComplianceConfig } from "./compliance.js";
+import type { Status } from "../prospectStatus.js";
+import { FIELD_LIMITS, ProspectError, changeStatusInTx, referralUrl } from "../prospects.js";
+import type { ComplianceConfig } from "./compliance.js";
 import { campaignOf, composeFollowUp, composeIntro, FOLLOW_UP_TEMPLATE, INTRO_TEMPLATE, type ComposedMessage } from "./compose.js";
 import {
   ATTEMPTED_STATUSES,
-  AWAITING_REPLY,
   OPEN_STATUSES,
-  OUTREACH_STATUS_LABELS,
   REPLY_OUTCOME_LABELS,
   REPLY_PROSPECT_STATUS,
-  draftEligibilityErrors,
   isReplyOutcome,
   normalizeEmail,
   outreachTransitionErrors,
@@ -38,7 +34,8 @@ import {
   type OutreachStatus,
   type ReplyOutcome,
 } from "./lifecycle.js";
-import { isSuppressed, logOutreachEvent, suppressEmail } from "./records.js";
+import { messageEligibilityErrors, outreachEligibility } from "./eligibility.js";
+import { isSuppressed, lockOutreach, logOutreachEvent, suppressEmail } from "./records.js";
 
 type Tx = Prisma.TransactionClient;
 
@@ -55,51 +52,15 @@ const notFound = () => new ProspectError(["Outreach not found."], "not_found");
 const prospectForDraft = (tx: Tx | Db, id: string) =>
   tx.prospect.findUnique({ where: { id }, include: { signals: true, evidence: { orderBy: { createdAt: "asc" } } } });
 
-/** Why a message to this address must not be prepared or sent. */
-async function suppressionErrors(tx: Tx | Db, email: string | null): Promise<string[]> {
-  if (!email) return [];
-  const s = await tx.emailSuppression.findUnique({ where: { email: normalizeEmail(email) } });
-  return s ? [`The address ${s.email} is suppressed (${s.reason}); it must not be emailed again.`] : [];
-}
-
 /**
- * Everything a draft needs, checked: why it can't be drafted, or the
- * message it would be. Reads only.
+ * Everything a draft needs, checked (eligibility.ts decides): why it can't
+ * be drafted, or the message it would be. Reads only.
  */
 async function planDraft(tx: Tx | Db, prospectId: string, opts: DraftOptions) {
   const p = await prospectForDraft(tx, prospectId);
   if (!p) throw new ProspectError(["Prospect not found."], "not_found");
   const kind: OutreachKind = opts.followUpOfId ? "follow_up" : "initial";
-  const input = scoringInputFromRecord(p);
-  const errors = draftEligibilityErrors(kind, {
-    status: p.status,
-    businessName: p.businessName,
-    hasPublicContact: hasPublicContact(input),
-    qualification: scoreProspect(input).qualification,
-    email: p.email,
-    emailSourceUrl: p.emailSourceUrl,
-  });
-  errors.push(...(await suppressionErrors(tx, p.email)));
-
-  const history = await tx.outreach.findMany({ where: { prospectId }, orderBy: { createdAt: "asc" } });
-  const open = history.find((o) => OPEN_STATUSES.includes(o.status)) ?? null;
-
-  if (p.email && history.some((o) => o.status === "bounced" && normalizeEmail(o.recipientEmail) === normalizeEmail(p.email!))) {
-    errors.push(`A message to ${p.email} bounced. Correct the business email before preparing another.`);
-  }
-  let original: (typeof history)[number] | null = null;
-  if (kind === "initial") {
-    const sent = history.find((o) => o.kind === "initial" && ATTEMPTED_STATUSES.includes(o.status));
-    if (sent) errors.push(`A first message was already sent${sent.sentAt ? ` on ${sent.sentAt.toISOString().slice(0, 10)}` : ""}. Prepare a follow-up to it instead.`);
-  } else {
-    original = history.find((o) => o.id === opts.followUpOfId) ?? null;
-    if (!original) errors.push("The message to follow up isn't one of this prospect's.");
-    else if (!AWAITING_REPLY.includes(original.status) || !original.sentAt) {
-      errors.push(`Only a sent message without a reply can be followed up; that one is ${OUTREACH_STATUS_LABELS[original.status]}.`);
-    } else if (history.some((o) => o.followUpOfId === original!.id && o.status !== "cancelled")) {
-      errors.push("That message already has a follow-up.");
-    }
-  }
+  const { errors, open, original } = await outreachEligibility(tx, { stage: "prepare", kind, prospect: p, followUpOfId: opts.followUpOfId });
 
   let message: ComposedMessage | null = null;
   if (!errors.length) {
@@ -118,7 +79,7 @@ async function planDraft(tx: Tx | Db, prospectId: string, opts: DraftOptions) {
     };
     message = kind === "initial" ? composeIntro(composeInput) : composeFollowUp(composeInput, { subject: original!.subject, sentAt: original!.sentAt! });
   }
-  return { prospect: p, kind, errors: [...new Set(errors)], open, original, message };
+  return { prospect: p, kind, errors, open, original, message };
 }
 
 /** What drafting would do, without writing anything (dry runs, the admin page). */
@@ -228,45 +189,7 @@ export async function discardOutreach(db: Db, id: string, reasonRaw?: unknown, n
   return db.$transaction((tx) => moveOutreachInTx(tx, id, "cancelled", { cancelledAt: now, cancelReason: reason }, reason, now));
 }
 
-// ---------- queue and send eligibility ----------
-
-type OutreachWithProspect = Prisma.OutreachGetPayload<{ include: { prospect: { include: { signals: true } } } }>;
-
-/**
- * Why this message must not be queued ("queue") or sent ("send") now. Sending
- * re-checks everything, so a change after queueing (a suppression, Do not
- * contact, a new email address, a lost qualification) stops it.
- */
-export async function sendEligibilityErrors(tx: Tx | Db, o: OutreachWithProspect, cfg: ComplianceConfig, stage: "queue" | "send"): Promise<string[]> {
-  const p = o.prospect;
-  const input = scoringInputFromRecord(p);
-  const ctx = {
-    status: p.status,
-    businessName: p.businessName,
-    hasPublicContact: hasPublicContact(input),
-    qualification: scoreProspect(input).qualification,
-    email: p.email,
-    emailSourceUrl: p.emailSourceUrl,
-  };
-  const errors = draftEligibilityErrors(o.kind, ctx);
-  // Sending a first message needs Ready to contact; queueing moves it there.
-  if (stage === "send" && o.kind === "initial" && p.status !== "ready_to_contact") {
-    errors.push(`A first message is only sent to Ready to contact prospects; this one is ${STATUS_LABELS[p.status]}.`);
-  }
-  if (!p.email || normalizeEmail(p.email) !== normalizeEmail(o.recipientEmail)) {
-    errors.push("The prospect's business email changed since this message was prepared. Discard it and prepare it again.");
-  }
-  errors.push(...(await suppressionErrors(tx, o.recipientEmail)));
-  if (o.kind === "initial") {
-    const other = await tx.outreach.findFirst({
-      where: { prospectId: p.id, kind: "initial", id: { not: o.id }, status: { in: [...ATTEMPTED_STATUSES] } },
-      select: { id: true },
-    });
-    if (other) errors.push("A first message was already sent to this prospect.");
-  }
-  errors.push(...senderIdentityErrors(cfg), ...messageComplianceErrors(o, cfg));
-  return [...new Set(errors)];
-}
+// ---------- queueing ----------
 
 const withProspect = { prospect: { include: { signals: true } } } as const;
 
@@ -283,7 +206,7 @@ export async function queueOutreach(db: Db, id: string, cfg: ComplianceConfig, n
     if (!o) throw notFound();
     if (o.status === "queued") return { outreach: o, changed: false };
     if (o.status !== "draft") throw new ProspectError(outreachTransitionErrors(o.status, "queued"));
-    const errors = await sendEligibilityErrors(tx, o, cfg, "queue");
+    const errors = await messageEligibilityErrors(tx, o, cfg, "queue");
     if (errors.length) throw new ProspectError(errors);
     if (o.kind === "initial") {
       // Eligibility guarantees New, Qualified, or Ready to contact: walk forward one step at a time.
@@ -350,7 +273,9 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
  * Records one provider event, idempotently: a repeated notification (same
  * providerEventId, or the same status again) changes nothing. Events that
  * don't fit the message's state are ignored, never thrown, so a webhook
- * endpoint can always answer 2xx.
+ * endpoint can always answer 2xx. Reports about one message are applied one
+ * at a time (lockOutreach): a copy arriving concurrently waits, then finds
+ * the first one recorded and is a duplicate.
  *
  *   sent        queued -> sent (prospect Ready to contact -> Contacted)
  *   delivered   -> delivered
@@ -373,6 +298,9 @@ export async function applyProviderEvent(db: Db, ev: ProviderEvent): Promise<{ r
 
   try {
     const result = await db.$transaction(async (tx): Promise<ProviderEventResult> => {
+      await lockOutreach(tx, o.id);
+      // Checked again under the lock: a concurrent copy may have just recorded it.
+      if (eventId && (await tx.outreachEvent.findUnique({ where: { providerEventId: eventId }, select: { id: true } }))) return "duplicate";
       const current = (await tx.outreach.findUniqueOrThrow({ where: { id: o.id } })).status;
       // Any report from the provider means it went out: record the send first.
       if (current === "queued" && ev.type !== "failed") {
@@ -429,10 +357,15 @@ export async function recordReply(db: Db, id: string, raw: { outcome?: unknown; 
   if (!outcome && (raw.requireOutcome || (typeof raw.outcome === "string" && raw.outcome !== ""))) throw new ProspectError(["Choose how the business replied."]);
   const summary = cleanText(raw.summary, FIELD_LIMITS.note, "Reply summary");
   return db.$transaction(async (tx) => {
-    const result = await moveOutreachInTx(tx, id, "replied", { repliedAt: now, replyOutcome: outcome, replySummary: summary }, outcome ? REPLY_OUTCOME_LABELS[outcome] : "Not yet classified", now);
-    const prospect = result.changed ? await applyReplyOutcome(tx, result.outreach, outcome, now) : null;
-    return { ...result, prospect };
+    await lockOutreach(tx, id);
+    return recordReplyInTx(tx, id, outcome, summary, now);
   });
+}
+
+async function recordReplyInTx(tx: Tx, id: string, outcome: ReplyOutcome | null, summary: string | null, now: Date) {
+  const result = await moveOutreachInTx(tx, id, "replied", { repliedAt: now, replyOutcome: outcome, replySummary: summary }, outcome ? REPLY_OUTCOME_LABELS[outcome] : "Not yet classified", now);
+  const prospect = result.changed ? await applyReplyOutcome(tx, result.outreach, outcome, now) : null;
+  return { ...result, prospect };
 }
 
 /** Classifies a reply recorded without an outcome. Once only. */
@@ -477,10 +410,17 @@ export async function recordInboundReply(db: Db, reply: InboundReply) {
       orderBy: { sentAt: "desc" },
     }));
   if (!o) return { result: "unmatched" as const, outreachId: null };
-  if (o.status === "replied") return { result: "duplicate" as const, outreachId: o.id };
-  if (outreachTransitionErrors(o.status, "replied").length) return { result: "ignored" as const, outreachId: o.id };
-  await recordReply(db, o.id, { summary: reply.summary ?? undefined }, reply.at ?? new Date());
-  return { result: "recorded" as const, outreachId: o.id };
+  const summary = cleanText(reply.summary ?? undefined, FIELD_LIMITS.note, "Reply summary");
+  const result = await db.$transaction(async (tx) => {
+    // Decided under the lock, so a concurrent copy of this reply, or a bounce, can't slip in between.
+    await lockOutreach(tx, o.id);
+    const status = (await tx.outreach.findUniqueOrThrow({ where: { id: o.id }, select: { status: true } })).status;
+    if (status === "replied") return "duplicate" as const;
+    if (outreachTransitionErrors(status, "replied").length) return "ignored" as const;
+    await recordReplyInTx(tx, o.id, null, summary, reply.at ?? new Date());
+    return "recorded" as const;
+  });
+  return { result, outreachId: o.id };
 }
 
 /**
@@ -493,6 +433,7 @@ export async function unsubscribeOutreach(db: Db, outreachId: string, via: strin
   const o = await db.outreach.findUnique({ where: { id: outreachId } });
   if (!o) return { result: "unknown" as const };
   return db.$transaction(async (tx) => {
+    await lockOutreach(tx, o.id);
     const already = await tx.outreachEvent.findFirst({ where: { outreachId: o.id, type: "unsubscribed" }, select: { id: true } });
     await suppressEmail(tx, o.recipientEmail, "unsubscribed", `Unsubscribed ${via}.`, o.id, now);
     await advanceProspect(tx, o.prospectId, "do_not_contact", `Unsubscribed ${via}.`, now);
@@ -511,6 +452,27 @@ export async function unsubscribeByToken(db: Db, token: string, now = new Date()
 }
 
 // ---------- reads ----------
+
+const WEEK_MS = 7 * 24 * 60 * 60 * 1000;
+
+/**
+ * What needs a person on the Outreach page: replies nobody has classified yet
+ * (an opt-out must be honoured promptly) and messages the provider refused in
+ * the last week. Also when the last message went out, which shows whether
+ * the scheduled sender is running.
+ */
+export async function outreachAttention(db: Db, now = new Date(), take = 20) {
+  const failedSince = { status: "failed" as const, failedAt: { gte: new Date(now.getTime() - WEEK_MS) } };
+  const toClassify = { status: "replied" as const, replyOutcome: null };
+  const [replies, replyCount, failures, failureCount, last] = await Promise.all([
+    db.outreach.findMany({ where: toClassify, orderBy: { repliedAt: "asc" }, take, select: { id: true, subject: true, recipientEmail: true, repliedAt: true } }),
+    db.outreach.count({ where: toClassify }),
+    db.outreach.findMany({ where: failedSince, orderBy: { failedAt: "desc" }, take, select: { id: true, subject: true, recipientEmail: true, failedAt: true, failureReason: true } }),
+    db.outreach.count({ where: failedSince }),
+    db.outreach.aggregate({ _max: { sentAt: true } }),
+  ]);
+  return { replies, replyCount, failures, failureCount, lastSentAt: last._max.sentAt };
+}
 
 /** The prospect's messages, newest first, and whether a first message can be drafted. */
 export async function prospectOutreach(db: Db, prospectId: string, opts: DraftOptions) {
@@ -532,7 +494,7 @@ export async function getOutreachDetail(db: Db, id: string, cfg?: ComplianceConf
     },
   });
   if (!o) return null;
-  const queueErrors = cfg && o.status === "draft" ? await sendEligibilityErrors(db, o, cfg, "queue") : [];
+  const queueErrors = cfg && o.status === "draft" ? await messageEligibilityErrors(db, o, cfg, "queue") : [];
   const suppressed = await isSuppressed(db, o.recipientEmail);
   return { ...o, queueErrors, suppressed };
 }

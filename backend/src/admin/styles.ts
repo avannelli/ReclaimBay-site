@@ -284,6 +284,23 @@ ul.plain { margin:6px 0 0; padding-left:18px; } ul.plain li { margin:5px 0; }
 .q-tile.t-warn .q-tile-l span { color:var(--warn); } .q-tile.t-pos .q-tile-l span { color:var(--pos); } .q-tile.t-info .q-tile-l span { color:var(--info); }
 .q-tile-h { font-size:13px; color:var(--muted); }
 .q-tile.zero .q-tile-n { color:var(--muted); }
+/* Outreach: is mail going out, and if not, why. Tone, glyph, and words together. */
+.o-status { display:flex; flex-wrap:wrap; gap:14px 24px; align-items:flex-start; justify-content:space-between; padding:16px 20px; margin-bottom:16px; border:1px solid var(--line); border-left:5px solid var(--line-2); border-radius:12px; background:var(--surface); box-shadow:var(--shadow); }
+.o-status.t-pos { border-left-color:var(--pos); } .o-status.t-warn { border-left-color:var(--amber); } .o-status.t-neg { border-left-color:var(--neg); }
+.o-status-main { flex:1 1 320px; min-width:0; }
+.o-status-l { margin:0; font-size:22px; font-weight:750; line-height:1.25; }
+.o-status.t-pos .o-status-l span { color:var(--pos); } .o-status.t-warn .o-status-l span { color:var(--warn); } .o-status.t-neg .o-status-l span { color:var(--neg); } .o-status.t-quiet .o-status-l span { color:var(--muted); }
+.o-status-d { margin:4px 0 6px; font-size:15px; }
+.o-status-act { flex:0 1 auto; }
+.o-blockers { flex-basis:100%; padding:10px 14px; border-radius:10px; background:var(--surface-2); font-size:14px; }
+.o-blockers p { margin:0; } .o-blockers ul { margin:4px 0 0; padding-left:20px; } .o-blockers li { margin:2px 0; }
+.o-attn { padding:12px 16px; border:1px solid var(--line); border-left:4px solid var(--amber); border-radius:10px; background:var(--surface); }
+.o-attn.t-neg { border-left-color:var(--neg); }
+.o-attn h3 { margin:0; font-size:16px; display:flex; align-items:baseline; gap:8px; }
+.o-attn.t-warn h3 > span:first-child { color:var(--warn); } .o-attn.t-neg h3 > span:first-child { color:var(--neg); }
+.o-attn ul { margin:0; padding-left:20px; font-size:14.5px; } .o-attn li { margin:3px 0; }
+details.o-why { margin-top:12px; } details.o-why > summary { cursor:pointer; color:var(--muted); font-size:13.5px; font-weight:600; width:max-content; max-width:100%; }
+details.o-why > summary:hover { color:var(--accent); } details.o-why ul { margin:8px 0 0; padding-left:20px; }
 .q-chips { margin-bottom:12px; }
 .q-search { margin-bottom:14px; }
 .q-search-row { display:flex; gap:8px; align-items:center; }

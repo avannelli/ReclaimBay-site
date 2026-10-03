@@ -11,6 +11,15 @@ type EventType = OutreachStatus | "drafted" | "complained" | "unsubscribed";
 export type SuppressionReason = "bounced" | "complained" | "unsubscribed" | "invalid";
 
 /**
+ * Locks one message's row until the transaction ends. Everything that records
+ * what happened to a sent message (provider events, replies, opt-outs, the
+ * dispatcher's outcome) takes it first, so two reports about the same message
+ * are applied one after the other, the second seeing the first's result,
+ * instead of failing each other's compare-and-set.
+ */
+export const lockOutreach = (tx: Tx, id: string) => tx.$queryRaw`SELECT id FROM "Outreach" WHERE id = ${id}::uuid FOR UPDATE`;
+
+/**
  * Every status change of a message is logged here, in the same transaction.
  * `providerEventId` is unique: the same webhook can never be logged twice.
  */

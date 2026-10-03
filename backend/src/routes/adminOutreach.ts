@@ -2,12 +2,12 @@ import type { FastifyInstance, FastifyReply } from "fastify";
 import { outreachControlPage, outreachDetailPage } from "../admin/outreachViews.js";
 import type { Config } from "../config.js";
 import type { Db } from "../db.js";
-import { confirmStuckSent, readinessErrors, sendingSwitch, setSendingSwitch, stuckMessages } from "../outreach/dispatch.js";
+import { confirmStuckSent, dailyCapacity, readinessErrors, sendingStatus, sendingSwitch, setSendingSwitch, stuckMessages } from "../outreach/dispatch.js";
 import { STATE_COOKIE, authorizationUrl, gmailCredentialsFromConfig, gmailOAuthConfig, newOAuthState } from "../outreach/gmailAuth.js";
 import { outreachMetrics } from "../outreach/metrics.js";
 import { prepareEligibleOutreach, type PrepareReport } from "../outreach/prepare.js";
 import type { OutreachSender } from "../outreach/sender.js";
-import { classifyReply, createOutreachDraft, discardOutreach, getOutreachDetail, queueOutreach, recordReply } from "../outreach/service.js";
+import { classifyReply, createOutreachDraft, discardOutreach, getOutreachDetail, outreachAttention, queueOutreach, recordReply } from "../outreach/service.js";
 import { ProspectError } from "../prospects.js";
 
 type Form = Record<string, string>;
@@ -68,16 +68,26 @@ export async function outreachRoutes(app: FastifyInstance, opts: { config: Confi
   };
 
   const renderControl = async (reply: FastifyReply, extra: { notice?: string; errors?: string[]; prepared?: PrepareReport } = {}) => {
-    const [sw, grouped, stuck, eligible, metrics, gmail] = await Promise.all([
+    const now = new Date();
+    const [sw, grouped, stuck, eligible, metrics, gmail, capacity, attention] = await Promise.all([
       sendingSwitch(db),
       db.outreach.groupBy({ by: ["status"], _count: { _all: true } }),
-      stuckMessages(db, sender),
+      stuckMessages(db, sender, now),
       prepareEligibleOutreach(db, { draft: draftOptions, compliance: config, apply: false, limit: 1_000 }),
       outreachMetrics(db),
       gmailStatus(),
+      dailyCapacity(db, config, now),
+      outreachAttention(db, now),
     ]);
     const counts = Object.fromEntries(grouped.map((g) => [g.status, g._count._all]));
-    const page = outreachControlPage({ sw, readiness: readinessErrors(config, sender), counts, stuck, eligible, metrics, gmail, prepared: extra.prepared }, extra);
+    const readiness = readinessErrors(config, sender);
+    // What the dispatcher checks, plus the provider's live check (a revoked authorization).
+    const blockers = [...new Set([...readiness, ...(gmail && !gmail.authorized && gmail.problem ? [gmail.problem] : [])])];
+    const status = sendingStatus({ switchOn: sw.enabled, blockers, remaining: capacity.remaining, limit: capacity.limit, queued: counts.queued ?? 0 });
+    const page = outreachControlPage(
+      { sw, status, readiness, blockers, capacity, attention, provider: sender.enabled ? sender.name : null, counts, stuck, eligible, metrics, gmail, prepared: extra.prepared },
+      extra,
+    );
     return html(reply, page, reply.statusCode);
   };
 

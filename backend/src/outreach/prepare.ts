@@ -4,10 +4,11 @@
  * Optionally queues the drafts too. Never sends: sending is dispatch.ts,
  * behind the global switch.
  *
- * Eligibility is exactly the draft rules (lifecycle.ts and service.ts): New,
- * Qualified, or Ready to contact; Meets criteria; a valid published email; no
- * open or already-sent first message; no bounce; not suppressed; and, to be
- * queued, a complete sender identity and a compliant message.
+ * Who is eligible is decided only by eligibility.ts, the same decision that
+ * queueing and sending re-check: New, Qualified, or Ready to contact; Meets
+ * criteria; a valid published email; no open or already-sent first message;
+ * no bounce; not suppressed; and, to be queued, a complete sender identity
+ * and a compliant message. The query below only narrows who to ask.
  */
 import type { Db } from "../db.js";
 import { ProspectError } from "../prospects.js";

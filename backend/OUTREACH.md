@@ -99,6 +99,17 @@ Adding an address cancels every open message to it, on any prospect.
 `OutreachControlChange` is the global sending switch: an append-only history,
 where the newest row is the current state. With no rows, sending is off.
 
+## Eligibility: one decision
+
+Whether a business may get a message is decided in one place,
+[`src/outreach/eligibility.ts`](src/outreach/eligibility.ts), at three steps:
+**prepare** (may a draft be made?), **queue** (may this draft be approved?),
+and **send** (may it leave now?, re-checked right before each send). The rule
+itself, `eligibilityErrors`, is pure; `outreachEligibility` reads the facts it
+needs. Drafting, automatic preparation, queueing, the admin, and the
+dispatcher all call it, so they can't disagree, and a person sees the same
+reason at every step.
+
 ## Drafts
 
 ### Who gets one
@@ -218,6 +229,15 @@ the provider's message id or our outreach id, and the notification's id.
 - **Never thrown.** Events that don't fit the message's state (a late bounce
   after a reply, a soft bounce) are ignored, so an endpoint can always
   answer 2xx.
+- **One at a time per message.** Every report about a sent message (provider
+  events, replies, opt-outs, and the dispatcher's own record of the send)
+  first locks that message's row (`lockOutreach`). Two copies of a
+  notification arriving together are applied one after the other: the second
+  finds the first recorded and is a duplicate, instead of failing the first's
+  compare-and-set. The guarantee is in the database, so it holds across
+  processes and restarts.
+- **Never reopens outreach.** A bounce, complaint, or opt-out suppresses the
+  address; nothing an event does makes a business eligible again.
 
 A provider with delivery webhooks would add an endpoint that verifies the
 webhook signature, then calls this. Gmail has no such webhooks. Its bounces
@@ -372,11 +392,27 @@ domain-wide delegation entry removed.
   Do not contact, and logs `unsubscribed`. Repeating it is harmless, and the
   response is the same for unknown tokens.
 
+## The Outreach page
+
+The admin **Outreach** page answers, at a glance:
+- **Is mail going out?** One headline: OFF; ON; ON but blocked (with the
+  first reason, including a failed live check of the provider); or ON but
+  paused by the daily limit. Its one action is **Stop all sending now** while
+  on, or **Switch sending on** once nothing else blocks it.
+- **Eligible now, Drafts, Queued, and Sent in the last 24 hours** against the
+  daily limit (the same count the dispatcher enforces), and when the last
+  message went out (a stale time means the scheduled sender isn't running).
+- **Needs attention**, shown only when something does: sends whose outcome is
+  unknown, replies to classify, and messages the provider refused in the last
+  7 days, each linked.
+- Preparing drafts, the email provider, and, collapsed, messages by status
+  and the funnel by campaign.
+
 ## Measurement
 
 `outreachMetrics` ([`src/outreach/metrics.ts`](src/outreach/metrics.ts))
 computes the funnel by campaign from the raw records only. It counts:
-drafted, prospects reached, sent, delivered, bounced, failed, replied, positive
+drafted, queued, prospects reached, sent, delivered, bounced, failed, replied, positive
 (interested), negative (not interested, asked not to be contacted),
 unsubscribed, and complaints. It also counts meetings, proposals, customers,
 and lost, as prospects that ever reached that status, attributed to the
