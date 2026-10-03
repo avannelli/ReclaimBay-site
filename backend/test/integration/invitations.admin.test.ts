@@ -15,7 +15,7 @@ import { OPTS, draftedInvitation, mockSender, queueAndSend, withoutInvitation } 
 
 /*
  * Stage 4C: the invitation on an outreach message's admin page, its
- * revocation, and the campaign funnel's Invited / Opened / Activated. Through
+ * revocation, and the campaign funnel's Invitations sent / Opened / Activated. Through
  * the real admin routes and services, against the test database.
  */
 
@@ -180,35 +180,44 @@ describe("invitations in the admin", { skip: skipReason }, () => {
     assert.match(html, /Smith &#38; &#60;b onmouseover=alert\(1\)&#62;Sons&#60;\/b&#62; Auto/);
   });
 
-  test("the campaign funnel counts invitations made, opened (once each), and activated by a real scan after opening", async () => {
+  test("the campaign funnel counts invitations sent, opened (once each), and activated by a real scan after opening", async () => {
+    /** A first message with its invitation, sent. */
+    const sentInvitation = async () => {
+      const x = await invited();
+      await queueAndSend(db, x.o.id);
+      return x;
+    };
     // Opened twice, then a real scan: activated.
-    const a = await invited();
+    const a = await sentInvitation();
     const sa = await openFrom(a.token, "2026-10-10T10:00:00Z");
     await openFrom(a.token, "2026-10-10T11:00:00Z");
     await scan(sa, "2026-10-10T10:30:00Z");
     // Opened, but only a sample scan, and a real scan from before it was opened: not activated.
-    const b = await invited();
+    const b = await sentInvitation();
     const early = await db.analyticsSession.create({ data: { anonymousSessionId: randomUUID() } });
     await scan(early.id, "2026-10-10T08:00:00Z");
     await openInvitation(db, { token: b.token, sessionId: (await db.analyticsSession.findUniqueOrThrow({ where: { id: early.id } })).anonymousSessionId }, at("2026-10-10T09:00:00Z"));
     await scan(early.id, "2026-10-10T09:10:00Z", true);
     // Never opened.
-    await invited();
+    await sentInvitation();
     // Another campaign.
-    const d = await invited();
+    const d = await sentInvitation();
     await db.invitation.update({ where: { id: d.invitation.id }, data: { campaign: "spring-test" } });
+    // Made for a draft that was never sent: not sent, so not counted, even opened and scanned through.
+    const unsent = await invited();
+    await scan(await openFrom(unsent.token, "2026-10-10T12:00:00Z"), "2026-10-10T12:30:00Z");
 
     const rows = await outreachMetrics(db);
     const pick = (campaign: string) => {
       const r = rows.find((x) => x.campaign === campaign)!;
-      return { invited: r.invited, opened: r.opened, activated: r.activated };
+      return { invitationsSent: r.invitationsSent, opened: r.opened, activated: r.activated };
     };
-    assert.deepEqual(pick("outreach-intro-t2"), { invited: 3, opened: 2, activated: 1 });
-    assert.deepEqual(pick("spring-test"), { invited: 1, opened: 0, activated: 0 });
-    assert.deepEqual(pick("all"), { invited: 4, opened: 2, activated: 1 });
+    assert.deepEqual(pick("outreach-intro-t2"), { invitationsSent: 3, opened: 2, activated: 1 });
+    assert.deepEqual(pick("spring-test"), { invitationsSent: 1, opened: 0, activated: 0 });
+    assert.deepEqual(pick("all"), { invitationsSent: 4, opened: 2, activated: 1 });
 
     const control = (await app.inject({ method: "GET", url: "/admin/outreach", headers: { cookie } })).body;
-    assert.match(control, /<th scope="col" class="num">Invited<\/th><th scope="col" class="num">Opened<\/th><th scope="col" class="num">Activated<\/th>/);
+    assert.match(control, /<th scope="col" class="num">Invitations sent<\/th><th scope="col" class="num">Opened<\/th><th scope="col" class="num">Activated<\/th>/);
   });
 
   test("a message's page hides a token quoted in its cancel reason, refusal, or send error, and still escapes the rest", async () => {

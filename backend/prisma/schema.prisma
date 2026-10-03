@@ -692,6 +692,14 @@ model Outreach {
   cancelledAt   DateTime?
   cancelReason  String?       @db.VarChar(500)
 
+  // The prospect's opportunity score when the message was queued, and the
+  // scoring model that computed it (src/scoring.ts SCORING_VERSION). Written
+  // once, with queuedAt, and never updated, so rescoring the prospect can't
+  // rewrite what this message was sent on. Null if never queued, or queued
+  // before these were recorded.
+  queuedScore        Int?
+  queuedScoreVersion String? @db.VarChar(32)
+
   // Set by the sending provider. Never credentials.
   provider          String? @db.VarChar(40)
   providerMessageId String? @unique @db.VarChar(200)

@@ -11,24 +11,25 @@ import { NO_CAMPAIGN, STALE_QUEUE_MS, parseMessageFilters, queueLooksStale } fro
 
 describe("operations view filters", () => {
   test("the defaults: all messages, first page", () => {
-    assert.deepEqual(parseMessageFilters({}), { view: "messages", status: null, kind: null, campaign: null, activated: false, page: 1 });
+    assert.deepEqual(parseMessageFilters({}), { view: "messages", status: null, kind: null, campaign: null, activated: false, sent: false, page: 1 });
   });
 
   test("known values are kept, using the repository's own names", () => {
-    assert.deepEqual(parseMessageFilters({ view: "replies", status: "queued", kind: "follow_up", campaign: "outreach-intro-t2", activated: "1", page: "3" }), {
+    assert.deepEqual(parseMessageFilters({ view: "replies", status: "queued", kind: "follow_up", campaign: "outreach-intro-t2", activated: "1", sent: "1", page: "3" }), {
       view: "replies",
       status: "queued",
       kind: "follow_up",
       campaign: "outreach-intro-t2",
       activated: true,
+      sent: true,
       page: 3,
     });
     assert.equal(parseMessageFilters({ campaign: NO_CAMPAIGN }).campaign, NO_CAMPAIGN, "the funnel's (none) row");
   });
 
   test("anything else is ignored, never trusted", () => {
-    const f = parseMessageFilters({ view: "admin", status: "QUEUED", kind: "initial; drop", campaign: "<script>", activated: "yes", page: "-2" });
-    assert.deepEqual(f, { view: "messages", status: null, kind: null, campaign: null, activated: false, page: 1 });
+    const f = parseMessageFilters({ view: "admin", status: "QUEUED", kind: "initial; drop", campaign: "<script>", activated: "yes", sent: "true", page: "-2" });
+    assert.deepEqual(f, { view: "messages", status: null, kind: null, campaign: null, activated: false, sent: false, page: 1 });
     assert.equal(parseMessageFilters({ page: "0" }).page, 1);
     assert.equal(parseMessageFilters({ page: "1e9" }).page, 1);
     assert.equal(parseMessageFilters({ page: ["2"] as unknown as string }).page, 1, "a repeated parameter isn't a page");

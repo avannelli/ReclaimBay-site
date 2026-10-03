@@ -394,26 +394,90 @@ export interface ControlPageData {
   gmail?: { mailbox: string | null; account: string | null; canAuthorize: boolean; authorized: boolean; problem: string | null } | null;
 }
 
-const METRIC_COLUMNS: [keyof FunnelRow, string][] = [
-  ["drafted", "Drafted"],
-  ["queued", "Queued"],
-  ["prospectsEntered", "Prospects reached"],
-  ["sent", "Sent"],
-  ["delivered", "Delivered"],
-  ["bounced", "Bounced"],
-  ["failed", "Failed"],
-  ["replied", "Replied"],
-  ["positive", "Positive"],
-  ["negative", "Negative"],
-  ["unsubscribed", "Unsubscribed"],
-  ["complained", "Complaints"],
-  ["invited", "Invited"],
-  ["opened", "Opened"],
-  ["activated", "Activated"],
-  ["meetings", "Meetings"],
-  ["proposals", "Proposals"],
-  ["customers", "Customers"],
-  ["lost", "Lost"],
+/**
+ * The funnel's columns, in the groups metrics.ts counts them in. `byFirstMessage`
+ * groups are credited to a first message's campaign, so a campaign of
+ * follow-ups only shows "—" there, never a 0 that reads as "nobody did this".
+ * There is no Delivered column: Gmail reports no deliveries.
+ */
+const FUNNEL_GROUPS: { label: string; byFirstMessage: boolean; columns: [keyof FunnelRow, string][] }[] = [
+  {
+    label: "Messages",
+    byFirstMessage: false,
+    columns: [
+      ["everDrafted", "Ever drafted"],
+      ["everQueued", "Ever queued"],
+      ["refusedBeforeSending", "Refused before sending"],
+      ["sent", "Sent"],
+      ["bounced", "Bounced"],
+      ["failedAfterSending", "Failed after sending"],
+      ["replied", "Replies"],
+      ["positive", "Positive"],
+      ["negative", "Negative"],
+      ["other", "Other"],
+      ["unclassified", "Unclassified"],
+      ["unsubscribed", "Unsubscribed"],
+      ["complained", "Complaints"],
+    ],
+  },
+  {
+    label: "Invitations",
+    byFirstMessage: true,
+    columns: [
+      ["invitationsSent", "Invitations sent"],
+      ["opened", "Opened"],
+      ["activated", "Activated"],
+    ],
+  },
+  {
+    label: "Prospects",
+    byFirstMessage: true,
+    columns: [
+      ["prospectsEmailed", "Prospects emailed"],
+      ["prospectsReached", "Prospects reached"],
+      ["replyingProspects", "Replying prospects"],
+    ],
+  },
+  {
+    label: "Reached since their first email",
+    byFirstMessage: true,
+    columns: [
+      ["meetings", "Meeting"],
+      ["proposals", "Proposal"],
+      ["customers", "Customer"],
+      ["lost", "Lost"],
+    ],
+  },
+];
+
+/** What each funnel figure counts: the same definitions as metrics.ts and OUTREACH.md § Measurement. */
+const FUNNEL_DEFINITIONS: [string, string][] = [
+  ["All time", "There is no date window. A recent campaign has had less time to be opened, answered, or move forward than an old one."],
+  [
+    "Messages",
+    "Every message, by its own campaign. Ever drafted and Ever queued count every message that was ever in that state, cancelled ones included; the Drafts and Queued tiles above count what is in that state now. Refused before sending: the provider refused it, so it was never sent. Sent: handed to the provider, whatever happened next; Bounced and Failed after sending are some of those. Replies are messages with a reply, each exactly one of Positive (interested), Negative (not interested, or asked not to be contacted), Other, or Unclassified.",
+  ],
+  [
+    "Delivery",
+    "Not measured: Gmail reports no deliveries, so there is no Delivered column. Prospects reached is the closest measure.",
+  ],
+  [
+    "Invitations",
+    "Only invitations whose message was sent (one made for a draft that was never sent doesn't count), by the campaign of the first message that made them. Opened: opened at least once, however many times; an open is the invitation page reporting it, not the email being read. Activated: a visitor who arrived through the link ran a real scan after opening it (the sample report doesn't count).",
+  ],
+  [
+    "Prospects",
+    "Each prospect once, by the campaign of its first sent message (a prospect gets one first message; its follow-ups belong to the same round). Emailed: has a sent message. Reached: has a sent message that hasn't bounced or failed. Replying: replied to any of its messages.",
+  ],
+  [
+    "Reached since their first email",
+    "Prospects that entered the status at or after their first email was sent, ever since, so a prospect can count in several (Lost, then later Customer). Statuses from before the email are never credited to it.",
+  ],
+  [
+    "—",
+    "Not attributable to this campaign: a follow-up reuses its first message's invitation, and its prospect is credited to the first message's campaign, so those figures are in that campaign's row.",
+  ],
+  ["Revenue", "Not recorded yet."],
 ];
 
 function gmailCard(g: NonNullable<ControlPageData["gmail"]>): string {
@@ -474,9 +538,9 @@ export function outreachControlPage(d: ControlPageData, opts: { notice?: string;
   const queued = d.counts.queued ?? 0;
   const tiles = `<section class="q-tiles" aria-label="Outreach at a glance">
 ${tile("pos", "✓", String(eligibleN), "Eligible now", "can get a first draft", eligibleN === 0)}
-${tile("info", "✎", String(drafts), "Drafts", "prepared, not yet queued", drafts === 0)}
-${tile("info", "→", String(queued), "Queued", "waiting to be sent", queued === 0)}
-${tile(c.remaining === 0 ? "warn" : "info", "✉", `${c.used} / ${c.limit}`, "Sent, last 24 hours", `${c.remaining} left under the daily limit`, c.used === 0)}
+${tile("info", "✎", String(drafts), "Drafts", "now: prepared, not yet queued", drafts === 0)}
+${tile("info", "→", String(queued), "Queued", "now: waiting to be sent", queued === 0)}
+${tile(c.remaining === 0 ? "warn" : "info", "✉", `${c.used} / ${c.limit}`, "Send attempts, last 24 hours", `started, whether or not the provider sent them · ${c.remaining} left under the daily limit`, c.used === 0)}
 </section>`;
 
   const msg = (id: string, subject: string, extra: string) => `<li><a href="/admin/outreach/${esc(id)}">${esc(subject)}</a> <span class="small muted">${extra}</span></li>`;
@@ -568,29 +632,37 @@ ${
   );
 
   const counts = OUTREACH_STATUSES.map((st) => `<div><dt>${esc(OUTREACH_STATUS_LABELS[st])}</dt><dd>${d.counts[st] ?? 0}</dd></div>`).join("");
-  // Invited, Opened, and Activated lead to the messages behind them. The last row is the total ("all"): no campaign filter.
+  // Opened and Activated lead to exactly the invitations they count: the activity view, sent invitations only.
+  // No list matches Invitations sent exactly, so it has no link. The last row is the total ("all"): no campaign filter.
   const funnelLink = (r: FunnelRow, isTotal: boolean, k: keyof FunnelRow): string | null => {
     const campaign = isTotal ? undefined : r.campaign;
-    if (k === "invited") return messagesHref({ kind: "initial", campaign });
-    if (k === "opened") return messagesHref({ view: "activity", campaign });
-    if (k === "activated") return messagesHref({ view: "activity", campaign, activated: "1" });
+    if (k === "opened") return messagesHref({ view: "activity", campaign, sent: "1" });
+    if (k === "activated") return messagesHref({ view: "activity", campaign, activated: "1", sent: "1" });
     return null;
   };
+  const notAttributable = '<td class="num muted"><span aria-hidden="true">—</span><span class="sr-only">not attributable to this campaign</span></td>';
   const metricRows = d.metrics
     .map((r, i, all) => {
-      const cells = METRIC_COLUMNS.map(([k]) => {
-        const href = r[k] ? funnelLink(r, i === all.length - 1, k) : null;
-        return `<td class="num">${href ? `<a href="${esc(href)}">${r[k]}</a>` : r[k]}</td>`;
-      }).join("");
+      const isTotal = i === all.length - 1;
+      const followUpsOnly = !isTotal && r.firstMessages === 0 && r.followUps > 0;
+      const cells = FUNNEL_GROUPS.flatMap((g) =>
+        g.columns.map(([k]) => {
+          if (g.byFirstMessage && followUpsOnly) return notAttributable;
+          const href = r[k] ? funnelLink(r, isTotal, k) : null;
+          return `<td class="num">${href ? `<a href="${esc(href)}">${r[k]}</a>` : r[k]}</td>`;
+        }),
+      ).join("");
       return `<tr><td><code>${esc(r.campaign)}</code></td>${cells}</tr>`;
     })
     .join("");
+  const funnelHead = `<tr><td></td>${FUNNEL_GROUPS.map((g) => `<th scope="colgroup" colspan="${g.columns.length}">${esc(g.label)}</th>`).join("")}</tr>
+<tr><th scope="col">Campaign</th>${FUNNEL_GROUPS.flatMap((g) => g.columns.map(([, l]) => `<th scope="col" class="num">${esc(l)}</th>`)).join("")}</tr>`;
   const total = Object.values(d.counts).reduce((n, v) => n + (v ?? 0), 0);
   const details = `<section class="section" aria-label="Details">
-<details class="disc" id="messages"><summary><h2>Messages by status</h2><span class="disc-sum">${plural(total, "message", "messages")}</span></summary><div class="disc-body"><dl class="metrics">${counts}</dl></div></details>
-<details class="disc" id="funnel"><summary><h2>Funnel by campaign</h2><span class="disc-sum">drafted to customer</span></summary><div class="disc-body">
-<div class="scroll"><table class="tbl"><caption class="sr-only">Outreach funnel by campaign</caption><thead><tr><th scope="col">Campaign</th>${METRIC_COLUMNS.map(([, l]) => `<th scope="col" class="num">${esc(l)}</th>`).join("")}</tr></thead><tbody>${metricRows}</tbody></table></div>
-<p class="small muted">Computed from the stored messages, their events, and prospect status history. Outcomes (meetings to lost) count prospects that ever reached that status, by the campaign of their first sent message. Delivered counts only what a provider reports; Gmail reports no deliveries, so with Gmail it stays 0 and "sent, not bounced" is the closest measure. Invited counts invitations made; Opened, those opened at least once; Activated, those where a visitor who arrived through the link ran a real scan after opening it (the sample report doesn't count). Revenue isn't recorded yet.</p>
+<details class="disc" id="messages"><summary><h2>Messages by current status</h2><span class="disc-sum">${plural(total, "message", "messages")}</span></summary><div class="disc-body"><dl class="metrics">${counts}</dl></div></details>
+<details class="disc" id="funnel"><summary><h2>Funnel by campaign</h2><span class="disc-sum">all time</span></summary><div class="disc-body">
+<div class="scroll"><table class="tbl"><caption class="sr-only">Outreach funnel by campaign, all time</caption><thead>${funnelHead}</thead><tbody>${metricRows}</tbody></table></div>
+<dl class="kv small muted" style="margin-top:14px" aria-label="What the funnel counts">${FUNNEL_DEFINITIONS.map(([term, def]) => `<dt>${esc(term)}</dt><dd>${esc(def)}</dd>`).join("")}</dl>
 </div></details>
 </section>`;
 
@@ -644,7 +716,8 @@ function filterForm(d: MessagesPageData): string {
   const kind =
     d.view !== "activity"
       ? `<div><label class="lbl" for="f-kind">Kind</label><select id="f-kind" name="kind">${options([["", "Any"], ["initial", OUTREACH_KIND_LABELS.initial], ["follow_up", OUTREACH_KIND_LABELS.follow_up]], f.kind ?? undefined)}</select></div>`
-      : `<div><label class="lbl" for="f-activated">Activation</label><select id="f-activated" name="activated">${options([["", "Opened or activated"], ["1", "Activated only"]], f.activated ? "1" : undefined)}</select></div>`;
+      : `<div><label class="lbl" for="f-activated">Activation</label><select id="f-activated" name="activated">${options([["", "Opened or activated"], ["1", "Activated only"]], f.activated ? "1" : undefined)}</select></div>
+<div><label class="lbl" for="f-sent">Message</label><select id="f-sent" name="sent">${options([["", "Sent or not"], ["1", "Sent only"]], f.sent ? "1" : undefined)}</select></div>`;
   return `<form class="card filters" method="get" action="/admin/outreach/messages" aria-label="Filter ${esc(VIEW_TITLES[d.view][0].toLowerCase())}">
   ${d.view === "messages" ? "" : `<input type="hidden" name="view" value="${esc(d.view)}">`}
   <div class="filter-row">${status}${kind}${campaign}
@@ -664,6 +737,7 @@ function pager(d: MessagesPageData): string {
     kind: f.kind,
     campaign: f.campaign,
     activated: f.activated ? "1" : undefined,
+    sent: f.sent ? "1" : undefined,
   };
   const prev = f.page > 1 ? `<a href="${esc(messagesHref({ ...keep, page: f.page - 1 }))}">← Previous</a>` : "";
   const next = to < d.total ? `<a href="${esc(messagesHref({ ...keep, page: f.page + 1 }))}">Next →</a>` : "";

@@ -84,6 +84,7 @@ Archived, or Customer **cancels any open message**.
 | `queuedAt`, `sentAt`, `deliveredAt`, `failedAt` + `failureReason`, `repliedAt` + `replyOutcome` + `replySummary`, `cancelledAt` + `cancelReason` | When each step happened, and why |
 | `provider`, `providerMessageId` | Who sent it and the provider's id (unique) |
 | `sendStartedAt`, `sendAttempts`, `lastSendError` | The dispatcher's claim and attempts |
+| `queuedScore`, `queuedScoreVersion` | The prospect's opportunity score when the message was queued, as the scoring model then (`SCORING_VERSION`) computed it from the stored signals; written once, never updated. Null if never queued, or queued before Stage 5C |
 | `unsubscribeToken` | Opaque token for the one-click unsubscribe link (unique) |
 
 `OutreachEvent` is append-only. It has one row per status change (`drafted`, `queued`,
@@ -492,9 +493,11 @@ The admin **Outreach** page answers, at a glance:
   first reason, including a failed live check of the provider); or ON but
   paused by the daily limit. Its one action is **Stop all sending now** while
   on, or **Switch sending on** once nothing else blocks it.
-- **Eligible now, Drafts, Queued, and Sent in the last 24 hours** against the
-  daily limit (the same count the dispatcher enforces), and when the last
-  message went out (a stale time means the scheduled sender isn't running).
+- **Eligible now, Drafts, and Queued**, each as it stands now, and **Send
+  attempts in the last 24 hours** against the daily limit: sends the
+  dispatcher started (`sendStartedAt`), whether or not the provider sent them,
+  the same count the limit enforces. Also when the last message went out (a
+  stale time means the scheduled sender isn't running).
 - **Needs attention**, shown only when something does: sends whose outcome is
   unknown, replies to classify, messages the provider refused in the last
   7 days, invitations opened or activated in the last 7 days, and queued mail
@@ -504,9 +507,9 @@ The admin **Outreach** page answers, at a glance:
   in those 2 hours: a sign the scheduled sender isn't running (expected outside
   its hours if it runs only in business hours). A queue that is draining, one
   message per run, keeps sending and never trips it.
-- Preparing drafts, the email provider, and, collapsed, messages by status
-  and the funnel by campaign, whose Invited, Opened, and Activated numbers
-  link to the messages behind them.
+- Preparing drafts, the email provider, and, collapsed, messages by current
+  status and the funnel by campaign (see [Measurement](#measurement)), whose
+  Opened and Activated numbers link to the invitations behind them.
 
 ### Operations views
 
@@ -518,7 +521,7 @@ records anything, and nothing new is tracked.
 | ---- | ----- |
 | **Messages** | Every message, newest change first, filtered by status, kind, and campaign: its business and recipient, template and campaign, status with its reason (cancelled, refused, bounced, outcome unknown), queued and sent times, its invitation (first open, opens, activation), and its reply |
 | **Replies** | Replied messages, unclassified first, with each one's classification and reply summary |
-| **Invitation activity** | Opened invitations, newest activity first (an open, or activation), optionally activated only |
+| **Invitation activity** | Opened invitations, newest activity first (an open, or activation), optionally activated only, and optionally only those whose message was sent (the funnel's Opened and Activated link there, so the list is exactly what they count). By default it also shows an open on a message whose send outcome is unknown, which suggests it went out |
 | **Eligible now** | Who a first message could be prepared for right now: the same dry run the Outreach page counts, so the one eligibility decision; no draft or invitation is made |
 
 Lists are filtered and paged (50 to a page) in the database, and every filter
@@ -531,12 +534,58 @@ hidden before it is escaped.
 ## Measurement
 
 `outreachMetrics` ([`src/outreach/metrics.ts`](src/outreach/metrics.ts))
-computes the funnel by campaign from the raw records only. It counts:
-drafted, queued, prospects reached, sent, delivered, bounced, failed, replied, positive
-(interested), negative (not interested, asked not to be contacted),
-unsubscribed, and complaints. It also counts meetings, proposals, customers,
-and lost, as prospects that ever reached that status, attributed to the
-campaign of their first sent message. The admin **Outreach** page shows it.
+computes the funnel by campaign from the raw records only: messages, their
+`unsubscribed` and `complained` events, invitations, and prospect status
+history. Nothing is stored, so a definition can change without a migration.
+The admin **Outreach** page shows it, with these definitions under the table.
+
+**All time.** There is no date window, so a recent campaign has had less time
+to be opened, answered, or move forward than an old one.
+
+Each figure is counted at one level, by one campaign:
+
+| Level | Credited to | Figure | Counts |
+| ----- | ----------- | ------ | ------ |
+| Messages | the message's campaign | Ever drafted | every message, whatever its status now (cancelled ones included) |
+| | | Ever queued | messages ever queued (`queuedAt`), even if cancelled afterwards |
+| | | Refused before sending | the provider refused it, so it was never sent (`failed`, no `sentAt`) |
+| | | Sent | handed to the provider (`sentAt`), whatever happened next |
+| | | Bounced, Failed after sending | sent, then reported bounced, or failed |
+| | | Replies | messages with a reply; each is exactly one of Positive (interested), Negative (not interested, asked not to be contacted), Other, Unclassified |
+| | | Unsubscribed, Complaints | messages whose recipient unsubscribed, or marked them as spam |
+| Invitations | the invitation's campaign (its first message's) | Invitations sent | invitations whose message was sent; one made for a draft never sent doesn't count |
+| | | Opened | of those, opened at least once (the invitation page reporting an open, not the email being read) |
+| | | Activated | of those, activated (`invitationActivations`) |
+| Prospects | the campaign of the prospect's first sent message | Prospects emailed | prospects with a sent message |
+| | | Prospects reached | prospects with a sent message that hasn't bounced or failed |
+| | | Replying prospects | prospects who replied to any of their messages, once each |
+| | | Meeting, Proposal, Customer, Lost | prospects that entered that status at or after their first email was sent |
+
+- **One round per prospect.** A prospect gets at most one sent first
+  message ([eligibility](#eligibility-one-decision)), so everything from that
+  send on (follow-ups included) is its one outreach round, credited to that
+  message's campaign. Statuses reached before it, including a whole earlier
+  round of the prospect's lifecycle before it was reopened, are never
+  credited to the email.
+- **Ever reached, within the round.** Statuses can move backward, so a
+  prospect can count in several (Lost, then later Customer). These aren't
+  exclusive, and aren't the prospect's status now.
+- **Follow-ups.** A follow-up reuses its first message's invitation, and its
+  prospect is credited to the first message's campaign. A campaign of
+  follow-ups only therefore shows **—** for its invitation and prospect
+  figures: not attributable to it, rather than a 0 that reads as "nobody did
+  this". Opens after a follow-up count under the first message's campaign.
+- **Delivery isn't measured.** Gmail reports no deliveries, so there is no
+  Delivered column; Prospects reached is the closest measure.
+- **Drafts and Queued** in the tiles above the funnel count what is in that
+  state now; the funnel's **Ever drafted** and **Ever queued** count history.
+  **Send attempts, last 24 hours** is the daily limit's count
+  (`sendStartedAt`), not confirmed sends.
+- **Score at queue time.** Each message keeps the prospect's score when it was
+  queued (`queuedScore`, `queuedScoreVersion`), so prospect quality can later
+  be compared with outcomes even after rescoring. Messages queued before this
+  was recorded have none; nothing back-fills them.
+
 Revenue isn't recorded yet; billing comes later.
 
 ## Safety checklist before the first real email

@@ -5,6 +5,9 @@
  *
  *   - statuses and kinds   lifecycle.ts
  *   - activation           invitationActivations() (invitations/service.ts)
+ *   - a sent invitation    SENT_INVITATION (metrics.ts), for the activity
+ *                          view's "sent only" filter, which the funnel's
+ *                          Opened and Activated link to
  *   - who is eligible      prepareEligibleOutreach() as a dry run, so the
  *                          one eligibility decision (eligibility.ts)
  *
@@ -20,6 +23,7 @@ import { scoringInputFromRecord } from "../prospects.js";
 import { scoreProspect } from "../scoring.js";
 import { CAMPAIGN_PATTERN } from "../validation.js";
 import type { ComplianceConfig } from "./compliance.js";
+import { SENT_INVITATION } from "./metrics.js";
 import { OUTREACH_KINDS, OUTREACH_STATUSES, type OutreachKind, type OutreachStatus } from "./lifecycle.js";
 import { prepareEligibleOutreach } from "./prepare.js";
 import type { DraftOptions } from "./service.js";
@@ -49,6 +53,8 @@ export interface MessageFilters {
   campaign: string | null;
   /** Activity: activated invitations only. */
   activated: boolean;
+  /** Activity: invitations whose message was sent only (the funnel's Invitations sent, SENT_INVITATION). */
+  sent: boolean;
   page: number;
 }
 
@@ -65,6 +71,7 @@ export function parseMessageFilters(q: Record<string, unknown>): MessageFilters 
     kind: oneOf(OUTREACH_KINDS, q.kind),
     campaign,
     activated: q.activated === "1",
+    sent: q.sent === "1",
     page,
   };
 }
@@ -145,9 +152,9 @@ export async function listReplies(db: Db, f: MessageFilters) {
  * one definition (invitationActivations). Light rows only, so the order can
  * include activation, which isn't a stored column.
  */
-async function invitationActivity(db: Db, f: { campaign: string | null; activated: boolean }) {
+async function invitationActivity(db: Db, f: { campaign: string | null; activated: boolean; sent: boolean }) {
   const opened = await db.invitation.findMany({
-    where: { firstOpenedAt: { not: null }, ...campaignWhere(f.campaign) },
+    where: { firstOpenedAt: { not: null }, ...campaignWhere(f.campaign), ...(f.sent ? SENT_INVITATION : {}) },
     select: { id: true, lastOpenedAt: true },
   });
   const activations = await invitationActivations(db, opened.map((i) => i.id));
@@ -206,7 +213,7 @@ export async function listActivity(db: Db, f: MessageFilters) {
 /** Invitation activity since `since`, for the Outreach page's attention list. */
 export async function recentActivity(db: Db, now = new Date(), take = 10) {
   const since = now.getTime() - RECENT_ACTIVITY_MS;
-  const items = (await invitationActivity(db, { campaign: null, activated: false })).filter((i) => i.latest.getTime() >= since);
+  const items = (await invitationActivity(db, { campaign: null, activated: false, sent: false })).filter((i) => i.latest.getTime() >= since);
   return { count: items.length, rows: await activityRows(db, items.slice(0, take)) };
 }
 

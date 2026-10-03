@@ -513,9 +513,10 @@ describe("outreach sending (service)", { skip: skipReason }, () => {
     await draft((await prospect()).id);
     const rows = await outreachMetrics(db);
     const t = rows.find((r) => r.campaign === "outreach-intro-t2")!;
+    // Stage 5C definitions (outreach.measurement.test.ts covers each one): b bounced, so it was emailed but not reached.
     assert.deepEqual(
-      { drafted: t.drafted, queued: t.queued, entered: t.prospectsEntered, sent: t.sent, delivered: t.delivered, bounced: t.bounced, replied: t.replied, positive: t.positive, negative: t.negative, meetings: t.meetings, proposals: t.proposals, customers: t.customers, lost: t.lost },
-      { drafted: 5, queued: 4, entered: 4, sent: 4, delivered: 1, bounced: 1, replied: 2, positive: 1, negative: 1, meetings: 1, proposals: 1, customers: 1, lost: 1 },
+      { everDrafted: t.everDrafted, everQueued: t.everQueued, emailed: t.prospectsEmailed, reached: t.prospectsReached, sent: t.sent, bounced: t.bounced, replied: t.replied, positive: t.positive, negative: t.negative, meetings: t.meetings, proposals: t.proposals, customers: t.customers, lost: t.lost },
+      { everDrafted: 5, everQueued: 4, emailed: 4, reached: 3, sent: 4, bounced: 1, replied: 2, positive: 1, negative: 1, meetings: 1, proposals: 1, customers: 1, lost: 1 },
     );
     assert.equal(rows.find((r) => r.campaign === "all")!.sent, 4);
   });
@@ -602,7 +603,7 @@ describe("outreach sending (HTTP)", { skip: skipReason }, () => {
     assert.match(page, /<section class="q-tiles" aria-label="Outreach at a glance">/);
     // The refused business can get a new message (nothing reached it); two sends started count against the limit.
     assert.match(page, /<span class="q-tile-n">1<\/span><span class="q-tile-l"><span aria-hidden="true">✓<\/span> Eligible now<\/span>/);
-    assert.match(page, /<span class="q-tile-n">2 \/ 20<\/span><span class="q-tile-l"><span aria-hidden="true">✉<\/span> Sent, last 24 hours<\/span><span class="q-tile-h">18 left under the daily limit<\/span>/);
+    assert.match(page, /<span class="q-tile-n">2 \/ 20<\/span><span class="q-tile-l"><span aria-hidden="true">✉<\/span> Send attempts, last 24 hours<\/span><span class="q-tile-h">started, whether or not the provider sent them · 18 left under the daily limit<\/span>/);
     assert.match(page, /Last message sent: \d{4}-\d{2}-\d{2} \d{2}:\d{2} UTC/);
 
     assert.match(page, /<h2 id="attention-h">Needs attention<\/h2>/);
@@ -611,7 +612,7 @@ describe("outreach sending (HTTP)", { skip: skipReason }, () => {
     assert.match(page, /552 &#60;message&#62; too large/);
     assert.doesNotMatch(page, /<Sons>|<message>/, "provider text and business names are escaped");
     assert.match(page, /<details class="disc" id="funnel"><summary><h2>Funnel by campaign<\/h2>/, "measurement stays one click away");
-    assert.match(page, /<th scope="col" class="num">Queued<\/th>/);
+    assert.match(page, /<th scope="col" class="num">Ever queued<\/th>/);
 
     // Switched on earlier, and the provider is gone since: the page says nothing can be sent, and offers only Stop.
     await db.outreachControlChange.create({ data: { sendingEnabled: true, reason: "Launch.", createdAt: new Date(Date.now() + 2_000) } });

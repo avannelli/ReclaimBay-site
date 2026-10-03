@@ -19,7 +19,8 @@ import type { Db } from "../db.js";
 import type { Config } from "../config.js";
 import type { Outreach, Prisma } from "../generated/prisma/client.js";
 import type { Status } from "../prospectStatus.js";
-import { FIELD_LIMITS, ProspectError, changeStatusInTx, referralUrl } from "../prospects.js";
+import { FIELD_LIMITS, ProspectError, changeStatusInTx, referralUrl, scoringInputFromRecord } from "../prospects.js";
+import { scoreProspect } from "../scoring.js";
 import type { ComplianceConfig } from "./compliance.js";
 import { createInvitationInTx, sentInvitationLink } from "../invitations/service.js";
 import { invitationUrl, newInvitationToken } from "../invitations/tokens.js";
@@ -217,13 +218,6 @@ export async function discardOutreach(db: Db, id: string, reasonRaw?: unknown, n
 const withProspect = { prospect: { include: { signals: true } } } as const;
 
 /**
- * Approves a message for sending. Everything sending needs is checked first
- * (eligibility, suppression, sender identity, the message's opt-out and
- * postal address). A first message moves the prospect to Ready to contact
- * (through Qualified), by the same rules a person uses. Nothing is sent
- * here: dispatch.ts sends queued messages when sending is switched on.
- */
-/**
  * What stops a draft from being queued: the one eligibility decision for the
  * queue step, and, for a first message, a revoked invitation. Revoking leaves
  * the prospect exactly as eligible as before; it is this message whose link
@@ -238,6 +232,17 @@ export async function queueBlockers(tx: Tx | Db, o: Outreach & { prospect: Param
   return errors;
 }
 
+/**
+ * Approves a message for sending. Everything sending needs is checked first
+ * (eligibility, suppression, sender identity, the message's opt-out and
+ * postal address). A first message moves the prospect to Ready to contact
+ * (through Qualified), by the same rules a person uses. Nothing is sent
+ * here: dispatch.ts sends queued messages when sending is switched on.
+ *
+ * Records the prospect's score as the current scoring model computes it now
+ * (queuedScore, queuedScoreVersion), once: a message is queued only from a
+ * draft, and nothing else writes them, so later rescoring never changes them.
+ */
 export async function queueOutreach(db: Db, id: string, cfg: ComplianceConfig, now = new Date()) {
   return db.$transaction(async (tx) => {
     // One queueing operation at a time per message: a concurrent click waits, then sees the committed result.
@@ -257,7 +262,8 @@ export async function queueOutreach(db: Db, id: string, cfg: ComplianceConfig, n
         at = next;
       }
     }
-    return moveOutreachInTx(tx, id, "queued", { queuedAt: now }, null, now);
+    const scored = scoreProspect(scoringInputFromRecord(o.prospect));
+    return moveOutreachInTx(tx, id, "queued", { queuedAt: now, queuedScore: scored.score, queuedScoreVersion: scored.version }, null, now);
   });
 }
 

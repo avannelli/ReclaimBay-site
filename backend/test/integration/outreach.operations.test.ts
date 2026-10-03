@@ -282,7 +282,7 @@ describe("outreach operations views", { skip: skipReason }, () => {
 
   // ---------- the Outreach page ----------
 
-  test("the Outreach page links to every view, and its funnel's Invited, Opened, and Activated lead to the messages behind them", async () => {
+  test("the Outreach page links to every view, and its funnel's Opened and Activated lead to the invitations behind them", async () => {
     const x = await invited("Funnel Auto");
     await queueAndSend(db, x.o.id);
     await scan(await openFrom(x.token, ago(2 * HOUR)), ago(HOUR));
@@ -290,10 +290,12 @@ describe("outreach operations views", { skip: skipReason }, () => {
     for (const href of ["/admin/outreach/messages?view=eligible", "/admin/outreach/messages", "/admin/outreach/messages?view=replies", "/admin/outreach/messages?view=activity", "/admin/outreach#funnel"]) {
       assert.ok(html.includes(`href="${href.replace(/&/g, "&#38;")}"`), href);
     }
-    assert.ok(html.includes('href="/admin/outreach/messages?kind=initial&#38;campaign=outreach-intro-t2">1</a>'), "Invited");
-    assert.ok(html.includes('href="/admin/outreach/messages?view=activity&#38;campaign=outreach-intro-t2">1</a>'), "Opened");
-    assert.ok(html.includes('href="/admin/outreach/messages?view=activity&#38;campaign=outreach-intro-t2&#38;activated=1">1</a>'), "Activated");
-    assert.ok(html.includes('href="/admin/outreach/messages?view=activity&#38;activated=1">1</a>'), "the total row has no campaign filter");
+    // Invitations sent has no link: no list holds exactly the invitations whose message was sent.
+    assert.ok(!html.includes("kind=initial&#38;campaign=outreach-intro-t2"), "Invitations sent");
+    // Sent invitations only, like the counts (outreach.measurement.test.ts checks the lists match them).
+    assert.ok(html.includes('href="/admin/outreach/messages?view=activity&#38;campaign=outreach-intro-t2&#38;sent=1">1</a>'), "Opened");
+    assert.ok(html.includes('href="/admin/outreach/messages?view=activity&#38;campaign=outreach-intro-t2&#38;activated=1&#38;sent=1">1</a>'), "Activated");
+    assert.ok(html.includes('href="/admin/outreach/messages?view=activity&#38;activated=1&#38;sent=1">1</a>'), "the total row has no campaign filter");
   });
 
   test("needs attention: recent invitation activity, replies to classify, and the provider's refusals", async () => {
