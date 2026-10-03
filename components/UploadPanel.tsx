@@ -67,9 +67,16 @@ const EXAMPLE_RAW: [string, string, string, string, string][] = [
   ["10251", "J. PATEL", "RADIATOR REPLACEMENT", "920.00", "06/26/26"],
 ];
 
-const stepLabel = (n: number, text: string) => (
+/**
+ * A numbered step in the example. `thread` draws a short line up from its
+ * number to the block above, so export, result, and jobs read as one flow.
+ */
+const stepLabel = (n: number, text: string, thread?: "h-3" | "h-4") => (
   <p className="flex items-center gap-2 text-[11px] font-semibold uppercase tracking-[0.12em] text-ink-3">
-    <span className="grid h-4 w-4 place-items-center rounded-full bg-canvas text-[10px] tracking-normal text-ink-2 ring-1 ring-inset ring-line">
+    <span className="relative grid h-4 w-4 place-items-center rounded-full bg-surface text-[10px] tracking-normal text-navy ring-1 ring-inset ring-navy/20">
+      {thread && (
+        <span aria-hidden className={`absolute bottom-full left-1/2 w-px -translate-x-1/2 bg-navy/15 ${thread}`} />
+      )}
       {n}
     </span>
     {text}
@@ -160,7 +167,7 @@ export default function UploadPanel({
               ? "border-opportunity bg-opportunity-soft/40"
               : drag === "invalid"
                 ? "border-danger/50 bg-danger-soft/70"
-                : "border-slate-300/80 bg-canvas/60"
+                : "border-navy/15 bg-canvas/70 hover:border-navy/25"
           }`}
         >
           {/* Opened by the upload button, so it stays out of the tab order. */}
@@ -176,13 +183,14 @@ export default function UploadPanel({
               e.target.value = "";
             }}
           />
+          {/* The logo's language at rest: a navy tile with a gold arrow rising out of the tray. */}
           <div
             className={`mx-auto grid h-16 w-16 place-items-center rounded-2xl ring-1 ring-inset transition duration-150 motion-reduce:transition-none ${
               drag === "valid"
                 ? "scale-105 bg-opportunity-soft text-opportunity-ink ring-opportunity/50"
                 : drag === "invalid"
                   ? "bg-danger-soft text-danger ring-danger/30"
-                  : "bg-navy/5 text-navy ring-navy/10"
+                  : "bg-linear-to-b from-navy-2 to-navy text-white ring-white/10 shadow-[0_10px_22px_-12px_rgb(11_34_56/0.7)]"
             } ${busy ? "motion-safe:animate-pulse" : ""}`}
           >
             <svg
@@ -195,7 +203,11 @@ export default function UploadPanel({
               strokeLinecap="round"
               strokeLinejoin="round"
             >
-              <path d="M12 15V4M7.5 8.5 12 4l4.5 4.5M4 14v4a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-4" />
+              <path d="M4 14v4a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-4" />
+              <path
+                d="M12 15V4M7.5 8.5 12 4l4.5 4.5"
+                className={drag === "idle" ? "text-opportunity" : ""}
+              />
             </svg>
           </div>
           <p
@@ -208,7 +220,12 @@ export default function UploadPanel({
                 ? "Drop file to scan"
                 : drag === "invalid"
                   ? "This file type isn’t supported"
-                  : "Drop your declined-work report here"}
+                  : (
+                    // Kept whole, so narrow screens never break it as "declined- / work".
+                    <>
+                      Drop your <span className="whitespace-nowrap">declined-work</span> report here
+                    </>
+                  )}
           </p>
           <p className="mt-1 text-sm text-ink-3">
             {drag === "invalid"
@@ -281,26 +298,72 @@ export default function UploadPanel({
 
       <section className="mx-auto mt-20 max-w-4xl">
         <h2 className="eyebrow text-center text-ink-2">How it works</h2>
-        {/* Stacked on phones; one row from tablet width up. */}
-        <ol className="mt-6 grid gap-3 sm:grid-cols-3 sm:gap-4">
-          {STEPS.map((s, i) => (
-            <li
-              key={s.title}
-              className="rounded-2xl border border-line bg-surface/70 p-4 sm:p-5"
+        {/*
+         * One path from your data to the result, not three separate cards:
+         * a line runs through the steps and warms to amber at the outcome.
+         * A vertical path on phones; one row from tablet width up.
+         */}
+        <div className="relative mx-auto mt-8 max-w-md sm:mt-10 sm:max-w-none">
+          <div
+            aria-hidden
+            className="pointer-events-none absolute top-6 right-[calc(100%/6-8px)] left-[calc(100%/6-8px)] hidden h-px bg-linear-to-r from-navy/15 via-navy/25 to-opportunity sm:block"
+          />
+          {["left-[calc(100%/3-4px)]", "left-[calc(200%/3+4px)]"].map((pos) => (
+            <svg
+              key={pos}
+              aria-hidden
+              viewBox="0 0 16 16"
+              className={`pointer-events-none absolute top-6 hidden h-4 w-4 -translate-1/2 bg-canvas text-navy/35 sm:block ${pos}`}
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1.6"
+              strokeLinecap="round"
+              strokeLinejoin="round"
             >
-              <div className="flex items-center gap-3">
-                <span className="grid h-10 w-10 place-items-center rounded-xl bg-canvas text-navy ring-1 ring-inset ring-line">
-                  {s.icon}
-                </span>
-                <span className="text-xs font-semibold tabular-nums text-ink-3">
-                  0{i + 1}
-                </span>
-              </div>
-              <p className="mt-4 font-semibold text-ink">{s.title}</p>
-              <p className="mt-1 text-sm leading-relaxed text-ink-2">{s.body}</p>
-            </li>
+              <path d="m6 4 4 4-4 4" />
+            </svg>
           ))}
-        </ol>
+          <ol className="relative grid sm:grid-cols-3 sm:gap-6">
+            {STEPS.map((s, i) => {
+              const outcome = i === STEPS.length - 1;
+              return (
+                <li
+                  key={s.title}
+                  className="relative flex gap-4 pb-8 last:pb-0 sm:flex-col sm:items-center sm:gap-0 sm:pb-0 sm:text-center"
+                >
+                  {!outcome && (
+                    <span
+                      aria-hidden
+                      className="absolute top-12 bottom-0 left-6 w-px bg-linear-to-b from-navy/20 to-navy/10 sm:hidden"
+                    />
+                  )}
+                  <span
+                    className={`relative grid h-12 w-12 shrink-0 place-items-center rounded-xl ${
+                      outcome
+                        ? "bg-linear-to-b from-navy-2 to-navy text-opportunity shadow-[0_10px_22px_-12px_rgb(11_34_56/0.7)]"
+                        : "bg-surface text-navy shadow-card ring-1 ring-inset ring-line"
+                    }`}
+                  >
+                    {s.icon}
+                  </span>
+                  <div className="min-w-0 pt-0.5 sm:mt-5 sm:pt-0">
+                    <p
+                      className={`text-[11px] font-semibold tracking-[0.12em] tabular-nums ${
+                        outcome ? "text-opportunity-ink" : "text-ink-3"
+                      }`}
+                    >
+                      0{i + 1}
+                    </p>
+                    <p className="mt-1 font-semibold text-ink">{s.title}</p>
+                    <p className="mt-1 text-sm leading-relaxed text-pretty text-ink-2 sm:mx-auto sm:max-w-60">
+                      {s.body}
+                    </p>
+                  </div>
+                </li>
+              );
+            })}
+          </ol>
+        </div>
       </section>
 
       <section className="mt-20">
@@ -345,33 +408,30 @@ export default function UploadPanel({
               ))}
             </div>
           </div>
-          <div className="px-2 pb-2.5 sm:px-3">{stepLabel(2, "Your result")}</div>
-          <div className="relative overflow-hidden rounded-2xl bg-navy-deep px-6 py-8 text-white sm:px-10 sm:py-10">
+          <div className="px-2 pb-2.5 sm:px-3">{stepLabel(2, "Your result", "h-3")}</div>
+          {/* The signature surface: where the money is. Deep navy, lit from the top left, edged in gold. */}
+          <div className="relative overflow-hidden rounded-2xl bg-navy-deep px-6 py-9 text-white shadow-[0_24px_48px_-30px_rgb(7_23_37/0.85)] ring-1 ring-inset ring-white/5 sm:px-10 sm:py-11">
             <div
               aria-hidden
-              className="pointer-events-none absolute inset-0 bg-[radial-gradient(120%_90%_at_0%_0%,var(--color-navy)_0%,transparent_60%)]"
+              className="pointer-events-none absolute inset-0 bg-[radial-gradient(110%_100%_at_0%_0%,var(--color-navy-2)_0%,var(--color-navy)_35%,transparent_75%)]"
             />
             <div
               aria-hidden
-              className="pointer-events-none absolute -right-20 -top-28 h-72 w-72 rounded-full bg-slate-400/10 blur-3xl"
-            />
-            <div
-              aria-hidden
-              className="pointer-events-none absolute inset-x-0 bottom-0 h-px bg-linear-to-r from-transparent via-opportunity/60 to-transparent"
+              className="pointer-events-none absolute inset-x-0 bottom-0 h-px bg-linear-to-r from-transparent via-opportunity/70 to-transparent"
             />
             <span className="relative mb-4 inline-block rounded-full bg-white/10 px-2.5 py-1 text-[11px] font-medium uppercase tracking-wider text-slate-200 ring-1 ring-inset ring-white/15 sm:absolute sm:right-4 sm:top-4 sm:mb-0">
               Example
             </span>
             <div className="relative">
               <p className="eyebrow text-opportunity">Declined work identified</p>
-              <p className="mt-3 text-4xl font-semibold tracking-tight tabular-nums sm:text-5xl">
+              <p className="mt-4 text-5xl leading-none font-semibold tracking-tight tabular-nums sm:text-6xl lg:text-7xl">
                 $42,660
               </p>
-              <dl className="mt-8 grid gap-px overflow-hidden rounded-xl bg-white/10 ring-1 ring-inset ring-white/10 sm:grid-cols-3">
+              <dl className="mt-9 grid divide-y divide-white/10 rounded-xl bg-white/3 ring-1 ring-inset ring-white/10 sm:grid-cols-3 sm:divide-x sm:divide-y-0">
                 {EXAMPLE_STATS.map(([label, value, tone]) => (
                   <div
                     key={label}
-                    className="flex items-baseline justify-between gap-3 bg-navy-deep px-4 py-3 sm:block sm:px-5 sm:py-4"
+                    className="flex items-baseline justify-between gap-3 px-4 py-3 sm:block sm:px-5 sm:py-4"
                   >
                     <dt className="text-[11px] font-medium uppercase tracking-wider text-slate-400">
                       {label}
@@ -386,7 +446,7 @@ export default function UploadPanel({
               </dl>
             </div>
           </div>
-          <div className="px-2 pt-4 sm:px-3">{stepLabel(3, "The jobs behind it")}</div>
+          <div className="px-2 pt-4 sm:px-3">{stepLabel(3, "The jobs behind it", "h-4")}</div>
           <ol className="divide-y divide-line px-2 pt-1 sm:px-4">
             {EXAMPLE_ROWS.map(([service, vehicle, age, amount], i) => (
               <li key={service} className="flex items-center gap-3 py-3">

@@ -151,7 +151,7 @@ const TONES = {
     wash: "from-opportunity-soft",
     icon: "bg-opportunity-soft text-opportunity-ink ring-opportunity/25",
     value: "text-opportunity-ink",
-    valueLarge: "text-opportunity-hover",
+    valueLarge: "text-opportunity-ink",
     glyph: statIcon("M8 13V3.5M4.5 7 8 3.5 11.5 7"),
   },
   green: {
@@ -159,7 +159,7 @@ const TONES = {
     wash: "from-positive-soft",
     icon: "bg-positive-soft text-positive-ink ring-positive/20",
     value: "text-positive-ink",
-    valueLarge: "text-positive",
+    valueLarge: "text-positive-ink",
     glyph: statIcon("M8 14A6 6 0 1 0 8 2a6 6 0 0 0 0 12zM8 5v3l2 1.5"),
   },
 };
