@@ -38,7 +38,7 @@ import {
   type ReplyOutcome,
 } from "./lifecycle.js";
 import { messageEligibilityErrors, outreachEligibility } from "./eligibility.js";
-import { isSuppressed, lockOutreach, lockSendGate, logOutreachEvent, suppressEmail } from "./records.js";
+import { isSuppressed, lockOutreach, lockSendGate, logOutreachEvent, sendInProgress, suppressEmail } from "./records.js";
 
 type Tx = Prisma.TransactionClient;
 
@@ -207,11 +207,22 @@ const cleanText = (v: unknown, max: number, label: string) => {
   return t || null;
 };
 
-/** Discards an unsent message. The row and its history stay. */
+/**
+ * Discards an unsent message. The row and its history stay. Not while its
+ * send is in progress (sendInProgress): once that send is interrupted or its
+ * outcome unknown, a person who checked the provider may discard it.
+ */
 export async function discardOutreach(db: Db, id: string, reasonRaw?: unknown, now = new Date()) {
   const reason = cleanText(reasonRaw, FIELD_LIMITS.reason, "Reason") ?? "Discarded by a person.";
   return db.$transaction(async (tx) => {
     await lockSendGate(tx);
+    const current = await tx.outreach.findUnique({ where: { id }, select: { status: true, sendStartedAt: true, lastSendError: true } });
+    if (current && sendInProgress(current, now)) {
+      throw new ProspectError(
+        ["This message is being sent right now. Wait for the outcome: if it is still unknown after ten minutes, check the provider, then record it as sent or discard it."],
+        "conflict",
+      );
+    }
     return moveOutreachInTx(tx, id, "cancelled", { cancelledAt: now, cancelReason: reason }, reason, now);
   });
 }
@@ -277,10 +288,35 @@ export async function queueOutreach(db: Db, id: string, cfg: ComplianceConfig, n
  * Records that the provider accepted the message. Tolerant of order: a
  * webhook may have reported it first. A first send moves the prospect from
  * Ready to contact to Contacted.
+ *
+ * One correction: a send a person discarded as interrupted (cancelled after
+ * its send started) that the provider then confirms becomes sent, because it
+ * was. The discard stays in the event log; it's the only way out of an end
+ * state, and only on the provider's word.
  */
 export async function recordSentInTx(tx: Tx, id: string, provider: string, providerMessageId: string | null, now: Date, providerEventId?: string | null) {
   const o = await tx.outreach.findUnique({ where: { id } });
   if (!o) throw notFound();
+  const detail = `${provider}${providerMessageId ? ` ${providerMessageId}` : ""}`;
+  if (o.status === "cancelled" && o.sendStartedAt) {
+    const { count } = await tx.outreach.updateMany({
+      where: { id, status: "cancelled" },
+      data: {
+        status: "sent",
+        statusChangedAt: now,
+        sentAt: now,
+        provider: provider.slice(0, 40),
+        providerMessageId: providerMessageId?.slice(0, 200) ?? null,
+        lastSendError: null,
+        cancelledAt: null,
+        cancelReason: null,
+      },
+    });
+    if (count !== 1) return { changed: false, prospect: null };
+    await logOutreachEvent(tx, id, "sent", `${detail}, after it was discarded as unsent`, now, providerEventId);
+    const prospect = await advanceProspect(tx, o.prospectId, "contacted", `Outreach sent (${o.template}).`, now);
+    return { changed: true, prospect };
+  }
   if (o.status !== "queued") {
     if (providerMessageId && !o.providerMessageId && ATTEMPTED_STATUSES.includes(o.status)) {
       await tx.outreach.update({ where: { id }, data: { providerMessageId: providerMessageId.slice(0, 200), provider: provider.slice(0, 40) } });
@@ -292,7 +328,7 @@ export async function recordSentInTx(tx: Tx, id: string, provider: string, provi
     id,
     "sent",
     { sentAt: now, provider: provider.slice(0, 40), providerMessageId: providerMessageId?.slice(0, 200) ?? null, lastSendError: null },
-    `${provider}${providerMessageId ? ` ${providerMessageId}` : ""}`,
+    detail,
     now,
     providerEventId,
   );

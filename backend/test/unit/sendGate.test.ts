@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync, readdirSync } from "node:fs";
 import { describe, test } from "node:test";
+import { STUCK_AFTER_MS, sendInProgress } from "../../src/outreach/records.js";
 
 /*
  * Stage 5D Phase A: the send gate's topology (outreach/records.ts
@@ -130,5 +131,22 @@ describe("the send gate", () => {
         }
       }
     }
+  });
+});
+
+describe("a send in progress (Stage 5D Phase C)", () => {
+  test("claimed, no outcome yet, and not old enough to count as interrupted", () => {
+    const now = new Date("2026-10-05T12:00:00Z");
+    const ago = (ms: number) => new Date(now.getTime() - ms);
+    const cases: [string, Parameters<typeof sendInProgress>[0], boolean][] = [
+      ["just claimed", { status: "queued", sendStartedAt: ago(1_000), lastSendError: null }, true],
+      ["claimed at the threshold", { status: "queued", sendStartedAt: ago(STUCK_AFTER_MS), lastSendError: null }, true],
+      ["interrupted: past the threshold", { status: "queued", sendStartedAt: ago(STUCK_AFTER_MS + 1), lastSendError: null }, false],
+      ["outcome unknown", { status: "queued", sendStartedAt: ago(1_000), lastSendError: "Timed out." }, false],
+      ["queued, never claimed", { status: "queued", sendStartedAt: null, lastSendError: null }, false],
+      ["a draft", { status: "draft", sendStartedAt: null, lastSendError: null }, false],
+      ["sent", { status: "sent", sendStartedAt: ago(1_000), lastSendError: null }, false],
+    ];
+    for (const [name, o, expected] of cases) assert.equal(sendInProgress(o, now), expected, name);
   });
 });

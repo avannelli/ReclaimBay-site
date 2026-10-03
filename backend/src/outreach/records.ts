@@ -51,10 +51,27 @@ export const logOutreachEvent = (tx: Tx, outreachId: string, type: EventType, de
     data: { outreachId, type: type === "draft" ? "drafted" : type, detail: detail?.slice(0, 500) ?? null, providerEventId: providerEventId ?? null, createdAt: at },
   });
 
-/** Cancels one open message, compare-and-set, with its event. */
+/** A claim this old with no outcome recorded was interrupted mid-send. */
+export const STUCK_AFTER_MS = 10 * 60 * 1000;
+
+/**
+ * A send that may be running right now: the dispatcher claimed the message
+ * (sendStartedAt), no outcome is recorded yet, and the claim isn't old enough
+ * to count as interrupted. Its provider call runs outside any transaction,
+ * so only the dispatcher's result may decide it; a person can discard it
+ * only once it is interrupted, or its outcome is unknown.
+ */
+export const sendInProgress = (o: { status: OutreachStatus; sendStartedAt: Date | null; lastSendError: string | null }, now: Date) =>
+  o.status === "queued" && o.sendStartedAt !== null && o.lastSendError === null && now.getTime() - o.sendStartedAt.getTime() <= STUCK_AFTER_MS;
+
+/**
+ * Cancels one open message, compare-and-set, with its event. Never one whose
+ * send has started: it may have gone out, so the dispatcher's result (or a
+ * person, once it is stuck) decides it, never an automatic stop.
+ */
 async function cancelOne(tx: Tx, open: { id: string; status: OutreachStatus }, reason: string, now: Date) {
   const { count } = await tx.outreach.updateMany({
-    where: { id: open.id, status: open.status },
+    where: { id: open.id, status: open.status, sendStartedAt: null },
     data: { status: "cancelled", statusChangedAt: now, cancelledAt: now, cancelReason: reason.slice(0, 500), openForProspectId: null },
   });
   if (count === 1) await logOutreachEvent(tx, open.id, "cancelled", reason, now);
@@ -64,7 +81,8 @@ async function cancelOne(tx: Tx, open: { id: string; status: OutreachStatus }, r
 /**
  * Cancels the prospect's open message (draft or queued), if any, so it can
  * never be sent. Used when the prospect leaves outreach (Do not contact,
- * Lost, …). Returns the id it cancelled.
+ * Lost, …). Returns the id it cancelled. A message whose send has started is
+ * left to the dispatcher (cancelOne).
  */
 export async function cancelOpenOutreach(tx: Tx, prospectId: string, reason: string, now = new Date()): Promise<string | null> {
   const open = await tx.outreach.findFirst({ where: { prospectId, status: { in: [...OPEN_STATUSES] } }, select: { id: true, status: true } });
@@ -77,7 +95,8 @@ export const isSuppressed = async (tx: Tx | Db, email: string) =>
 
 /**
  * Adds an address to the suppression list (the first reason is kept) and
- * cancels every open message to it, on any prospect. Never removed.
+ * cancels every open message to it, on any prospect, except one whose send
+ * has started (cancelOne). Never removed.
  */
 export async function suppressEmail(tx: Tx, emailRaw: string, reason: SuppressionReason, detail: string | null, outreachId: string | null, now = new Date()) {
   const email = normalizeEmail(emailRaw);

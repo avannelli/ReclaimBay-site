@@ -25,7 +25,7 @@ import { ProspectError } from "../prospects.js";
 import { listUnsubscribeHeaders, senderIdentityErrors, unsubscribeUrl } from "./compliance.js";
 import { messageEligibilityErrors } from "./eligibility.js";
 import { moveOutreachInTx, recordSentInTx } from "./service.js";
-import { lockOutreach, lockSendGate, suppressEmail } from "./records.js";
+import { STUCK_AFTER_MS, lockOutreach, lockSendGate, suppressEmail } from "./records.js";
 import type { OutgoingMessage, OutreachSender, SendResult } from "./sender.js";
 import type { Prisma } from "../generated/prisma/client.js";
 
@@ -34,8 +34,6 @@ export type SendingConfig = Pick<Config, "outreachSender" | "publicApiUrl" | "ou
 
 /** How long a provider keeps an idempotency key; retries stop well before. */
 export const RETRY_WINDOW_MS = 23 * 60 * 60 * 1000;
-/** A claim this old with no outcome recorded was interrupted mid-send. */
-export const STUCK_AFTER_MS = 10 * 60 * 1000;
 export const DEFAULT_BATCH = 20;
 /** New sends allowed per rolling 24 hours when OUTREACH_DAILY_LIMIT isn't set. */
 export const DEFAULT_DAILY_LIMIT = 20;

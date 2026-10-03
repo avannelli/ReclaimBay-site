@@ -281,6 +281,14 @@ Two rules keep it that way, and a unit test enforces both:
 
 - **Claimed once.** A message is claimed compare-and-set before its send, so
   only one dispatcher sends it, even when several run at once.
+- **A started send is decided by its outcome.** Once claimed, a message may
+  be going out, so nothing automatic cancels it: Do not contact, Lost, a
+  reply, or a suppression that lands while the provider is being called
+  leaves it to the dispatcher, which records what the provider said. A
+  person can't discard it while the send is in progress, only once it is
+  interrupted (no outcome after 10 minutes) or its outcome is unknown. If
+  the provider then confirms a send that was discarded that way, the
+  message is corrected to sent; the discard stays in its history.
 - **Same key on every attempt.** Each attempt carries the idempotency key
   `outreach-<id>`.
 - **Uncertain outcomes** (a timeout, a 5xx, a provider that throws):
