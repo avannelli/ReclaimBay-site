@@ -6,11 +6,12 @@ import { buildApp } from "../../src/app.js";
 import { loadConfig } from "../../src/config.js";
 import type { Db } from "../../src/db.js";
 import { openInvitation } from "../../src/invitations/service.js";
+import { HIDDEN_TOKEN } from "../../src/invitations/tokens.js";
 import { outreachMetrics } from "../../src/outreach/metrics.js";
-import { createOutreachDraft, recordInboundReply } from "../../src/outreach/service.js";
+import { createOutreachDraft, discardOutreach, recordInboundReply } from "../../src/outreach/service.js";
 import { addEvidence, createProspect } from "../../src/prospects.js";
 import { TEST_DATABASE_URL, freshDb, readyForm, skipReason, truncate } from "./helpers.js";
-import { OPTS, draftedInvitation, queueAndSend, withoutInvitation } from "./outreachHelpers.js";
+import { OPTS, draftedInvitation, mockSender, queueAndSend, withoutInvitation } from "./outreachHelpers.js";
 
 /*
  * Stage 4C: the invitation on an outreach message's admin page, its
@@ -208,5 +209,34 @@ describe("invitations in the admin", { skip: skipReason }, () => {
 
     const control = (await app.inject({ method: "GET", url: "/admin/outreach", headers: { cookie } })).body;
     assert.match(control, /<th scope="col" class="num">Invited<\/th><th scope="col" class="num">Opened<\/th><th scope="col" class="num">Activated<\/th>/);
+  });
+
+  test("a message's page hides a token quoted in its cancel reason, refusal, or send error, and still escapes the rest", async () => {
+    const hidden = `https://reclaimbay.com/invite#${HIDDEN_TOKEN}`;
+    const raw = /\/invite#[A-Za-z0-9_-]{43}/;
+
+    // A person's discard reason that pastes the link: shown under Cancelled and in the event log.
+    const cancelled = await invited();
+    await discardOutreach(db, cancelled.o.id, `Wrong <shop> & stale: https://reclaimbay.com/invite#${cancelled.token}`);
+    // The provider's refusal quoting the link.
+    const refused = await invited();
+    await queueAndSend(db, refused.o.id, mockSender(() => ({ status: "rejected", reason: `550 <blocked> https://reclaimbay.com/invite#${refused.token}`, invalidRecipient: false })));
+    // An uncertain send whose error quotes the link: the "outcome unknown" card.
+    const unsure = await invited();
+    await queueAndSend(db, unsure.o.id, mockSender(() => ({ status: "uncertain", reason: `timeout & retry https://reclaimbay.com/invite#${unsure.token}` })));
+
+    const cases = [
+      { x: cancelled, text: `Wrong &#60;shop&#62; &#38; stale: ${hidden}`, where: [/<dt>Cancelled<\/dt><dd>[^<]*· Wrong &#60;shop&#62;/, /<b>cancelled<\/b> · Wrong &#60;shop&#62;/] },
+      { x: refused, text: `550 &#60;blocked&#62; ${hidden}`, where: [/<dt>Bounced \/ failed<\/dt><dd>[^<]*· 550 &#60;blocked&#62;/] },
+      { x: unsure, text: `timeout &#38; retry ${hidden}`, where: [/outcome unknown<\/div>[\s\S]*?Last error: timeout &#38; retry/] },
+    ];
+    for (const { x, text, where } of cases) {
+      const html = await page(x.o.id);
+      assert.ok(!html.includes(x.token), "the raw token never appears");
+      assert.doesNotMatch(html, raw, "no working invitation link");
+      assert.ok(html.includes(text), `the reason stays readable, escaped, with the link in its hidden form: ${text}`);
+      for (const re of where) assert.match(html, re);
+      assert.doesNotMatch(html, /<shop>|<blocked>/, "HTML in a reason is escaped, never rendered");
+    }
   });
 });

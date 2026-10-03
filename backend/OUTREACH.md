@@ -459,10 +459,37 @@ The admin **Outreach** page answers, at a glance:
   daily limit (the same count the dispatcher enforces), and when the last
   message went out (a stale time means the scheduled sender isn't running).
 - **Needs attention**, shown only when something does: sends whose outcome is
-  unknown, replies to classify, and messages the provider refused in the last
-  7 days, each linked.
+  unknown, replies to classify, messages the provider refused in the last
+  7 days, invitations opened or activated in the last 7 days, and queued mail
+  that isn't going out, each linked. That last one appears only while sending
+  is ON and unblocked with daily capacity left, the switch has been on for 2
+  hours, a message has waited unclaimed for 2 hours, and nothing has been sent
+  in those 2 hours: a sign the scheduled sender isn't running (expected outside
+  its hours if it runs only in business hours). A queue that is draining, one
+  message per run, keeps sending and never trips it.
 - Preparing drafts, the email provider, and, collapsed, messages by status
-  and the funnel by campaign.
+  and the funnel by campaign, whose Invited, Opened, and Activated numbers
+  link to the messages behind them.
+
+### Operations views
+
+`/admin/outreach/messages`, linked from the Outreach page, lists what the
+records already hold. It is read-only: nothing there drafts, queues, sends, or
+records anything, and nothing new is tracked.
+
+| View | Shows |
+| ---- | ----- |
+| **Messages** | Every message, newest change first, filtered by status, kind, and campaign: its business and recipient, template and campaign, status with its reason (cancelled, refused, bounced, outcome unknown), queued and sent times, its invitation (first open, opens, activation), and its reply |
+| **Replies** | Replied messages, unclassified first, with each one's classification and reply summary |
+| **Invitation activity** | Opened invitations, newest activity first (an open, or activation), optionally activated only |
+| **Eligible now** | Who a first message could be prepared for right now: the same dry run the Outreach page counts, so the one eligibility decision; no draft or invitation is made |
+
+Lists are filtered and paged (50 to a page) in the database, and every filter
+is in the link, so a view can be bookmarked. Activation is always
+`invitationActivations`: a real scan, at or after the first open. No page
+shows a message body, a token, its hash, or an invitation's id, and any text
+that can quote an email (a reply summary, a reason) has its invitation tokens
+hidden before it is escaped.
 
 ## Measurement
 

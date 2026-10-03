@@ -295,6 +295,7 @@ ul.plain { margin:6px 0 0; padding-left:18px; } ul.plain li { margin:5px 0; }
 .o-blockers p { margin:0; } .o-blockers ul { margin:4px 0 0; padding-left:20px; } .o-blockers li { margin:2px 0; }
 .o-attn { padding:12px 16px; border:1px solid var(--line); border-left:4px solid var(--amber); border-radius:10px; background:var(--surface); }
 .o-attn.t-neg { border-left-color:var(--neg); }
+.o-attn.t-pos { border-left-color:var(--pos); } .o-attn.t-pos h3 > span:first-child { color:var(--pos); }
 .o-attn h3 { margin:0; font-size:16px; display:flex; align-items:baseline; gap:8px; }
 .o-attn.t-warn h3 > span:first-child { color:var(--warn); } .o-attn.t-neg h3 > span:first-child { color:var(--neg); }
 .o-attn ul { margin:0; padding-left:20px; font-size:14.5px; } .o-attn li { margin:3px 0; }

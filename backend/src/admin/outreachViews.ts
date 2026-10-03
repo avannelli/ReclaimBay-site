@@ -12,13 +12,16 @@ import {
 import type { invitationForOutreach } from "../invitations/service.js";
 import { INVITATION_STATUS_LABELS, INVITATION_STATUS_MEANINGS, type InvitationStatus } from "../invitations/status.js";
 import { hideInvitationTokens } from "../invitations/tokens.js";
+import { invitationStatus } from "../invitations/status.js";
 import type { FunnelRow } from "../outreach/metrics.js";
 import type { SendingStatus } from "../outreach/dispatch.js";
+import { NO_CAMPAIGN, PAGE_SIZE, STALE_QUEUE_MS, type ActivityRow, type EligibleRow, type InvitationSummary, type MessageFilters, type MessageRow, type MessageView } from "../outreach/operations.js";
 import type { PrepareReport } from "../outreach/prepare.js";
 import type { getOutreachDetail, outreachAttention, prospectOutreach } from "../outreach/service.js";
 import { FIELD_LIMITS } from "../prospects.js";
+import { MAX_SCORE, bandFor } from "../scoring.js";
 import { appPage } from "./views.js";
-import { crumbs, emptyState, errorSummary, esc, extLink, fieldErrors, fmtDate, notice, options, pageHead, section, statusBadge } from "./ui.js";
+import { bandBadge, crumbs, emptyState, errorSummary, esc, extLink, fieldErrors, fmtDate, notice, options, pageHead, qualificationBadge, section, statusBadge } from "./ui.js";
 
 /* Admin pages for outreach. Server-rendered, no scripts, all values escaped. */
 
@@ -32,6 +35,70 @@ const SENDING_NOTE =
   "Nothing is emailed unless sending is switched on (Outreach page), the deployment is armed (OUTREACH_SENDING_ENABLED=1), and an email provider is configured (OUTREACH_PROVIDER).";
 
 const replyOptions = (selected?: string) => options([["", "Choose…"], ...REPLY_OUTCOMES.map((r): [string, string] => [r, REPLY_OUTCOME_LABELS[r]])], selected);
+
+/**
+ * Free text that can quote an email (a reply, a provider's or a person's
+ * reason): invitation tokens hidden first, then escaped. Escaping alone would
+ * still show a quoted token.
+ */
+const safeText = (text: string | null | undefined) => esc(hideInvitationTokens(text ?? ""));
+
+/** A link into the operations views; empty values are left out. */
+export function messagesHref(params: Record<string, string | number | undefined | null>): string {
+  const q = new URLSearchParams();
+  for (const [k, v] of Object.entries(params)) if (v !== undefined && v !== null && v !== "") q.set(k, String(v));
+  const s = q.toString();
+  return `/admin/outreach/messages${s ? `?${s}` : ""}`;
+}
+
+/**
+ * The Outreach area's own navigation: the control page and each operations
+ * view. The eligible count needs the eligibility dry run, so it is shown only
+ * where that ran anyway (null elsewhere).
+ */
+function outreachNav(current: "overview" | MessageView, n: { eligible: number | null; messages: number; unclassified: number; activity: number }): string {
+  const chip = (key: string, href: string, label: string, count: number | null, attn = false) =>
+    `<a class="chip${attn ? " attn" : ""}" href="${esc(href)}"${current === key ? ' aria-current="true"' : ""}>${esc(label)}${count === null ? "" : ` <span class="n">${count}</span>`}</a>`;
+  return `<nav class="chips" aria-label="Outreach views">${[
+    chip("overview", "/admin/outreach", "Overview", null),
+    chip("eligible", messagesHref({ view: "eligible" }), "Eligible now", n.eligible),
+    chip("messages", messagesHref({}), "Messages", n.messages),
+    chip("replies", messagesHref({ view: "replies" }), "Replies to classify", n.unclassified, n.unclassified > 0),
+    chip("activity", messagesHref({ view: "activity" }), "Invitation activity", n.activity),
+    chip("funnel", "/admin/outreach#funnel", "Funnel by campaign", null),
+  ].join("")}</nav>`;
+}
+
+/** A message's invitation, in one cell: status, first open, opens, activation. */
+function invitationCell(kind: MessageRow["kind"], inv: InvitationSummary | null): string {
+  if (kind === "follow_up") return `<span class="small muted">Uses the first message's</span>`;
+  if (!inv) return `<span class="small muted">No invitation</span>`;
+  const status = invitationStatus(inv, inv.activatedAt);
+  const [tone, glyph] = INVITATION_TONE[status];
+  const lines = [
+    inv.firstOpenedAt ? `First opened ${fmtDate(inv.firstOpenedAt)}` : "",
+    inv.openCount ? `${inv.openCount} open${inv.openCount === 1 ? "" : "s"}` : "",
+    inv.activatedAt ? `Activated ${fmtDate(inv.activatedAt)}` : "",
+  ].filter(Boolean);
+  return `<span class="vd ${tone}"><span aria-hidden="true">${glyph}</span> ${esc(INVITATION_STATUS_LABELS[status])}</span>${lines.map((l) => `<div class="sub">${l}</div>`).join("")}`;
+}
+
+/** Why a message is where it is, when its status has a reason. */
+function statusReason(m: MessageRow): string {
+  if (m.status === "queued" && m.sendStartedAt) return `Send started ${fmtDate(m.sendStartedAt)}, outcome unknown${m.lastSendError ? `: ${safeText(m.lastSendError)}` : ""}`;
+  if (m.status === "queued" && m.lastSendError) return safeText(m.lastSendError);
+  if ((m.status === "failed" || m.status === "bounced") && m.failureReason) return safeText(m.failureReason);
+  if (m.status === "cancelled" && m.cancelReason) return safeText(m.cancelReason);
+  return "";
+}
+
+const replyLabel = (m: Pick<MessageRow, "status" | "replyOutcome">) =>
+  m.status !== "replied" ? '<span class="muted">—</span>' : m.replyOutcome ? esc(REPLY_OUTCOME_LABELS[m.replyOutcome]) : "<b>Not yet classified</b>";
+
+const businessCell = (p: { id: string; businessName: string | null }, sub?: string) =>
+  `<a class="name" href="/admin/prospects/${esc(p.id)}">${esc(p.businessName ?? "Prospect")}</a>${sub ? `<div class="sub">${esc(sub)}</div>` : ""}`;
+
+const campaignCell = (c: string | null) => (c ? `<code style="white-space:nowrap">${esc(c)}</code>` : '<span class="muted">—</span>');
 
 /** The Outreach section of a prospect's page. */
 export function outreachSection(prospectId: string, o: Summary): string {
@@ -164,7 +231,7 @@ export function outreachDetailPage(opts: { detail: Detail; invitation?: Invitati
     stuck
       ? `<form method="post" action="/admin/outreach/${id}/confirm-sent" class="card stack">
   <div class="card-h" style="margin:0">Send started ${fmtDate(o.sendStartedAt)}, outcome unknown</div>
-  <p class="small" style="margin:0">Check the provider. If it was sent, record it here; if it wasn't, discard this message. It is never retried automatically unless the provider can deduplicate it.${o.lastSendError ? ` Last error: ${esc(o.lastSendError)}` : ""}</p>
+  <p class="small" style="margin:0">Check the provider. If it was sent, record it here; if it wasn't, discard this message. It is never retried automatically unless the provider can deduplicate it.${o.lastSendError ? ` Last error: ${esc(hideInvitationTokens(o.lastSendError))}` : ""}</p>
   <div><button type="submit">It was sent</button></div>
 </form>`
       : "",
@@ -244,12 +311,12 @@ ${section(
     <dt>Send started</dt><dd>${fmtDate(o.sendStartedAt)}${o.sendAttempts ? ` <span class="muted small">${o.sendAttempts} attempt(s)</span>` : ""}</dd>
     <dt>Sent</dt><dd>${fmtDate(o.sentAt)}${o.provider ? ` <span class="muted small">${esc(o.provider)} ${esc(o.providerMessageId)}</span>` : ""}</dd>
     <dt>Delivered</dt><dd>${fmtDate(o.deliveredAt)}</dd>
-    <dt>Bounced / failed</dt><dd>${fmtDate(o.failedAt)}${o.failureReason ? ` · ${esc(o.failureReason)}` : ""}</dd>
+    <dt>Bounced / failed</dt><dd>${fmtDate(o.failedAt)}${o.failureReason ? ` · ${esc(hideInvitationTokens(o.failureReason))}` : ""}</dd>
     <dt>Reply</dt><dd>${fmtDate(o.repliedAt)}${o.status === "replied" ? ` · <b>${esc(o.replyOutcome ? REPLY_OUTCOME_LABELS[o.replyOutcome] : "Not yet classified")}</b>` : ""}${o.replySummary ? `<div class="small">${esc(hideInvitationTokens(o.replySummary))}</div>` : ""}</dd>
-    <dt>Cancelled</dt><dd>${fmtDate(o.cancelledAt)}${o.cancelReason ? ` · ${esc(o.cancelReason)}` : ""}</dd>
+    <dt>Cancelled</dt><dd>${fmtDate(o.cancelledAt)}${o.cancelReason ? ` · ${esc(hideInvitationTokens(o.cancelReason))}` : ""}</dd>
   </dl>
   <h3 class="card-h" style="margin-top:16px">Events</h3>
-  <ul class="timeline">${o.events.map((e) => `<li><span class="when">${fmtDate(e.createdAt)}</span><b>${esc(e.type)}</b>${e.detail ? ` · ${esc(e.detail)}` : ""}</li>`).join("")}</ul></div>`,
+  <ul class="timeline">${o.events.map((e) => `<li><span class="when">${fmtDate(e.createdAt)}</span><b>${esc(e.type)}</b>${e.detail ? ` · ${esc(hideInvitationTokens(e.detail))}` : ""}</li>`).join("")}</ul></div>`,
 )}
 
 ${actions.length ? section("actions", "Actions", `<div class="stack">${actions.join("\n")}</div>`) : ""}`,
@@ -275,6 +342,14 @@ export interface ControlPageData {
   stuck: { id: string; subject: string; recipientEmail: string; sendStartedAt: Date | null; lastSendError: string | null }[];
   eligible: PrepareReport;
   metrics: FunnelRow[];
+  /** Invitations opened or activated in the last 7 days (operations.ts recentActivity). */
+  activity: { count: number; rows: ActivityRow[] };
+  /** Queued messages not yet claimed by a dispatcher, and whether that looks like a stopped sender job (queueLooksStale). */
+  waiting: { count: number; oldestQueuedAt: Date | null; stale: boolean };
+  /** All messages, for the navigation. */
+  totalMessages: number;
+  /** Opened invitations, for the navigation. */
+  openedInvitations: number;
   /**
    * The Gmail provider's state; null when OUTREACH_PROVIDER isn't gmail. `mailbox` is the
    * sender (OUTREACH_SENDER_EMAIL); `account` the Google account authorized to send as it.
@@ -320,7 +395,7 @@ function gmailCard(g: NonNullable<ControlPageData["gmail"]>): string {
 const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
 
 /** One "needs attention" group: a heading with its count, a short why, and the messages (linked). Items are already escaped. */
-function attentionGroup(tone: "warn" | "neg", glyph: string, title: string, total: number, why: string, items: string[]): string {
+function attentionGroup(tone: "warn" | "neg" | "pos", glyph: string, title: string, total: number, why: string, items: string[]): string {
   if (!total) return "";
   const more = total > items.length ? `<li class="muted">and ${total - items.length} more</li>` : "";
   return `<div class="o-attn t-${tone}"><h3><span aria-hidden="true">${glyph}</span> ${esc(title)} <span class="q-count">${total}</span></h3><p class="q-hint">${esc(why)}</p><ul>${items.join("")}${more}</ul></div>`;
@@ -369,14 +444,25 @@ ${tile(c.remaining === 0 ? "warn" : "info", "✉", `${c.used} / ${c.limit}`, "Se
 </section>`;
 
   const msg = (id: string, subject: string, extra: string) => `<li><a href="/admin/outreach/${esc(id)}">${esc(subject)}</a> <span class="small muted">${extra}</span></li>`;
+  const w = d.waiting;
   const attention = [
+    w.stale
+      ? attentionGroup(
+          "warn",
+          "⏱",
+          "Queued mail isn't going out",
+          w.count,
+          `Sending is on and nothing blocks it, but nothing has been sent for over ${STALE_QUEUE_MS / 3_600_000} hours and the oldest queued message has waited since ${fmtDate(w.oldestQueuedAt)}. Check that the sender job (npm run outreach:send -- --apply) is scheduled and running; if it runs only in business hours, this is expected outside them.`,
+          [`<li><a href="${esc(messagesHref({ status: "queued" }))}">See the queued messages</a></li>`],
+        )
+      : "",
     attentionGroup(
       "warn",
       "⚠",
       "Send outcome unknown",
       d.stuck.length,
       "The provider may or may not have sent these. Check it, then record It was sent or discard the message.",
-      d.stuck.slice(0, 20).map((m) => msg(m.id, m.subject, `to ${esc(m.recipientEmail)} · started ${fmtDate(m.sendStartedAt)}${m.lastSendError ? ` · ${esc(m.lastSendError)}` : ""}`)),
+      d.stuck.slice(0, 20).map((m) => msg(m.id, m.subject, `to ${esc(m.recipientEmail)} · started ${fmtDate(m.sendStartedAt)}${m.lastSendError ? ` · ${safeText(m.lastSendError)}` : ""}`)),
     ),
     attentionGroup(
       "warn",
@@ -392,7 +478,21 @@ ${tile(c.remaining === 0 ? "warn" : "info", "✉", `${c.used} / ${c.limit}`, "Se
       "Refused by the provider, last 7 days",
       a.failureCount,
       "Not sent. An invalid address is suppressed; anything else can be prepared again once the cause is fixed.",
-      a.failures.map((m) => msg(m.id, m.subject, `to ${esc(m.recipientEmail)} · ${fmtDate(m.failedAt)}${m.failureReason ? ` · ${esc(m.failureReason)}` : ""}`)),
+      a.failures.map((m) => msg(m.id, m.subject, `to ${esc(m.recipientEmail)} · ${fmtDate(m.failedAt)}${m.failureReason ? ` · ${safeText(m.failureReason)}` : ""}`)),
+    ),
+    attentionGroup(
+      "pos",
+      "✓",
+      "Invitation activity, last 7 days",
+      d.activity.count,
+      "These businesses opened their invitation, or ran a real scan after opening it. Worth a look before any follow-up.",
+      d.activity.rows.map((r) =>
+        msg(
+          r.outreach.id,
+          r.prospect.businessName ?? r.outreach.subject,
+          `${r.latestKind === "activated" ? "ran a real scan" : `opened the invitation${r.openCount > 1 ? ` (${r.openCount} opens)` : ""}`} · ${fmtDate(r.latest)}`,
+        ),
+      ),
     ),
   ].filter(Boolean);
   const attentionBlock = attention.length ? section("attention", "Needs attention", `<div class="stack">${attention.join("\n")}</div>`) : "";
@@ -436,8 +536,22 @@ ${
   );
 
   const counts = OUTREACH_STATUSES.map((st) => `<div><dt>${esc(OUTREACH_STATUS_LABELS[st])}</dt><dd>${d.counts[st] ?? 0}</dd></div>`).join("");
+  // Invited, Opened, and Activated lead to the messages behind them. The last row is the total ("all"): no campaign filter.
+  const funnelLink = (r: FunnelRow, isTotal: boolean, k: keyof FunnelRow): string | null => {
+    const campaign = isTotal ? undefined : r.campaign;
+    if (k === "invited") return messagesHref({ kind: "initial", campaign });
+    if (k === "opened") return messagesHref({ view: "activity", campaign });
+    if (k === "activated") return messagesHref({ view: "activity", campaign, activated: "1" });
+    return null;
+  };
   const metricRows = d.metrics
-    .map((r) => `<tr><td><code>${esc(r.campaign)}</code></td>${METRIC_COLUMNS.map(([k]) => `<td class="num">${r[k]}</td>`).join("")}</tr>`)
+    .map((r, i, all) => {
+      const cells = METRIC_COLUMNS.map(([k]) => {
+        const href = r[k] ? funnelLink(r, i === all.length - 1, k) : null;
+        return `<td class="num">${href ? `<a href="${esc(href)}">${r[k]}</a>` : r[k]}</td>`;
+      }).join("");
+      return `<tr><td><code>${esc(r.campaign)}</code></td>${cells}</tr>`;
+    })
     .join("");
   const total = Object.values(d.counts).reduce((n, v) => n + (v ?? 0), 0);
   const details = `<section class="section" aria-label="Details">
@@ -453,11 +567,181 @@ ${
     "outreach",
     `${notice(opts.notice)}${errorSummary(opts.errors, fe, "Not done")}
 ${pageHead({ title: "Outreach", lede: "Approved prospects get one personal email each, written from their stored evidence. Nothing is sent unless sending is switched on." })}
+${outreachNav("overview", { eligible: eligibleN, messages: d.totalMessages, unclassified: a.replyCount, activity: d.openedInvitations })}
 ${statusBlock}
 ${tiles}
 ${attentionBlock}
 ${prepare}
 ${provider}
 ${details}`,
+  );
+}
+
+// ---------- operations views (/admin/outreach/messages) ----------
+
+export type MessagesPageData = {
+  filters: MessageFilters;
+  campaigns: { campaign: string; count: number }[];
+  nav: { eligible: number | null; messages: number; unclassified: number; activity: number };
+} & (
+  | { view: "messages"; total: number; rows: MessageRow[] }
+  | { view: "replies"; total: number; unclassified: number; rows: MessageRow[] }
+  | { view: "activity"; total: number; rows: ActivityRow[] }
+  | { view: "eligible"; total: number; capped: boolean; rows: EligibleRow[] }
+);
+
+const VIEW_TITLES: Record<MessageView, [string, string]> = {
+  messages: ["Messages", "Every outreach message and what happened to it. Open one for its full history and actions."],
+  replies: ["Replies", "Messages the business answered. Unclassified replies come first: read each one and record how they answered."],
+  activity: ["Invitation activity", "Invitations that were opened, newest activity first. Activated means a visitor who arrived through the link ran a real scan."],
+  eligible: ["Eligible now", "Prospects a first message could be prepared for right now, highest score first. Nothing here prepares or sends anything."],
+};
+
+function filterForm(d: MessagesPageData): string {
+  const f = d.filters;
+  if (d.view === "eligible") return "";
+  const campaign = `<div><label class="lbl" for="f-campaign">Campaign</label><select id="f-campaign" name="campaign">${options(
+    [["", "Any"], ...d.campaigns.map((c): [string, string] => [c.campaign, `${c.campaign} (${c.count})`])],
+    f.campaign ?? undefined,
+  )}</select></div>`;
+  const status =
+    d.view === "messages"
+      ? `<div><label class="lbl" for="f-status">Status</label><select id="f-status" name="status">${options([["", "Any"], ...OUTREACH_STATUSES.map((s): [string, string] => [s, OUTREACH_STATUS_LABELS[s]])], f.status ?? undefined)}</select></div>`
+      : "";
+  const kind =
+    d.view !== "activity"
+      ? `<div><label class="lbl" for="f-kind">Kind</label><select id="f-kind" name="kind">${options([["", "Any"], ["initial", OUTREACH_KIND_LABELS.initial], ["follow_up", OUTREACH_KIND_LABELS.follow_up]], f.kind ?? undefined)}</select></div>`
+      : `<div><label class="lbl" for="f-activated">Activation</label><select id="f-activated" name="activated">${options([["", "Opened or activated"], ["1", "Activated only"]], f.activated ? "1" : undefined)}</select></div>`;
+  return `<form class="card filters" method="get" action="/admin/outreach/messages" aria-label="Filter ${esc(VIEW_TITLES[d.view][0].toLowerCase())}">
+  ${d.view === "messages" ? "" : `<input type="hidden" name="view" value="${esc(d.view)}">`}
+  <div class="filter-row">${status}${kind}${campaign}
+    <div class="filter-actions"><button type="submit">Apply filters</button><a class="btn btn-secondary" href="${esc(messagesHref({ view: d.view === "messages" ? undefined : d.view }))}">Reset</a></div>
+  </div>
+</form>`;
+}
+
+/** "Showing 51–100 of 240", with Previous and Next links that keep the filters. */
+function pager(d: MessagesPageData): string {
+  const f = d.filters;
+  const from = d.total === 0 ? 0 : (f.page - 1) * PAGE_SIZE + 1;
+  const to = Math.min(d.total, f.page * PAGE_SIZE);
+  const keep = {
+    view: f.view === "messages" ? undefined : f.view,
+    status: f.status,
+    kind: f.kind,
+    campaign: f.campaign,
+    activated: f.activated ? "1" : undefined,
+  };
+  const prev = f.page > 1 ? `<a href="${esc(messagesHref({ ...keep, page: f.page - 1 }))}">← Previous</a>` : "";
+  const next = to < d.total ? `<a href="${esc(messagesHref({ ...keep, page: f.page + 1 }))}">Next →</a>` : "";
+  const extra =
+    d.view === "replies" ? ` · ${d.unclassified} not yet classified` : d.view === "eligible" && d.capped ? " · only the first 1,000 eligible prospects are checked" : "";
+  return `<div class="result-line"><span><b>${d.total ? `Showing ${from}–${to} of ${d.total}` : "Nothing to show"}</b>${esc(extra)}</span><span>${[prev, next].filter(Boolean).join(" · ")}</span></div>`;
+}
+
+const table = (caption: string, head: string[], rows: string[]) =>
+  `<div class="scroll"><table class="tbl cards"><caption class="sr-only">${esc(caption)}</caption>
+<thead><tr>${head.map((h) => `<th scope="col">${esc(h)}</th>`).join("")}</tr></thead><tbody>${rows.join("\n")}</tbody></table></div>`;
+
+function messagesTable(rows: MessageRow[]): string {
+  return table(
+    "Outreach messages",
+    ["Message", "Business", "Campaign", "Status", "Queued / sent", "Invitation", "Reply"],
+    rows.map((m) => {
+      const reason = statusReason(m);
+      return `<tr${m.status === "replied" && !m.replyOutcome ? ' class="attn"' : ""}>
+  <td><a class="name" href="/admin/outreach/${esc(m.id)}">${esc(m.subject)}</a><div class="sub">${esc(OUTREACH_KIND_LABELS[m.kind])} · <code>${esc(m.template)}</code></div></td>
+  <td data-label="Business">${businessCell(m.prospect, m.recipientEmail)}</td>
+  <td data-label="Campaign">${campaignCell(m.campaign)}</td>
+  <td data-label="Status">${outreachBadge(m.status)}${reason ? `<div class="sub">${reason}</div>` : ""}</td>
+  <td class="small" data-label="Queued / sent">${m.queuedAt ? `Queued ${fmtDate(m.queuedAt)}` : '<span class="muted">Not queued</span>'}${m.sentAt ? `<div>Sent ${fmtDate(m.sentAt)}</div>` : ""}</td>
+  <td data-label="Invitation">${invitationCell(m.kind, m.invitation)}</td>
+  <td class="small" data-label="Reply">${replyLabel(m)}</td>
+</tr>`;
+    }),
+  );
+}
+
+function repliesTable(rows: MessageRow[]): string {
+  return table(
+    "Replies",
+    ["Business", "Campaign", "Message", "Replied", "Classification", "Reply summary"],
+    rows.map(
+      (m) => `<tr${m.replyOutcome ? "" : ' class="attn"'}>
+  <td>${businessCell(m.prospect, m.recipientEmail)}</td>
+  <td data-label="Campaign">${campaignCell(m.campaign)}</td>
+  <td data-label="Message"><a href="/admin/outreach/${esc(m.id)}">${esc(m.subject)}</a><div class="sub">${esc(OUTREACH_KIND_LABELS[m.kind])}</div></td>
+  <td class="small" data-label="Replied">${fmtDate(m.repliedAt)}</td>
+  <td data-label="Classification">${replyLabel(m)}</td>
+  <td class="small" data-label="Reply summary">${m.replySummary ? safeText(m.replySummary) : '<span class="muted">No summary recorded</span>'}</td>
+</tr>`,
+    ),
+  );
+}
+
+function activityTable(rows: ActivityRow[]): string {
+  return table(
+    "Invitation activity",
+    ["Business", "Campaign", "Message", "First opened", "Opens", "Activated", "Latest activity"],
+    rows.map((a) => {
+      const status = invitationStatus(a, a.activatedAt);
+      const [tone, glyph] = INVITATION_TONE[status];
+      return `<tr>
+  <td>${businessCell(a.prospect, a.outreach.recipientEmail)}</td>
+  <td data-label="Campaign">${campaignCell(a.campaign)}</td>
+  <td data-label="Message"><a href="/admin/outreach/${esc(a.outreach.id)}">${esc(a.outreach.subject)}</a><div class="sub">${outreachBadge(a.outreach.status)}</div></td>
+  <td class="small" data-label="First opened">${fmtDate(a.firstOpenedAt)}</td>
+  <td class="num" data-label="Opens">${a.openCount}</td>
+  <td data-label="Activated"><span class="vd ${tone}"><span aria-hidden="true">${glyph}</span> ${esc(INVITATION_STATUS_LABELS[status])}</span>${a.activatedAt ? `<div class="sub">${fmtDate(a.activatedAt)}</div>` : ""}</td>
+  <td class="small" data-label="Latest activity">${a.latestKind === "activated" ? "Ran a real scan" : "Opened the invitation"}<div class="sub">${fmtDate(a.latest)}</div></td>
+</tr>`;
+    }),
+  );
+}
+
+function eligibleTable(rows: EligibleRow[]): string {
+  return table(
+    "Eligible prospects",
+    ["Prospect", "Location", "Business email", "Qualification", "Opportunity score", "Evidence"],
+    rows.map(
+      (p) => `<tr>
+  <td>${businessCell(p)}</td>
+  <td data-label="Location">${esc([p.city, p.state].filter(Boolean).join(", ")) || '<span class="muted">—</span>'}</td>
+  <td data-label="Business email">${esc(p.email)}${p.emailSourceUrl ? `<div class="src">found at ${extLink(p.emailSourceUrl)}</div>` : ""}</td>
+  <td data-label="Qualification">${qualificationBadge(p.qualification)}</td>
+  <td data-label="Opportunity score"><span class="score-cell"><b>${p.score}</b><span class="of">/${MAX_SCORE}</span></span> ${bandBadge(bandFor(p.score))}</td>
+  <td class="small" data-label="Evidence">${p.evidence} excerpt${p.evidence === 1 ? "" : "s"}<div class="sub">${p.known}/${p.totalSignals} signals known</div></td>
+</tr>`,
+    ),
+  );
+}
+
+const EMPTY: Record<MessageView, [string, string]> = {
+  messages: ["No messages match.", "Messages appear here once drafts are prepared."],
+  replies: ["No replies yet.", "Replies are recorded by the mailbox reader (npm run outreach:inbox) or by a person on a message's page."],
+  activity: ["No invitation has been opened yet.", "An invitation appears here once the business opens its link."],
+  eligible: ["No prospect is eligible right now.", "The Outreach page explains why each prospect isn't."],
+};
+
+export function outreachMessagesPage(d: MessagesPageData): string {
+  const [title, lede] = VIEW_TITLES[d.view];
+  const body =
+    d.view === "messages"
+      ? d.rows.length && messagesTable(d.rows)
+      : d.view === "replies"
+        ? d.rows.length && repliesTable(d.rows)
+        : d.view === "activity"
+          ? d.rows.length && activityTable(d.rows)
+          : d.rows.length && eligibleTable(d.rows);
+  const [emptyTitle, emptyHint] = EMPTY[d.view];
+  return appPage(
+    `${title} · Outreach · ReclaimBay admin`,
+    "outreach",
+    `${crumbs([{ label: "Outreach", href: "/admin/outreach" }, { label: title }])}
+${pageHead({ title, lede: esc(lede) })}
+${outreachNav(d.view, d.nav)}
+${filterForm(d)}
+${pager(d)}
+${body || `<div class="card">${emptyState(emptyTitle, emptyHint)}</div>`}`,
   );
 }
