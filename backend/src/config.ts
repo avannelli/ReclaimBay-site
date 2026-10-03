@@ -13,7 +13,7 @@ export interface Config {
   adminSecret: string | null;
   /** Number of reverse-proxy hops in front of the app (Railway: 1). */
   trustProxyHops: number;
-  /** Base URL used to build referral links shown in the admin. */
+  /** The public site's base URL, for the links built here: referral links and invitation links. */
   publicSiteUrl: string;
   secureCookies: boolean;
   /**

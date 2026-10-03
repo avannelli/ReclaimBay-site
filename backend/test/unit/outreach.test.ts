@@ -249,8 +249,8 @@ describe("outreach message generation", () => {
   });
 });
 
-describe("no sending in this version", () => {
-  test("the only sender refuses to send", async () => {
+describe("no sending without a provider, and no network calls outside the Gmail adapter", () => {
+  test("without OUTREACH_PROVIDER the sender is the disabled one, and it refuses to send", async () => {
     assert.equal(disabledSender.enabled, false);
     assert.equal(senderFromConfig(loadConfig({ DATABASE_URL: "postgres://x", RESEND_API_KEY: "re_x", OUTREACH_SENDING_ENABLED: "1" })), disabledSender, "without OUTREACH_PROVIDER nothing can send");
     await assert.rejects(

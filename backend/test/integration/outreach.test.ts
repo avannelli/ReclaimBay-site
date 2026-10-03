@@ -23,8 +23,9 @@ import { CFG, OPTS, mockSender, queueAndSend } from "./outreachHelpers.js";
 
 /*
  * Outreach through the real service and admin, against a disposable
- * database. Nothing here sends: there is no sender, and any network call
- * made while drafting fails the test.
+ * database. Nothing here reaches a real provider: messages are sent only
+ * through the dispatcher with the mock sender, and any network call made
+ * while drafting fails the test.
  */
 
 const EMAIL = "service@smithauto.example.com";

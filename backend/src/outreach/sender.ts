@@ -72,7 +72,7 @@ export class SendingDisabledError extends Error {
   }
 }
 
-/** The only sender in this version. */
+/** The sender when no provider is configured (OUTREACH_PROVIDER unset): it refuses every send. */
 export const disabledSender: OutreachSender = {
   name: "disabled",
   enabled: false,

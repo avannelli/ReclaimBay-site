@@ -1,6 +1,6 @@
 /*
- * Prepares outreach drafts for named prospects. Never sends anything: there
- * is no sender in this version.
+ * Prepares outreach drafts for named prospects. Never sends anything: a
+ * draft is sent only after it is queued, by the dispatcher (dispatch.ts).
  *
  *   npm run outreach:draft -- --prospect <id> [--prospect <id> ...]           (dry run: shows the draft, stores nothing)
  *   npm run outreach:draft -- --prospect <id> [--prospect <id> ...] --apply   (stores the draft)

@@ -13,8 +13,8 @@
  *
  * and can end bounced, failed, or cancelled. Every end state is final: a
  * retry or a follow-up is a new message, so no history is overwritten.
- * Sending goes through dispatch.ts, behind a global switch; there is no
- * provider yet, so nothing can be sent (see sender.ts).
+ * Sending goes only through dispatch.ts, and only while the deployment arm,
+ * the global switch, and an enabled provider are all on (see sender.ts).
  */
 import { STATUS_LABELS, statusRequirementErrors, type Status, type StatusContext } from "../prospectStatus.js";
 
