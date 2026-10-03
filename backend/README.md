@@ -62,23 +62,56 @@ string is gone. Attribution is first touch: once a browser is linked to a
 prospect, it stays with that prospect. An unknown code is accepted but not
 attributed, and the response is the same either way so codes can't be probed.
 
-## Local setup
+## Local development
 
-Needs Node 22.12+ and a PostgreSQL database.
+The quick start, with what runs where (public site, local admin, tests,
+production), is in the [root README](../README.md#local-development). This
+section is the backend's detail.
+
+The local admin is this backend running on your computer at
+http://localhost:8080/admin, against your local `reclaimbay_dev` database:
+test data only, never production. It needs Node 22.12+ and a local
+PostgreSQL server, and no frontend, Cloudflare, or Railway. From the
+repository root:
 
 ```bash
-cd backend
-npm ci
-cp .env.example .env           # then fill in DATABASE_URL and ADMIN_SECRET
-npm run db:migrate             # applies prisma/migrations
-npm run dev                    # http://localhost:8080
+npm ci --prefix backend         # once
+npm run dev:admin:setup         # once: creates backend/.env with a new ADMIN_SECRET
+#   then set DATABASE_URL in backend/.env to a local database, e.g.
+#   postgresql://USER:PASSWORD@localhost:5432/reclaimbay_dev
+npm run dev:admin:reset         # creates that database (empties it if it exists) and migrates it
+npm run dev:admin:seed          # optional: example prospects
+npm run dev:admin               # applies new migrations, then serves http://localhost:8080/admin
 ```
 
-For a throwaway local database without installing Postgres, run
+Sign in with the `ADMIN_SECRET` in `backend/.env`: the same sign-in as
+production, with your own local secret. `backend/.env` holds local-only
+credentials and is git-ignored; never commit it. `Ctrl+C` stops the server;
+it reloads on its own when you edit `backend/src`.
+
+**Local only, by construction.** Every `dev:*` script refuses
+`NODE_ENV=production`, Railway, and any `DATABASE_URL` that isn't on this
+computer (`localhost`, `127.0.0.1`, `::1`), so a local run can't touch the
+production database. The server listens on this computer only and trusts no
+proxy. Production is unaffected: it starts `dist/server.js` with `npm start`,
+which never loads these checks.
+
+**Use its own database.** Not the integration-test database: the tests
+empty it, and refuse to run while `backend/.env` points at it. Create
+`reclaimbay_dev` on the same Postgres server instead (`npm run
+dev:admin:reset` does). For a server without installing Postgres, run
 `npx prisma dev` and use the `postgres://…` URL it prints.
 
-Point the frontend at it by adding this to `.env.local` in the repo root, then
-run `npm run dev` there:
+**Test data.** `npm run dev:admin:seed` adds four example.com prospects,
+one of them qualified with a published email, so Outreach has a draft to
+prepare. For Discovery, run discovery from the admin with the **fixture**
+provider (offered outside production only): it adds synthetic candidates in
+every state. Nothing is ever emailed locally: sending needs a configured
+provider, `OUTREACH_SENDING_ENABLED=1`, and the switch, and none is set.
+
+The public site (`npm run dev` in the repository root, http://localhost:3000)
+runs without the backend. Optionally, to have it send its anonymous analytics
+to this local backend, add this to `.env.local` in the repository root:
 
 ```
 NEXT_PUBLIC_ANALYTICS_API_URL=http://localhost:8080
@@ -91,14 +124,17 @@ local site through.
 
 | Script                    | What it does                                               |
 | ------------------------- | ---------------------------------------------------------- |
-| `npm run dev`             | Watch mode with `tsx`, loads `backend/.env`                |
+| `npm run dev`             | Local server in watch mode, after the local-only checks; loads `backend/.env` (repo root: `npm run dev:admin`) |
+| `npm run dev:setup`       | Creates `backend/.env` with a generated `ADMIN_SECRET`; never overwrites one (root: `dev:admin:setup`) |
+| `npm run dev:db -- migrate\|reset` | Migrates, or drops and recreates, the local database only (root: `dev:admin:reset`) |
+| `npm run dev:seed`        | `seed:dev` without a build (root: `dev:admin:seed`)         |
 | `npm run build`           | `prisma generate` + TypeScript compile to `dist/`          |
 | `npm start`               | Runs `dist/server.js`                                      |
 | `npm run db:migrate`      | `prisma migrate deploy` (applies committed migrations)     |
 | `npm run db:migrate:dev`  | `prisma migrate dev` (creates a new migration while developing) |
 | `npm run prospect:create` | Creates one prospect (after `npm run build`)               |
 | `npm run prospects:rescore` | Recomputes cached scores for rows from an older scoring version (`-- --all` for every row) |
-| `npm run seed:dev`        | Seeds three example prospects. Refuses to run in production or on Railway |
+| `npm run seed:dev`        | Seeds four example prospects. Refuses production, Railway, and non-local databases |
 | `npm test`                | Unit tests for scoring and status rules (no database)      |
 | `npm run test:integration`| Service and admin tests against `TEST_DATABASE_URL` (see [PROSPECTS.md](PROSPECTS.md#tests)) |
 | `npm run typecheck`       | Type-checks `src` and `test`                               |
@@ -211,9 +247,10 @@ npm run build
 npm run prospect:create -- --name "Smith Auto" --website smithauto.com --city Springfield --state IL --campaign launch-v1
 ```
 
-`npm run seed:dev` creates Smith Auto, Ace Automotive, and Valley Motors
-(example.com data) for local testing. It exits with an error when
-`NODE_ENV=production` or on Railway, and nothing seeds automatically.
+`npm run seed:dev` creates Smith Auto, Ace Automotive, Valley Motors, and
+Harbor Lane Auto (example.com data) for local testing. It exits with an error
+when `NODE_ENV=production`, on Railway, or when `DATABASE_URL` isn't on this
+computer, and nothing seeds automatically.
 
 ## Deploying to Railway
 

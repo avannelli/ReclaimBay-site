@@ -6,7 +6,11 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "dev:admin": "npm --prefix backend run dev:db -- migrate && npm --prefix backend run dev",
+    "dev:admin:setup": "npm --prefix backend run dev:setup --",
+    "dev:admin:reset": "npm --prefix backend run dev:db -- reset",
+    "dev:admin:seed": "npm --prefix backend run dev:seed"
   },
   "dependencies": {
     "jspdf": "^4.2.1",
