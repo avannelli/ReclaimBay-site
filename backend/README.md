@@ -142,6 +142,7 @@ Frontend (Cloudflare Pages build variable, inlined at build time):
 | Method | Path              | Notes                                                        |
 | ------ | ----------------- | ------------------------------------------------------------ |
 | GET    | `/health`         | `{"ok":true,"database":true}`, or 503 with `false`s if the DB is unreachable |
+| GET    | `/favicon.ico`, `/icon.svg`, `/apple-touch-icon.png` | The admin's browser-tab icon: the site's own `app/` icon files, copied unchanged to `assets/brand/` (a unit test keeps them identical) |
 | POST   | `/api/events`     | Analytics intake. CORS limited to `ALLOWED_ORIGIN`, 120 req/min per IP, 2 KB body limit, `204` on success |
 | GET    | `/admin`          | Funnel dashboard (signed in)                                 |
 | GET    | `/admin/login`    | Sign-in form                                                 |
@@ -183,7 +184,8 @@ Open `https://<backend-domain>/admin` and sign in with `ADMIN_SECRET`. A
 successful sign-in sets an HttpOnly, `SameSite=Strict`, `Secure` cookie scoped
 to `/admin` that holds an HMAC-signed expiry (12 hours). Changing
 `ADMIN_SECRET` signs everyone out. Admin pages send `no-store`, `noindex`, and
-a script-free Content Security Policy. The secret exists only as a Railway
+a script-free Content Security Policy whose only image source is this
+service itself (the tab icon). The secret exists only as a Railway
 variable and never appears in the static frontend.
 
 The dashboard shows:

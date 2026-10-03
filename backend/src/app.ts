@@ -2,6 +2,7 @@ import Fastify from "fastify";
 import type { Config } from "./config.js";
 import type { Db } from "./db.js";
 import { adminRoutes } from "./routes/admin.js";
+import { brandIconRoutes } from "./routes/brandIcons.js";
 import { eventRoutes } from "./routes/events.js";
 import { senderFromConfig, type OutreachSender } from "./outreach/sender.js";
 import type { ProcessDeps } from "./research/service.js";
@@ -51,6 +52,7 @@ export async function buildApp(config: Config, db: Db, logger: boolean = true, d
   await app.register(eventRoutes, { config, db });
   const googleFetch = deps.googleFetch ?? globalThis.fetch;
   const sender = deps.outreachSender ?? senderFromConfig(config, googleFetch);
+  await app.register(brandIconRoutes);
   await app.register(adminRoutes, { config, db, research: deps.research, sender, googleFetch });
   await app.register(unsubscribeRoutes, { db });
   await app.register(gmailOAuthRoutes, { config, fetchImpl: googleFetch });

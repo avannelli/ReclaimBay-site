@@ -78,7 +78,7 @@ export async function adminRoutes(app: FastifyInstance, opts: { config: Config; 
     reply.header("X-Content-Type-Options", "nosniff");
     reply.header(
       "Content-Security-Policy",
-      "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'",
+      "default-src 'none'; img-src 'self'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'",
     );
     return payload;
   });

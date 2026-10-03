@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { after, before, beforeEach, describe, test } from "node:test";
 import type { FastifyInstance } from "fastify";
 import { buildApp } from "../../src/app.js";
@@ -82,9 +83,42 @@ describe("admin UI structure (HTTP)", { skip: skipReason }, () => {
     const { prospectId, candId } = await seed();
     for (const url of ["/admin", "/admin/prospects", `/admin/prospects/${prospectId}`, "/admin/discovery", `/admin/discovery/candidates/${candId}`, "/admin/prospects/new"]) {
       const res = await get(url);
-      assert.doesNotMatch(res.body, /<script|javascript:|\son[a-z]+\s*=|<link |<img |@import/i, url);
+      // The only links: the brand's tab icons, from this service itself.
+      const withoutIcons = res.body.replace(/<link rel="(?:icon|apple-touch-icon)" href="\/(?:favicon\.ico|icon\.svg|apple-touch-icon\.png)\?v=[0-9a-f]{12}"[^>]*>/g, "");
+      assert.doesNotMatch(withoutIcons, /<script|javascript:|\son[a-z]+\s*=|<link |<img |@import/i, url);
       assert.doesNotMatch(res.body, /https?:\/\/(?!reclaimbay\.com|structure\.example\.com|directory\.example\.com)[a-z0-9.-]+\/[^"\s]*\.(js|css|woff2?|png)/i, url);
-      assert.match(String(res.headers["content-security-policy"]), /default-src 'none'; style-src 'unsafe-inline'/, url);
+      assert.equal(
+        res.headers["content-security-policy"],
+        "default-src 'none'; img-src 'self'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'",
+        url,
+      );
+    }
+  });
+
+  test("every admin page shows the same ReclaimBay tab icon, served from the approved files", async () => {
+    const { prospectId, candId } = await seed();
+    const iconLinks = (body: string) => body.match(/<link rel="(?:icon|apple-touch-icon)"[^>]*>/g) ?? [];
+    const signedOut = await app.inject({ method: "GET", url: "/admin/login" });
+    const expected = iconLinks(signedOut.body);
+    assert.deepEqual(
+      expected.map((l) => /href="([^"?]+)\?v=[0-9a-f]{12}" sizes="([^"]+)" type="([^"]+)"/.exec(l)!.slice(1)),
+      [
+        ["/favicon.ico", "48x48", "image/x-icon"],
+        ["/icon.svg", "any", "image/svg+xml"],
+        ["/apple-touch-icon.png", "180x180", "image/png"],
+      ],
+      "the same three icons as the public site",
+    );
+    const pages = ["/admin", "/admin/prospects", `/admin/prospects/${prospectId}`, "/admin/discovery", `/admin/discovery/candidates/${candId}`, "/admin/outreach"];
+    for (const url of pages) assert.deepEqual(iconLinks((await get(url)).body), expected, `${url}: the icon doesn't change between pages`);
+
+    const site = new URL("../../../app/", import.meta.url);
+    for (const [route, file, type] of [["/favicon.ico", "favicon.ico", "image/x-icon"], ["/icon.svg", "icon.svg", "image/svg+xml"], ["/apple-touch-icon.png", "apple-icon.png", "image/png"]] as const) {
+      const res = await app.inject({ method: "GET", url: route });
+      assert.equal(res.statusCode, 200, route);
+      assert.equal(res.headers["content-type"], type, route);
+      assert.equal(res.headers["x-content-type-options"], "nosniff", route);
+      assert.ok(res.rawPayload.equals(readFileSync(new URL(file, site))), `${route} is the site's own ${file}`);
     }
   });
 

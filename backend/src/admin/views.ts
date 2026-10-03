@@ -1,3 +1,4 @@
+import { ICON_LINKS } from "../routes/brandIcons.js";
 import { LOGO_FULL_REVERSE, LOGO_LOCKUP_REVERSE } from "./brandArt.js";
 import { STYLE } from "./styles.js";
 import type { ProspectRow, Summary } from "./stats.js";
@@ -9,7 +10,7 @@ export { esc, fmtDate };
 
 const head = (title: string) => `<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<meta name="robots" content="noindex,nofollow"><title>${esc(title)}</title><style>${STYLE}</style></head>`;
+<meta name="robots" content="noindex,nofollow"><title>${esc(title)}</title>${ICON_LINKS}<style>${STYLE}</style></head>`;
 
 /** Unauthenticated pages (login, disabled): the full logo over a plain centered card. */
 export function page(title: string, body: string): string {
