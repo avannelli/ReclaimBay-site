@@ -207,7 +207,8 @@ describe("outreach (service)", { skip: skipReason }, () => {
     for (const s of ["meeting", "proposal", "customer"]) await changeStatus(db, p.id, s, null);
     assert.equal((await db.prospect.findUniqueOrThrow({ where: { id: p.id } })).status, "customer");
 
-    const q = await prospect({ businessName: "Lost Auto" });
+    // Another business, with its own address: an address is only ever emailed for one business.
+    const q = await prospect({ businessName: "Lost Auto", email: "service@lostauto.example.com" });
     const m = await sent(q.id);
     await recordReply(db, m.id, { outcome: "not_interested" });
     const lost = await db.prospect.findUniqueOrThrow({ where: { id: q.id }, include: { statusChanges: { orderBy: { createdAt: "desc" }, take: 1 } } });

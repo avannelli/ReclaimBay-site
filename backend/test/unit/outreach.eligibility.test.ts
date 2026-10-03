@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { describe, test } from "node:test";
 import { OPT_OUT_INSTRUCTION } from "../../src/outreach/compose.js";
 import { sendingStatus } from "../../src/outreach/dispatch.js";
-import { ELIGIBILITY_STAGES, eligibilityErrors, type EligibilityFacts } from "../../src/outreach/eligibility.js";
+import { ELIGIBILITY_STAGES, eligibilityErrors, wasContacted, type EligibilityFacts } from "../../src/outreach/eligibility.js";
 
 /*
  * The one outreach eligibility rule, and the sending headline. Pure: every
@@ -92,6 +92,44 @@ describe("outreach eligibility: one rule for preparing, queueing, and sending", 
       [],
       "an earlier first message doesn't block a follow-up",
     );
+  });
+
+  test("an address contacted for another business is never prepared, queued, or sent for this one", () => {
+    const elsewhere = { contactedElsewhere: { email: EMAIL, businessName: "Other Shop Auto" } };
+    for (const f of [facts(elsewhere), withMessage("queue", elsewhere), withMessage("send", elsewhere)]) {
+      assert.match(eligibilityErrors(f).join(" "), /The address service@shop\.example\.com was already contacted for Other Shop Auto\. An address is only ever emailed for one business\./, f.stage);
+    }
+    assert.deepEqual(eligibilityErrors(facts({ contactedElsewhere: null })), []);
+  });
+
+  test("a follow-up goes only to the address its first message went to", () => {
+    const contacted = { ...facts().prospect, status: "contacted" as const };
+    const followUp = { original: { status: "sent" as const, sentAt: new Date() }, alreadyFollowedUp: false };
+    assert.deepEqual(eligibilityErrors(facts({ kind: "follow_up", prospect: contacted, followUp, firstRecipient: EMAIL })), []);
+    const moved = { ...contacted, email: "new@shop.example.com" };
+    assert.match(eligibilityErrors(facts({ kind: "follow_up", prospect: moved, followUp, firstRecipient: EMAIL })).join(), /goes to the address the first message was sent to \(service@shop\.example\.com\)/);
+    // Queued or sending: the stored follow-up, too.
+    const stuck = withMessage("send", { kind: "follow_up", prospect: { ...contacted, email: "new@shop.example.com" }, firstRecipient: EMAIL });
+    assert.match(eligibilityErrors(stuck).join(), /goes to the address the first message was sent to/);
+    assert.deepEqual(eligibilityErrors(facts({ firstRecipient: "someone@else.example" })), [], "only a follow-up is held to its first message's address");
+  });
+
+  test("contacted: the send started and wasn't refused before it went out", () => {
+    const at = new Date();
+    const cases: [string, Parameters<typeof wasContacted>[0], boolean][] = [
+      ["a draft", { status: "draft", sentAt: null, sendStartedAt: null }, false],
+      ["queued, not claimed", { status: "queued", sendStartedAt: null, sentAt: null }, false],
+      ["queued, outcome unknown", { status: "queued", sendStartedAt: at, sentAt: null }, true],
+      ["sent", { status: "sent", sendStartedAt: at, sentAt: at }, true],
+      ["bounced", { status: "bounced", sendStartedAt: at, sentAt: at }, true],
+      ["replied", { status: "replied", sendStartedAt: at, sentAt: at }, true],
+      ["refused before sending", { status: "failed", sendStartedAt: at, sentAt: null }, false],
+      ["failed after sending", { status: "failed", sendStartedAt: at, sentAt: at }, true],
+      ["cancelled before its send", { status: "cancelled", sendStartedAt: null, sentAt: null }, false],
+      ["cancelled after its send started", { status: "cancelled", sendStartedAt: at, sentAt: null }, true],
+      ["confirmed sent by a person", { status: "sent", sendStartedAt: at, sentAt: at }, true],
+    ];
+    for (const [name, o, expected] of cases) assert.equal(wasContacted(o), expected, name);
   });
 
   test("no step keeps its own copy of the rule", () => {

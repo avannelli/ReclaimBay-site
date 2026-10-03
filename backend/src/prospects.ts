@@ -2,7 +2,7 @@ import { randomInt } from "node:crypto";
 import type { Db } from "./db.js";
 import type { Prisma } from "./generated/prisma/client.js";
 import { OUTREACH_CLOSED } from "./outreach/lifecycle.js";
-import { cancelOpenOutreach, lockSendGate } from "./outreach/records.js";
+import { cancelOpenOutreach, lockSendGate, suppressEmail } from "./outreach/records.js";
 import { STATUS_LABELS, isStatus, statusRequirementErrors, transitionErrors, type Status } from "./prospectStatus.js";
 import {
   BAND_THRESHOLDS,
@@ -355,7 +355,9 @@ export async function changeStatus(db: Db, id: string, toRaw: string, reasonRaw:
 /**
  * One validated status change inside the caller's transaction, with its
  * history row. Entering a status that ends outreach cancels any open
- * outreach message, so a draft can't outlive a Do not contact.
+ * outreach message, so a draft can't outlive a Do not contact. Do not
+ * contact also suppresses the business email, so no other prospect record
+ * sharing that address can be emailed either.
  */
 export async function changeStatusInTx(tx: Tx, id: string, to: Status, reason: string | null, now = new Date()) {
   const current = await tx.prospect.findUnique({ where: { id }, include: { signals: true } });
@@ -373,6 +375,9 @@ export async function changeStatusInTx(tx: Tx, id: string, to: Status, reason: s
   if (count !== 1) throw new ProspectError(["The status changed meanwhile. Reload and try again."], "conflict");
   await tx.prospectStatusChange.create({ data: { prospectId: id, fromStatus: from, toStatus: to, reason, createdAt: now } });
   if (OUTREACH_CLOSED.includes(to)) await cancelOpenOutreach(tx, id, `The prospect moved to ${STATUS_LABELS[to]}.`, now);
+  if (to === "do_not_contact" && current.email) {
+    await suppressEmail(tx, current.email, "unsubscribed", `${current.businessName ?? "The business"} is Do not contact${reason ? `: ${reason}` : "."}`, null, now);
+  }
   return { from, to };
 }
 

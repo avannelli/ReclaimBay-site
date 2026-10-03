@@ -111,6 +111,29 @@ needs. Drafting, automatic preparation, queueing, the admin, and the
 dispatcher all call it, so they can't disagree, and a person sees the same
 reason at every step.
 
+### Recipients: one address per message, one business per address
+
+- **A message's recipient is `Outreach.recipientEmail`**: the prospect's
+  business email, normalized (trimmed, lowercased) when the draft is made,
+  and never changed after. The dispatcher sends to that and nothing else;
+  it never rebuilds the address from the prospect.
+- **It must still be the prospect's email.** An edit since the draft stops
+  the message at queueing and at sending ("discard it and prepare it again").
+- **A follow-up goes to the address its first message went to.** If the
+  business email changed since, it can't be followed up by email.
+- **An address is contacted for one business only.** Once a message to an
+  address *may have reached it* (`wasContacted`: its send started and it
+  wasn't refused before going out; an unknown outcome counts), no other
+  prospect's message to that address is prepared, queued, or sent. A
+  message that was only drafted or queued claims nothing; a refusal frees
+  the address. At send time this is decided under the
+  [send gate](#the-send-gate), so two prospects sharing an address (two
+  locations with one `info@`) never both get a first message. The same test
+  decides whether a prospect already had its first message.
+- **Do not contact suppresses the address**, however it is set (a person,
+  a reply, an opt-out, a complaint), so no other prospect record sharing it
+  can be emailed either.
+
 ## Drafts
 
 ### Who gets one
@@ -224,9 +247,10 @@ The dispatcher re-checks every condition. If any fails, the message is
 cancelled with the reason instead of sent:
 - the prospect is still eligible (Ready to contact for a first message,
   Contacted for a follow-up; Meets criteria; not Do not contact);
-- the prospect's email is unchanged since the message was prepared;
-- the address isn't suppressed;
-- no other first message was sent;
+- the prospect's email is unchanged since the message was prepared, and a
+  follow-up goes to its first message's address;
+- the address isn't suppressed, and wasn't contacted for another business;
+- no other first message may have reached this prospect;
 - the message carries the opt-out and the postal address, and was prepared
   for the configured sender.
 
