@@ -10,6 +10,29 @@ type Tx = Prisma.TransactionClient;
 type EventType = OutreachStatus | "drafted" | "complained" | "unsubscribed";
 export type SuppressionReason = "bounced" | "complained" | "unsubscribed" | "invalid";
 
+/** The send gate's advisory lock key (once the dispatcher's claim lock; the value is unchanged). */
+export const SEND_GATE = 73_160_201;
+
+/**
+ * The send gate: one global lock, held until the transaction ends. Every
+ * top-level transaction that can make or stop a send takes it as its first
+ * statement: the dispatcher's claim and result, queueing, discarding, the
+ * sending switch, a stuck send confirmed, prospect status changes and edits,
+ * replies and their classification, provider events, opt-outs, and revoking
+ * an invitation. So a send and anything that could stop it happen one after
+ * the other, never interleaved, and two such transactions can never
+ * deadlock: they all wait for the same lock first, before any row lock.
+ *
+ * Rules (a unit test enforces them):
+ *   - only those top-level functions take it, as the first statement of
+ *     their transaction; helpers (changeStatusInTx, suppressEmail,
+ *     cancelOpenOutreach, …) never do: their caller already holds it;
+ *   - nothing inside a gated transaction makes a network call: the provider
+ *     and Gmail are always called outside, so the gate is held for
+ *     milliseconds.
+ */
+export const lockSendGate = (tx: Tx) => tx.$executeRaw`SELECT pg_advisory_xact_lock(${SEND_GATE})`;
+
 /**
  * Locks one message's row until the transaction ends. Everything that records
  * what happened to a sent message (provider events, replies, opt-outs, the

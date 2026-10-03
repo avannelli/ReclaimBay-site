@@ -2,7 +2,7 @@ import { randomInt } from "node:crypto";
 import type { Db } from "./db.js";
 import type { Prisma } from "./generated/prisma/client.js";
 import { OUTREACH_CLOSED } from "./outreach/lifecycle.js";
-import { cancelOpenOutreach } from "./outreach/records.js";
+import { cancelOpenOutreach, lockSendGate } from "./outreach/records.js";
 import { STATUS_LABELS, isStatus, statusRequirementErrors, transitionErrors, type Status } from "./prospectStatus.js";
 import {
   BAND_THRESHOLDS,
@@ -303,7 +303,9 @@ export async function updateProspect(db: Db, id: string, raw: Raw) {
   const scoring = scoringInputOf(input);
   const now = new Date();
 
+  // Under the send gate: an edit (the email, the signals behind qualification) can stop a queued send.
   return db.$transaction(async (tx) => {
+    await lockSendGate(tx);
     const current = await tx.prospect.findUnique({ where: { id }, include: { signals: true } });
     if (!current) throw notFound();
 
@@ -344,7 +346,10 @@ export async function changeStatus(db: Db, id: string, toRaw: string, reasonRaw:
     throw new ProspectError([`Reason is too long (max ${FIELD_LIMITS.reason}).`]);
   }
 
-  return db.$transaction((tx) => changeStatusInTx(tx, id, to, reason));
+  return db.$transaction(async (tx) => {
+    await lockSendGate(tx);
+    return changeStatusInTx(tx, id, to, reason);
+  });
 }
 
 /**

@@ -230,6 +230,29 @@ cancelled with the reason instead of sent:
 - the message carries the opt-out and the postal address, and was prepared
   for the configured sender.
 
+### The send gate
+
+One global database lock (`lockSendGate`, in
+[`src/outreach/records.ts`](src/outreach/records.ts)) orders sending against
+everything that could stop it. Every top-level transaction that can make or
+stop a send takes it as its first statement:
+- the dispatcher's claim and its result;
+- queueing, discarding, and confirming a stuck send as sent;
+- the sending switch;
+- prospect status changes and prospect edits;
+- replies, recorded or from the inbox, and their classification;
+- provider events (bounces, complaints) and opt-outs;
+- revoking an invitation.
+
+So a send and an opt-out, a Do not contact, a discard, or a revocation never
+interleave: each happens wholly before or wholly after the other, and since
+they all wait for the same lock before any row lock, they can't deadlock.
+Two rules keep it that way, and a unit test enforces both:
+- **Only those top-level functions take it.** Helpers that run inside them
+  (`changeStatusInTx`, `suppressEmail`, `cancelOpenOutreach`, …) never do.
+- **No network call while it is held.** The provider and Gmail are always
+  called outside these transactions, so the gate is held for milliseconds.
+
 ### Never two emails for one message
 
 - **Claimed once.** A message is claimed compare-and-set before its send, so

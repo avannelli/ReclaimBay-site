@@ -18,7 +18,7 @@ import type { Db } from "../db.js";
 import type { Prisma } from "../generated/prisma/client.js";
 import { outreachEligibility } from "../outreach/eligibility.js";
 import { OPEN_STATUSES, OUTREACH_STATUS_LABELS } from "../outreach/lifecycle.js";
-import { isSuppressed, lockOutreach } from "../outreach/records.js";
+import { isSuppressed, lockOutreach, lockSendGate } from "../outreach/records.js";
 import { ProspectError } from "../prospects.js";
 import { invitationStatus } from "./status.js";
 import { hashInvitationToken, invitationUrl, isInvitationToken, newInvitationToken } from "./tokens.js";
@@ -153,12 +153,21 @@ async function attributeSession(tx: Tx, anonymousSessionId: string, inv: { id: s
 /**
  * Ends an invitation: its link stops working; the record and everything it
  * attributed stay. Repeating it changes nothing (the first reason is kept).
+ * Under the send gate (outreach/records.ts), like everything that can stop a send.
  */
 export async function revokeInvitation(db: Db, invitationId: string, reasonRaw?: unknown, now = new Date()) {
+  return db.$transaction(async (tx) => {
+    await lockSendGate(tx);
+    return revokeInvitationInTx(tx, invitationId, reasonRaw, now);
+  });
+}
+
+/** The revocation itself, inside the caller's gated transaction. */
+async function revokeInvitationInTx(tx: Tx, invitationId: string, reasonRaw: unknown, now: Date) {
   const reason = (typeof reasonRaw === "string" ? reasonRaw.replace(/\s+/g, " ").trim() : "").slice(0, 200) || "Revoked by a person.";
-  const { count } = await db.invitation.updateMany({ where: { id: invitationId, revokedAt: null }, data: { revokedAt: now, revokeReason: reason } });
+  const { count } = await tx.invitation.updateMany({ where: { id: invitationId, revokedAt: null }, data: { revokedAt: now, revokeReason: reason } });
   if (count === 1) return { changed: true };
-  if (!(await db.invitation.findUnique({ where: { id: invitationId }, select: { id: true } }))) throw new ProspectError(["Invitation not found."], "not_found");
+  if (!(await tx.invitation.findUnique({ where: { id: invitationId }, select: { id: true } }))) throw new ProspectError(["Invitation not found."], "not_found");
   return { changed: false };
 }
 
@@ -179,9 +188,12 @@ export async function invitationForOutreach(db: Db, outreachId: string) {
 
 /** Revokes the invitation of an outreach message (revokeInvitation); the message itself is untouched. */
 export async function revokeInvitationForOutreach(db: Db, outreachId: string, reason: unknown, now = new Date()) {
-  const inv = await db.invitation.findUnique({ where: { outreachId }, select: { id: true } });
-  if (!inv) throw new ProspectError(["This message has no invitation."]);
-  return revokeInvitation(db, inv.id, reason, now);
+  return db.$transaction(async (tx) => {
+    await lockSendGate(tx);
+    const inv = await tx.invitation.findUnique({ where: { outreachId }, select: { id: true } });
+    if (!inv) throw new ProspectError(["This message has no invitation."]);
+    return revokeInvitationInTx(tx, inv.id, reason, now);
+  });
 }
 
 /**

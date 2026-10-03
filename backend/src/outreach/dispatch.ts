@@ -25,7 +25,7 @@ import { ProspectError } from "../prospects.js";
 import { listUnsubscribeHeaders, senderIdentityErrors, unsubscribeUrl } from "./compliance.js";
 import { messageEligibilityErrors } from "./eligibility.js";
 import { moveOutreachInTx, recordSentInTx } from "./service.js";
-import { lockOutreach, suppressEmail } from "./records.js";
+import { lockOutreach, lockSendGate, suppressEmail } from "./records.js";
 import type { OutgoingMessage, OutreachSender, SendResult } from "./sender.js";
 import type { Prisma } from "../generated/prisma/client.js";
 
@@ -40,8 +40,6 @@ export const DEFAULT_BATCH = 20;
 /** New sends allowed per rolling 24 hours when OUTREACH_DAILY_LIMIT isn't set. */
 export const DEFAULT_DAILY_LIMIT = 20;
 const DAY_MS = 24 * 60 * 60 * 1000;
-/** Serialises claims, so concurrent dispatchers can't overshoot the daily limit. */
-const CLAIM_LOCK = 73_160_201;
 
 // ---------- the global switch ----------
 
@@ -105,7 +103,11 @@ export async function setSendingSwitch(db: Db, enabled: boolean, reasonRaw: unkn
     const errors = readinessErrors(cfg, sender);
     if (errors.length) throw new ProspectError(["Sending can't be switched on yet:", ...errors]);
   }
-  return db.outreachControlChange.create({ data: { sendingEnabled: enabled, reason: reason || "Switched off.", createdAt: now } });
+  // Under the send gate: a claim either sees this change or was decided before it.
+  return db.$transaction(async (tx) => {
+    await lockSendGate(tx);
+    return tx.outreachControlChange.create({ data: { sendingEnabled: enabled, reason: reason || "Switched off.", createdAt: now } });
+  });
 }
 
 // ---------- dispatch ----------
@@ -202,6 +204,9 @@ export async function dispatchQueued(db: Db, opts: DispatchOptions): Promise<Dis
   for (const { id } of await candidates(db, sender, opts.limit ?? DEFAULT_BATCH, clock())) {
     const now = clock();
     const claim = await db.$transaction(async (tx): Promise<Claim> => {
+      // First, the send gate: everything that could stop this send is decided before or after it, never during.
+      // It also serialises the daily limit below, so concurrent dispatchers can't both take the last slot.
+      await lockSendGate(tx);
       // The switch and the configuration, again, for every message.
       const blockers = await sendingBlockers(tx, cfg, sender);
       if (blockers.length) return { kind: "stop", reason: blockers.join(" ") };
@@ -220,8 +225,7 @@ export async function dispatchQueued(db: Db, opts: DispatchOptions): Promise<Dis
       const retryable = o.sendStartedAt === null || (sender.supportsIdempotency && o.lastSendError !== null);
       if (!retryable) return { kind: "skip" };
       if (o.sendStartedAt === null) {
-        // The daily limit, counted under a lock so concurrent dispatchers can't both take the last slot.
-        await tx.$executeRaw`SELECT pg_advisory_xact_lock(${CLAIM_LOCK})`;
+        // The daily limit, counted under the send gate, so concurrent dispatchers can't both take the last slot.
         const { used, limit, remaining } = await dailyCapacity(tx, cfg, now);
         if (remaining === 0) return { kind: "stop", reason: `The daily sending limit is reached (${used} of ${limit} in the last 24 hours).` };
       }
@@ -261,6 +265,7 @@ export async function dispatchQueued(db: Db, opts: DispatchOptions): Promise<Dis
     }
     const at = clock();
     await db.$transaction(async (tx) => {
+      await lockSendGate(tx);
       // A provider event about this message may be recorded at this very moment: one after the other.
       await lockOutreach(tx, id);
       if (result.status === "accepted") {
@@ -315,6 +320,7 @@ export async function stuckMessages(db: Db, sender: OutreachSender, now = new Da
  */
 export async function confirmStuckSent(db: Db, id: string, provider: string, now = new Date()) {
   return db.$transaction(async (tx) => {
+    await lockSendGate(tx);
     const o = await tx.outreach.findUnique({ where: { id } });
     if (!o) throw new ProspectError(["Outreach not found."], "not_found");
     if (o.status !== "queued" || !o.sendStartedAt) throw new ProspectError(["Only a message whose send was started and never confirmed can be marked as sent."]);

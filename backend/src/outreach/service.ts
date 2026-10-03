@@ -38,7 +38,7 @@ import {
   type ReplyOutcome,
 } from "./lifecycle.js";
 import { messageEligibilityErrors, outreachEligibility } from "./eligibility.js";
-import { isSuppressed, lockOutreach, logOutreachEvent, suppressEmail } from "./records.js";
+import { isSuppressed, lockOutreach, lockSendGate, logOutreachEvent, suppressEmail } from "./records.js";
 
 type Tx = Prisma.TransactionClient;
 
@@ -210,7 +210,10 @@ const cleanText = (v: unknown, max: number, label: string) => {
 /** Discards an unsent message. The row and its history stay. */
 export async function discardOutreach(db: Db, id: string, reasonRaw?: unknown, now = new Date()) {
   const reason = cleanText(reasonRaw, FIELD_LIMITS.reason, "Reason") ?? "Discarded by a person.";
-  return db.$transaction((tx) => moveOutreachInTx(tx, id, "cancelled", { cancelledAt: now, cancelReason: reason }, reason, now));
+  return db.$transaction(async (tx) => {
+    await lockSendGate(tx);
+    return moveOutreachInTx(tx, id, "cancelled", { cancelledAt: now, cancelReason: reason }, reason, now);
+  });
 }
 
 // ---------- queueing ----------
@@ -245,6 +248,7 @@ export async function queueBlockers(tx: Tx | Db, o: Outreach & { prospect: Param
  */
 export async function queueOutreach(db: Db, id: string, cfg: ComplianceConfig, now = new Date()) {
   return db.$transaction(async (tx) => {
+    await lockSendGate(tx);
     // One queueing operation at a time per message: a concurrent click waits, then sees the committed result.
     await lockOutreach(tx, id);
     const o = await tx.outreach.findUnique({ where: { id }, include: withProspect });
@@ -344,6 +348,7 @@ export async function applyProviderEvent(db: Db, ev: ProviderEvent): Promise<{ r
 
   try {
     const result = await db.$transaction(async (tx): Promise<ProviderEventResult> => {
+      await lockSendGate(tx);
       await lockOutreach(tx, o.id);
       // Checked again under the lock: a concurrent copy may have just recorded it.
       if (eventId && (await tx.outreachEvent.findUnique({ where: { providerEventId: eventId }, select: { id: true } }))) return "duplicate";
@@ -403,6 +408,7 @@ export async function recordReply(db: Db, id: string, raw: { outcome?: unknown; 
   if (!outcome && (raw.requireOutcome || (typeof raw.outcome === "string" && raw.outcome !== ""))) throw new ProspectError(["Choose how the business replied."]);
   const summary = cleanText(raw.summary, FIELD_LIMITS.note, "Reply summary");
   return db.$transaction(async (tx) => {
+    await lockSendGate(tx);
     await lockOutreach(tx, id);
     return recordReplyInTx(tx, id, outcome, summary, now);
   });
@@ -419,6 +425,7 @@ export async function classifyReply(db: Db, id: string, outcomeRaw: unknown, now
   const outcome = typeof outcomeRaw === "string" && isReplyOutcome(outcomeRaw) ? outcomeRaw : null;
   if (!outcome) throw new ProspectError(["Choose how the business replied."]);
   return db.$transaction(async (tx) => {
+    await lockSendGate(tx);
     const o = await tx.outreach.findUnique({ where: { id } });
     if (!o) throw notFound();
     if (o.status !== "replied") throw new ProspectError(["Only a reply can be classified."]);
@@ -458,6 +465,7 @@ export async function recordInboundReply(db: Db, reply: InboundReply) {
   if (!o) return { result: "unmatched" as const, outreachId: null };
   const summary = cleanText(reply.summary ?? undefined, FIELD_LIMITS.note, "Reply summary");
   const result = await db.$transaction(async (tx) => {
+    await lockSendGate(tx);
     // Decided under the lock, so a concurrent copy of this reply, or a bounce, can't slip in between.
     await lockOutreach(tx, o.id);
     const status = (await tx.outreach.findUniqueOrThrow({ where: { id: o.id }, select: { status: true } })).status;
@@ -479,6 +487,7 @@ export async function unsubscribeOutreach(db: Db, outreachId: string, via: strin
   const o = await db.outreach.findUnique({ where: { id: outreachId } });
   if (!o) return { result: "unknown" as const };
   return db.$transaction(async (tx) => {
+    await lockSendGate(tx);
     await lockOutreach(tx, o.id);
     const already = await tx.outreachEvent.findFirst({ where: { outreachId: o.id, type: "unsubscribed" }, select: { id: true } });
     await suppressEmail(tx, o.recipientEmail, "unsubscribed", `Unsubscribed ${via}.`, o.id, now);
