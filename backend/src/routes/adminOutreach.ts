@@ -110,7 +110,7 @@ export async function outreachRoutes(app: FastifyInstance, opts: { config: Confi
     const [sw, grouped, stuck, eligible, metrics, gmail, capacity, attention, activity, queue, openedInvitations] = await Promise.all([
       sendingSwitch(db),
       db.outreach.groupBy({ by: ["status"], _count: { _all: true } }),
-      stuckMessages(db, sender, now),
+      stuckMessages(db, now),
       prepareEligibleOutreach(db, { draft: draftOptions, compliance: config, apply: false, limit: 1_000 }),
       outreachMetrics(db),
       gmailStatus(),

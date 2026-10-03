@@ -11,13 +11,13 @@
  * link).
  *
  * Never two emails for one message:
- *   - a message is claimed compare-and-set before its send; only the
- *     claimer sends it;
- *   - every attempt carries the same idempotency key (the message id);
- *   - a send whose outcome is uncertain is retried only by a provider that
- *     honours that key, within its window; anything else, and any send
- *     interrupted mid-way, waits for a person ("stuck") and is never
- *     retried automatically.
+ *   - only a message whose send never started is taken; it is claimed
+ *     compare-and-set before its send, and only the claimer sends it;
+ *   - once its send has started, a message is never sent again
+ *     automatically: an unknown outcome (a timeout, a 5xx, a provider that
+ *     threw) or a send interrupted mid-way waits for a person ("stuck"), who
+ *     checks the provider, then records it as sent or discards it;
+ *   - the message carries an idempotency key (the message id) all the same.
  */
 import type { Config } from "../config.js";
 import type { Db } from "../db.js";
@@ -25,15 +25,13 @@ import { ProspectError } from "../prospects.js";
 import { listUnsubscribeHeaders, senderIdentityErrors, unsubscribeUrl } from "./compliance.js";
 import { messageEligibilityErrors } from "./eligibility.js";
 import { moveOutreachInTx, recordSentInTx } from "./service.js";
-import { STUCK_AFTER_MS, lockOutreach, lockSendGate, suppressEmail } from "./records.js";
+import { lockOutreach, lockSendGate, sendInProgress, suppressEmail } from "./records.js";
 import type { OutgoingMessage, OutreachSender, SendResult } from "./sender.js";
 import type { Prisma } from "../generated/prisma/client.js";
 
 type Tx = Prisma.TransactionClient;
 export type SendingConfig = Pick<Config, "outreachSender" | "publicApiUrl" | "outreachSendingArmed"> & Partial<Pick<Config, "outreachDailyLimit">>;
 
-/** How long a provider keeps an idempotency key; retries stop well before. */
-export const RETRY_WINDOW_MS = 23 * 60 * 60 * 1000;
 export const DEFAULT_BATCH = 20;
 /** New sends allowed per rolling 24 hours when OUTREACH_DAILY_LIMIT isn't set. */
 export const DEFAULT_DAILY_LIMIT = 20;
@@ -126,8 +124,6 @@ export interface DispatchReport {
   failed: { outreachId: string; reason: string }[];
   uncertain: { outreachId: string; reason: string }[];
   cancelled: { outreachId: string; reasons: string[] }[];
-  /** Possibly sent before, now ineligible: left for a person. */
-  held: { outreachId: string; reasons: string[] }[];
   /** Certainly not sent; the provider couldn't send. Still queued. */
   unavailable: { outreachId: string; reason: string }[];
   wouldSend: string[];
@@ -168,20 +164,17 @@ type Claim =
   | { kind: "stop"; reason: string }
   | { kind: "skip" }
   | { kind: "wouldSend" }
-  | { kind: "held"; reasons: string[] }
   | { kind: "cancelled"; reasons: string[] }
   | { kind: "send"; message: OutgoingMessage; before: { sendAttempts: number; sendStartedAt: Date | null; lastSendError: string | null } };
 
-/** Queued messages a dispatcher may take now: never claimed, or an uncertain send it may retry. */
-async function candidates(db: Db, sender: OutreachSender, limit: number, now: Date) {
+/**
+ * Queued messages a dispatcher may take now: only those whose send never
+ * started. One whose send started (whatever its outcome) is a person's to
+ * resolve (stuckMessages), never sent again automatically.
+ */
+async function candidates(db: Db, limit: number) {
   return db.outreach.findMany({
-    where: {
-      status: "queued",
-      OR: [
-        { sendStartedAt: null },
-        ...(sender.supportsIdempotency ? [{ lastSendError: { not: null }, sendStartedAt: { gte: new Date(now.getTime() - RETRY_WINDOW_MS) } }] : []),
-      ],
-    },
+    where: { status: "queued", sendStartedAt: null },
     orderBy: { queuedAt: "asc" },
     take: limit,
     select: { id: true },
@@ -195,11 +188,11 @@ async function candidates(db: Db, sender: OutreachSender, limit: number, now: Da
 export async function dispatchQueued(db: Db, opts: DispatchOptions): Promise<DispatchReport> {
   const clock = opts.now ?? (() => new Date());
   const { config: cfg, sender } = opts;
-  const report: DispatchReport = { blockers: [], stoppedBecause: null, sent: [], failed: [], uncertain: [], cancelled: [], held: [], unavailable: [], wouldSend: [] };
+  const report: DispatchReport = { blockers: [], stoppedBecause: null, sent: [], failed: [], uncertain: [], cancelled: [], unavailable: [], wouldSend: [] };
   report.blockers = await sendingBlockers(db, cfg, sender);
   if (report.blockers.length) return report;
 
-  for (const { id } of await candidates(db, sender, opts.limit ?? DEFAULT_BATCH, clock())) {
+  for (const { id } of await candidates(db, opts.limit ?? DEFAULT_BATCH)) {
     const now = clock();
     const claim = await db.$transaction(async (tx): Promise<Claim> => {
       // First, the send gate: everything that could stop this send is decided before or after it, never during.
@@ -209,34 +202,29 @@ export async function dispatchQueued(db: Db, opts: DispatchOptions): Promise<Dis
       const blockers = await sendingBlockers(tx, cfg, sender);
       if (blockers.length) return { kind: "stop", reason: blockers.join(" ") };
       const o = await tx.outreach.findUnique({ where: { id }, include: { prospect: { include: { signals: true } } } });
-      if (!o || o.status !== "queued") return { kind: "skip" };
+      // Its send started since the list was read (another dispatcher): never a second send.
+      if (!o || o.status !== "queued" || o.sendStartedAt !== null) return { kind: "skip" };
       const errors = await messageEligibilityErrors(tx, o, cfg, "send");
       if (errors.length) {
-        // Possibly sent already: never cancel it silently; it waits for a person.
-        if (o.sendStartedAt) return { kind: "held", reasons: errors };
         if (!opts.dryRun) {
           await moveOutreachInTx(tx, id, "cancelled", { cancelledAt: now, cancelReason: `No longer eligible: ${errors.join(" ")}`.slice(0, 500) }, errors.join(" "), now);
         }
         return { kind: "cancelled", reasons: errors };
       }
       if (opts.dryRun) return { kind: "wouldSend" };
-      const retryable = o.sendStartedAt === null || (sender.supportsIdempotency && o.lastSendError !== null);
-      if (!retryable) return { kind: "skip" };
-      if (o.sendStartedAt === null) {
-        // The daily limit, counted under the send gate, so concurrent dispatchers can't both take the last slot.
-        const { used, limit, remaining } = await dailyCapacity(tx, cfg, now);
-        if (remaining === 0) return { kind: "stop", reason: `The daily sending limit is reached (${used} of ${limit} in the last 24 hours).` };
-      }
-      // Compare-and-set on the attempt count: exactly one dispatcher wins each attempt.
+      // The daily limit, counted under the send gate, so concurrent dispatchers can't both take the last slot.
+      const { used, limit, remaining } = await dailyCapacity(tx, cfg, now);
+      if (remaining === 0) return { kind: "stop", reason: `The daily sending limit is reached (${used} of ${limit} in the last 24 hours).` };
+      // Compare-and-set: exactly one dispatcher claims it, and only while its send has never started.
       const { count } = await tx.outreach.updateMany({
-        where: { id, status: "queued", sendAttempts: o.sendAttempts, lastSendError: o.lastSendError },
-        data: { sendAttempts: o.sendAttempts + 1, sendStartedAt: o.sendStartedAt ?? now, lastSendError: null },
+        where: { id, status: "queued", sendStartedAt: null, sendAttempts: o.sendAttempts },
+        data: { sendAttempts: o.sendAttempts + 1, sendStartedAt: now, lastSendError: null },
       });
       if (count !== 1) return { kind: "skip" };
       return {
         kind: "send",
-        message: toMessage(o, cfg, o.sendAttempts + 1, o.sendStartedAt ?? now),
-        before: { sendAttempts: o.sendAttempts, sendStartedAt: o.sendStartedAt, lastSendError: o.lastSendError },
+        message: toMessage(o, cfg, o.sendAttempts + 1, now),
+        before: { sendAttempts: o.sendAttempts, sendStartedAt: null, lastSendError: o.lastSendError },
       };
     });
 
@@ -244,8 +232,8 @@ export async function dispatchQueued(db: Db, opts: DispatchOptions): Promise<Dis
       report.stoppedBecause = claim.reason;
       break;
     }
-    if (claim.kind === "held" || claim.kind === "cancelled") {
-      report[claim.kind].push({ outreachId: id, reasons: claim.reasons });
+    if (claim.kind === "cancelled") {
+      report.cancelled.push({ outreachId: id, reasons: claim.reasons });
       continue;
     }
     if (claim.kind === "wouldSend") {
@@ -281,6 +269,7 @@ export async function dispatchQueued(db: Db, opts: DispatchOptions): Promise<Dis
         await tx.outreach.updateMany({ where: { id, status: "queued", sendAttempts: claim.before.sendAttempts + 1 }, data: claim.before });
         report.unavailable.push({ outreachId: id, reason: result.reason });
       } else {
+        // It may have gone out: it waits for a person (stuckMessages), and is never sent again automatically.
         await tx.outreach.updateMany({ where: { id, status: "queued" }, data: { lastSendError: result.reason.slice(0, 500) || "Unknown error." } });
         report.uncertain.push({ outreachId: id, reason: result.reason });
       }
@@ -294,22 +283,20 @@ export async function dispatchQueued(db: Db, opts: DispatchOptions): Promise<Dis
 }
 
 /**
- * Messages whose send may or may not have happened and that won't be
- * retried automatically: interrupted mid-send, or uncertain past the retry
- * window (or with a provider that can't retry safely). A person checks the
- * provider, then records the outcome or discards the message.
+ * Messages whose send may or may not have happened, waiting for a person:
+ * every message whose send started and has no recorded outcome, except one
+ * whose send is still in progress (sendInProgress): an unknown outcome
+ * straight away, an interrupted send once STUCK_AFTER_MS has passed. None is
+ * ever sent again automatically. A person checks the provider, then records
+ * the outcome or discards the message.
  */
-export async function stuckMessages(db: Db, sender: OutreachSender, now = new Date()) {
+export async function stuckMessages(db: Db, now = new Date()) {
   const rows = await db.outreach.findMany({
     where: { status: "queued", sendStartedAt: { not: null } },
     select: { id: true, subject: true, recipientEmail: true, sendStartedAt: true, sendAttempts: true, lastSendError: true },
     orderBy: { sendStartedAt: "asc" },
   });
-  return rows.filter((r) => {
-    const age = now.getTime() - r.sendStartedAt!.getTime();
-    if (r.lastSendError === null) return age > STUCK_AFTER_MS;
-    return !sender.supportsIdempotency || age > RETRY_WINDOW_MS;
-  });
+  return rows.filter((r) => !sendInProgress({ ...r, status: "queued" }, now));
 }
 
 /**

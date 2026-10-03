@@ -55,8 +55,9 @@ export interface OutreachSender {
   readonly name: string;
   readonly enabled: boolean;
   /**
-   * Whether the provider honours `idempotencyKey`. Only then is an
-   * "uncertain" send retried; otherwise it waits for a person.
+   * Whether the provider honours `idempotencyKey`. The dispatcher never
+   * retries an "uncertain" send automatically, whatever this says: it waits
+   * for a person (dispatch.ts stuckMessages).
    */
   readonly supportsIdempotency: boolean;
   /** Why a configured provider is disabled (a configuration error), for the admin. */

@@ -289,15 +289,16 @@ Two rules keep it that way, and a unit test enforces both:
   interrupted (no outcome after 10 minutes) or its outcome is unknown. If
   the provider then confirms a send that was discarded that way, the
   message is corrected to sent; the discard stays in its history.
-- **Same key on every attempt.** Each attempt carries the idempotency key
-  `outreach-<id>`.
-- **Uncertain outcomes** (a timeout, a 5xx, a provider that throws):
-  - the message stays queued;
-  - it is retried only by a provider that can rule out a second send (an
-    idempotency key, or for Gmail a check of Sent first), and only within
-    23 hours;
-  - otherwise it is listed under **Send outcome unknown** for a person. They check
-    the provider, then record **It was sent** or discard the message.
+- **Only a message whose send never started is sent.** Once its send has
+  started, a message is never sent again automatically, whatever the
+  provider promises. It carries the idempotency key `outreach-<id>` all the
+  same.
+- **Uncertain outcomes** (a timeout, a 5xx, a lost response, a provider that
+  throws), and sends interrupted mid-way (no outcome after 10 minutes):
+  - the message stays queued, and is never retried;
+  - it is listed under **Send outcome unknown** for a person straight away.
+    They check the provider (for Gmail, the Sent folder), then record
+    **It was sent** or discard the message.
 - **Rejections.** A definite rejection marks the message `failed`. An invalid
   recipient is also suppressed.
 - **Provider unavailable** (authentication, configuration, quota): certainly
@@ -411,16 +412,18 @@ needing no schema change.
 
 **No idempotency key.** Gmail also replaces any Message-ID we set. So every
 message carries `X-ReclaimBay-Outreach: <outreach id>`, a custom header that
-Gmail keeps. A retry first looks in Sent, since the first attempt, for that
-header. If it finds it, the earlier attempt is recorded as the send. If Sent
-can't be checked, nothing is sent.
+Gmail keeps. The dispatcher never retries a send whose outcome is unknown
+(Gmail's search of Sent may not show a message sent moments ago), so a
+second attempt never happens; the adapter would still look in Sent for that
+header first if one did.
 
 **Errors.**
 - A 4xx on send means Gmail refused the message: `rejected`. An invalid
   recipient is also suppressed.
 - Authentication, a 403, or a 429 (limits) means certainly not sent:
   `unavailable`. The message stays queued and the batch stops.
-- A 5xx or a lost response: `uncertain`, retried only after the Sent check.
+- A 5xx or a lost response: `uncertain`. Never retried: it waits for a person,
+  who checks Sent and records it as sent or discards it.
 
 **Reading the mailbox.** Run `npm run outreach:inbox` on a schedule, for
 example every 5 minutes. It is a dry run by default; `--apply` records.

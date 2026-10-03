@@ -130,21 +130,58 @@ describe("outreach sending (service)", { skip: skipReason }, () => {
     await assert.rejects(queueOutreach(db, o.id, CFG), /from Sent to Queued/);
   });
 
-  test("an uncertain send is retried only with the same idempotency key, by a provider that honours it", async () => {
+  test("an unknown outcome is never sent again automatically, whatever the provider promises: it waits for a person", async () => {
     const p = await prospect();
     const o = await draft(p.id);
+    // A provider that honours idempotency keys, and would accept a second attempt.
     const sender = mockSender((m, call) => (call === 1 ? { status: "uncertain", reason: "timeout" } : { status: "accepted", providerMessageId: `msg-${m.outreachId}` }));
+    assert.equal(sender.supportsIdempotency, true);
     const first = await queueAndSend(db, o.id, sender);
     assert.equal(first.uncertain.length, 1);
-    assert.equal(await status(o.id), "queued");
+    // Later runs, one after another and several at once, never send it again.
     await dispatchQueued(db, { config: CFG, sender });
-    assert.equal(sender.calls.length, 2);
-    assert.equal(sender.calls[0]!.idempotencyKey, sender.calls[1]!.idempotencyKey);
-    assert.equal(await status(o.id), "sent");
+    await Promise.all([1, 2, 3].map(() => dispatchQueued(db, { config: CFG, sender })));
+    assert.equal(sender.calls.length, 1, "one provider call, ever");
     const stored = await db.outreach.findUniqueOrThrow({ where: { id: o.id } });
-    assert.equal(stored.sendAttempts, 2);
+    assert.deepEqual([stored.status, stored.sendAttempts, stored.lastSendError], ["queued", 1, "timeout"]);
+    // A person's straight away: listed with no waiting period.
+    assert.deepEqual((await stuckMessages(db)).map((s) => s.id), [o.id]);
+    // They check the provider and record it; nothing sends it after that either.
+    await confirmStuckSent(db, o.id, sender.name);
+    assert.equal(await status(o.id), "sent");
     await dispatchQueued(db, { config: CFG, sender });
-    assert.equal(sender.calls.length, 2, "never again once sent");
+    assert.equal(sender.calls.length, 1);
+    assert.deepEqual(await stuckMessages(db), []);
+  });
+
+  test("the dispatcher takes only messages whose send never started", async () => {
+    const make = async () => draft((await prospect()).id);
+    // Sent, refused, and an unknown outcome, each through the dispatcher.
+    const sent = await make();
+    await queueAndSend(db, sent.id);
+    const refused = await make();
+    await queueAndSend(db, refused.id, mockSender(() => ({ status: "rejected", reason: "550 policy", invalidRecipient: false })));
+    const unknown = await make();
+    await queueAndSend(db, unknown.id, mockSender(() => ({ status: "uncertain", reason: "timeout" })));
+    // Interrupted: claimed by a dispatcher that died before the provider answered.
+    const interrupted = await make();
+    await queueOutreach(db, interrupted.id, CFG);
+    await db.outreach.update({ where: { id: interrupted.id }, data: { sendStartedAt: new Date(Date.now() - 11 * 60_000), sendAttempts: 1 } });
+    // Never started.
+    const fresh = await make();
+    await queueOutreach(db, fresh.id, CFG);
+
+    const sender = mockSender();
+    await switchOn(db, sender);
+    assert.deepEqual((await dispatchQueued(db, { config: CFG, sender, dryRun: true })).wouldSend, [fresh.id]);
+    const report = await dispatchQueued(db, { config: CFG, sender });
+    assert.deepEqual(sender.calls.map((c) => c.outreachId), [fresh.id]);
+    assert.deepEqual(report.sent.map((s) => s.outreachId), [fresh.id]);
+    assert.deepEqual(
+      [await status(sent.id), await status(refused.id), await status(unknown.id), await status(interrupted.id), await status(fresh.id)],
+      ["sent", "failed", "queued", "queued", "sent"],
+    );
+    assert.deepEqual(new Set((await stuckMessages(db)).map((s) => s.id)), new Set([unknown.id, interrupted.id]), "the two that may have gone out wait for a person");
   });
 
   test("with a provider that can't deduplicate, an uncertain send waits for a person", async () => {
@@ -154,7 +191,7 @@ describe("outreach sending (service)", { skip: skipReason }, () => {
     await queueAndSend(db, o.id, sender);
     await dispatchQueued(db, { config: CFG, sender });
     assert.equal(sender.calls.length, 1, "not retried");
-    const stuck = await stuckMessages(db, sender);
+    const stuck = await stuckMessages(db);
     assert.deepEqual(stuck.map((s) => s.id), [o.id]);
     // A person checks the provider and confirms it went out.
     await confirmStuckSent(db, o.id, sender.name);
@@ -289,7 +326,7 @@ describe("outreach sending (service)", { skip: skipReason }, () => {
     assert.equal(fresh.calls.length, 0, "the claim is in the database, not in a process");
     assert.deepEqual(report.sent, []);
     assert.equal(await status(o.id), "queued");
-    assert.deepEqual((await stuckMessages(db, fresh)).map((s) => s.id), [o.id], "listed for a person instead");
+    assert.deepEqual((await stuckMessages(db)).map((s) => s.id), [o.id], "listed for a person instead");
     const cap = await dailyCapacity(db, CFG, new Date());
     assert.equal(cap.used, 1, "it counts against the daily limit once");
   });

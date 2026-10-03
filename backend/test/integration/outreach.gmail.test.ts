@@ -5,7 +5,7 @@ import type { FastifyInstance } from "fastify";
 import { buildApp } from "../../src/app.js";
 import { loadConfig } from "../../src/config.js";
 import type { Db } from "../../src/db.js";
-import { dispatchQueued } from "../../src/outreach/dispatch.js";
+import { confirmStuckSent, dispatchQueued, stuckMessages } from "../../src/outreach/dispatch.js";
 import { gmailSender } from "../../src/outreach/gmail.js";
 import { gmailOAuthConfig, openSealedToken, type GmailOAuthConfig } from "../../src/outreach/gmailAuth.js";
 import { senderFromConfig } from "../../src/outreach/sender.js";
@@ -125,7 +125,7 @@ describe("outreach through Gmail", { skip: skipReason }, () => {
     assert.equal((await dispatchQueued(db, { config: CFG, sender })).sent.length, 2, "sends once Google is back");
   });
 
-  test("a lost response is retried safely: Sent is checked first, so one email only", async () => {
+  test("a lost response is never retried: it waits for a person, who records it as sent", async () => {
     const { google, client } = fakeGmail();
     const sender = gmailSender(client);
     const { o } = await queued();
@@ -135,11 +135,15 @@ describe("outreach through Gmail", { skip: skipReason }, () => {
     assert.equal(first.uncertain.length, 1);
     assert.equal(google.sent.length, 1, "it actually went out");
     const second = await dispatchQueued(db, { config: CFG, sender });
-    assert.equal(second.sent.length, 1);
-    assert.equal(google.sent.length, 1, "found in Sent, not sent again");
+    assert.deepEqual(second.sent, []);
+    assert.equal(google.sendCalls.length, 1, "Gmail is never asked to send it again");
+    assert.equal(google.sent.length, 1, "one email");
+    assert.deepEqual((await stuckMessages(db)).map((s) => s.id), [o.id]);
+    // A person finds it in Sent, and records it.
+    await confirmStuckSent(db, o.id, sender.name);
     const stored = await row(o.id);
-    assert.equal(stored.providerMessageId, google.sent[0]!.id);
-    assert.equal(stored.sendAttempts, 2);
+    assert.equal(stored.status, "sent");
+    assert.equal(stored.sendAttempts, 1);
   });
 
   test("an invalid recipient fails the message and suppresses the address", async () => {

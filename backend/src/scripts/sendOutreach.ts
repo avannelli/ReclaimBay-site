@@ -36,8 +36,7 @@ try {
   for (const u of r.uncertain) console.log(`Outcome unknown ${u.outreachId}: ${u.reason}`);
   for (const u of r.unavailable) console.log(`Not sent, provider unavailable ${u.outreachId}: ${u.reason}`);
   for (const c of r.cancelled) console.log(`${apply ? "Cancelled" : "Would cancel"} ${c.outreachId}: ${c.reasons.join(" ")}`);
-  for (const h of r.held) console.log(`Held for a person ${h.outreachId}: ${h.reasons.join(" ")}`);
-  const stuck = await stuckMessages(db, sender);
+  const stuck = await stuckMessages(db);
   if (stuck.length) console.log(`Send outcome unknown, waiting for a person: ${stuck.map((s) => s.id).join(", ")}`);
 } finally {
   await db.$disconnect();
