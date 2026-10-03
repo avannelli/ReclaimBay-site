@@ -51,7 +51,7 @@ code { font:12px ui-monospace,SFMono-Regular,Consolas,monospace; background:var(
 .appbar { background:var(--navy); color:#e8eef6; border-bottom:3px solid var(--amber); }
 .appbar-in { max-width:1240px; margin:0 auto; padding:0 20px; display:flex; align-items:center; gap:28px; min-height:52px; flex-wrap:wrap; }
 .brand { display:flex; align-items:center; padding:12px 0; border-radius:4px; }
-.brand svg { display:block; height:28px; width:auto; }
+.brand svg { display:block; height:24px; width:auto; }
 .nav { display:flex; gap:4px; flex:1; flex-wrap:wrap; }
 .nav a { color:#b8c6d8; text-decoration:none; font-weight:600; font-size:13.5px; padding:16px 12px 13px; border-bottom:3px solid transparent; margin-bottom:-3px; }
 .nav a:hover { color:#fff; }

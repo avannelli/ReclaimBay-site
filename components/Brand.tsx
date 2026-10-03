@@ -1,4 +1,5 @@
 import Image from "next/image";
+import type { CSSProperties } from "react";
 import { BRAND, LOGO } from "@/lib/brand";
 import { LOGO_BOX, LOGO_GRADIENTS, LOGO_PATHS, LOGO_SOLIDS, type Gradient } from "@/lib/brandArt";
 
@@ -35,6 +36,17 @@ export function BrandLogo({
   );
 }
 
+/** How much of the wordmark reveal's mask is its soft edge. */
+const WORD_FEATHER = 0.22;
+
+/*
+ * In the full logo the wordmark sits high, to leave room for its tagline.
+ * The transition shows it without one, so the wordmark is lowered to center
+ * its letters ("Reclaim", cap height to baseline: 241.8-434.2) on the mark
+ * (183.1-528.1), in the artwork's units. The artwork itself is unchanged.
+ */
+const WORD_CENTERING = (183.1 + 528.1) / 2 - (241.8 + 434.2) / 2;
+
 function LinearGradient({ id, g }: { id: string; g: Gradient }) {
   const span = g.to - g.from;
   const axis = g.axis === "y" ? { x1: 0, y1: g.from, x2: 0, y2: g.to } : { x1: g.from, y1: 0, x2: g.to, y2: 0 };
@@ -49,12 +61,21 @@ function LinearGradient({ id, g }: { id: string; g: Gradient }) {
 
 /**
  * The mark and wordmark, inline, for the upload transition: the garage
- * fades in, the bars rise, the arrow sweeps up, and the wordmark fades in.
- * Rendered once per page, so its gradient ids are fixed.
+ * fades in, the bars rise, and the arrow sweeps up while the wordmark is
+ * revealed left to right with it. Rendered once per page, so its gradient
+ * ids are fixed.
  */
 export function AnimatedBrandLockup({ className = "h-14" }: { className?: string }) {
   const [x, y, w, h] = LOGO_BOX.lockup;
   const id = (part: string) => `rb-t-${part}`;
+  /*
+   * The wordmark's reveal: a mask whose soft right edge travels from where
+   * the mark ends to past the wordmark. At rest (and with reduced motion) it
+   * covers the whole lockup, so the wordmark simply shows.
+   */
+  const wordStart = LOGO_BOX.mark[0] + LOGO_BOX.mark[2];
+  const maskWidth = w / (1 - WORD_FEATHER);
+  const revealFrom = wordStart - (x + maskWidth);
   return (
     <svg
       role="img"
@@ -70,6 +91,21 @@ export function AnimatedBrandLockup({ className = "h-14" }: { className?: string
         {LOGO_GRADIENTS.bars.map((g, i) => (
           <LinearGradient key={i} id={id(`bar${i}`)} g={g} />
         ))}
+        <linearGradient id={id("feather")} x1="0" y1="0" x2="1" y2="0">
+          <stop offset={1 - WORD_FEATHER} stopColor="#fff" />
+          <stop offset={1} stopColor="#fff" stopOpacity={0} />
+        </linearGradient>
+        <mask id={id("word")} maskUnits="userSpaceOnUse" x={x} y={y} width={w} height={h}>
+          <rect
+            className="rb-reveal"
+            style={{ "--rb-reveal-from": `${revealFrom}px` } as CSSProperties}
+            x={x}
+            y={y}
+            width={maskWidth}
+            height={h}
+            fill={`url(#${id("feather")})`}
+          />
+        </mask>
       </defs>
       {/* The arrow's tail runs under the garage post, so it is drawn first. */}
       <g className="rb-lift">
@@ -86,9 +122,11 @@ export function AnimatedBrandLockup({ className = "h-14" }: { className?: string
           d={d}
         />
       ))}
-      <g className="rb-word">
-        <path fillRule="evenodd" fill={LOGO_SOLIDS.reclaim} d={LOGO_PATHS.reclaim} />
-        <path fillRule="evenodd" fill={`url(#${id("bay")})`} d={LOGO_PATHS.bay} />
+      <g transform={`translate(0 ${WORD_CENTERING})`}>
+        <g className="rb-word" mask={`url(#${id("word")})`}>
+          <path fillRule="evenodd" fill={LOGO_SOLIDS.reclaim} d={LOGO_PATHS.reclaim} />
+          <path fillRule="evenodd" fill={`url(#${id("bay")})`} d={LOGO_PATHS.bay} />
+        </g>
       </g>
     </svg>
   );

@@ -159,9 +159,11 @@ body {
 }
 
 /*
- * Upload transition: the ReclaimBay logo assembles itself. The garage fades
- * in, the bars rise, then the arrow sweeps up from left to right. About 1s in
- * all; with reduced motion the logo simply appears complete.
+ * Upload transition: the ReclaimBay logo assembles itself, centered. The
+ * garage fades in, the bars rise, then the arrow sweeps up from left to right
+ * while the wordmark is revealed left to right with it (same start, length,
+ * and easing), so mark and word read as one movement. About 1s in all; with
+ * reduced motion the logo simply appears complete.
  */
 @media (prefers-reduced-motion: no-preference) {
   .rb-anim .rb-bay {
@@ -178,6 +180,14 @@ body {
   .rb-anim .rb-arrow {
     animation: rb-sweep 620ms cubic-bezier(0.65, 0, 0.35, 1) 380ms both;
   }
+  /* The wordmark's soft-edged reveal travels with the arrow's sweep. */
+  .rb-anim .rb-reveal {
+    animation: rb-reveal 620ms cubic-bezier(0.65, 0, 0.35, 1) 380ms both;
+  }
+  .rb-anim .rb-word {
+    animation: rb-fade 620ms ease-out 380ms both;
+  }
+  /* The caption under the logo simply fades in. */
   .rb-word {
     animation: rb-fade 420ms ease-out 120ms both;
   }
@@ -200,6 +210,13 @@ body {
 @keyframes rb-lift {
   from {
     transform: translate(-18px, 28px);
+  }
+}
+
+/* From where the mark ends; it ends covering the whole lockup. */
+@keyframes rb-reveal {
+  from {
+    transform: translateX(var(--rb-reveal-from));
   }
 }
 

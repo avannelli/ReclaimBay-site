@@ -23,9 +23,10 @@ export default function BrandTransition({ leaving }: { leaving: boolean }) {
         leaving ? "animate-fade-out" : "animate-fade-in"
       }`}
     >
-      <div className="flex flex-col items-center">
+      {/* The logo alone is centered on screen; the caption hangs below it without moving it. */}
+      <div className="relative">
         <AnimatedBrandLockup className="h-14 sm:h-[4.5rem]" />
-        <p className="rb-word mt-6 text-sm text-ink-3">Analyzing declined work…</p>
+        <p className="rb-word absolute top-full left-1/2 mt-6 -translate-x-1/2 text-sm whitespace-nowrap text-ink-3">Analyzing declined work…</p>
       </div>
     </div>
   );

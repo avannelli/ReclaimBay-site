@@ -14,7 +14,7 @@ export function SiteHeader() {
           href="/"
           className="rounded-md focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-navy"
         >
-          <BrandLogo variant="full" className="h-14 sm:h-16" eager />
+          <BrandLogo variant="full" className="h-12 sm:h-14" eager />
         </a>
       </div>
     </header>
