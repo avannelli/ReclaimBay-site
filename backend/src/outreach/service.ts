@@ -17,7 +17,7 @@
 import { randomBytes } from "node:crypto";
 import type { Db } from "../db.js";
 import type { Config } from "../config.js";
-import type { Prisma } from "../generated/prisma/client.js";
+import type { Outreach, Prisma } from "../generated/prisma/client.js";
 import type { Status } from "../prospectStatus.js";
 import { FIELD_LIMITS, ProspectError, changeStatusInTx, referralUrl } from "../prospects.js";
 import type { ComplianceConfig } from "./compliance.js";
@@ -223,13 +223,30 @@ const withProspect = { prospect: { include: { signals: true } } } as const;
  * (through Qualified), by the same rules a person uses. Nothing is sent
  * here: dispatch.ts sends queued messages when sending is switched on.
  */
+/**
+ * What stops a draft from being queued: the one eligibility decision for the
+ * queue step, and, for a first message, a revoked invitation. Revoking leaves
+ * the prospect exactly as eligible as before; it is this message whose link
+ * no longer works, as for a follow-up (planDraft). The message page shows the
+ * same list, so it never offers a Queue that would be refused.
+ */
+export async function queueBlockers(tx: Tx | Db, o: Outreach & { prospect: Parameters<typeof messageEligibilityErrors>[1]["prospect"] }, cfg: ComplianceConfig): Promise<string[]> {
+  const errors = await messageEligibilityErrors(tx, o, cfg, "queue");
+  if (o.kind === "initial" && (await sentInvitationLink(tx, o)).kind === "revoked") {
+    errors.push("This message's invitation was revoked, so its link no longer works. Discard this draft and prepare a new one.");
+  }
+  return errors;
+}
+
 export async function queueOutreach(db: Db, id: string, cfg: ComplianceConfig, now = new Date()) {
   return db.$transaction(async (tx) => {
+    // One queueing operation at a time per message: a concurrent click waits, then sees the committed result.
+    await lockOutreach(tx, id);
     const o = await tx.outreach.findUnique({ where: { id }, include: withProspect });
     if (!o) throw notFound();
     if (o.status === "queued") return { outreach: o, changed: false };
     if (o.status !== "draft") throw new ProspectError(outreachTransitionErrors(o.status, "queued"));
-    const errors = await messageEligibilityErrors(tx, o, cfg, "queue");
+    const errors = await queueBlockers(tx, o, cfg);
     if (errors.length) throw new ProspectError(errors);
     if (o.kind === "initial") {
       // Eligibility guarantees New, Qualified, or Ready to contact: walk forward one step at a time.
@@ -517,7 +534,7 @@ export async function getOutreachDetail(db: Db, id: string, cfg?: ComplianceConf
     },
   });
   if (!o) return null;
-  const queueErrors = cfg && o.status === "draft" ? await messageEligibilityErrors(db, o, cfg, "queue") : [];
+  const queueErrors = cfg && o.status === "draft" ? await queueBlockers(db, o, cfg) : [];
   const suppressed = await isSuppressed(db, o.recipientEmail);
   return { ...o, queueErrors, suppressed };
 }

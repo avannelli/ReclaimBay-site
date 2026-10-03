@@ -622,14 +622,14 @@ describe("outreach sending (HTTP)", { skip: skipReason }, () => {
     assert.doesNotMatch(blocked, /Switch sending on<\/button>/);
   });
 
-  test("the admin prepares drafts for every eligible prospect from one button", async () => {
-    await createProspect(db, readyForm({ email: "service@smithauto.example.com", emailSourceUrl: `${WEBSITE}/contact` }));
+  test("the admin prepares drafts for the eligible prospects chosen, and repeating drafts nothing new", async () => {
+    const p = await createProspect(db, readyForm({ email: "service@smithauto.example.com", emailSourceUrl: `${WEBSITE}/contact` }));
     assert.match((await get("/admin/outreach")).body, /<b>1 prospect is eligible<\/b> for a first message now/);
-    const res = await post("/admin/outreach/prepare");
-    assert.equal(res.statusCode, 200);
-    assert.match(res.body, /Prepared 1 draft\(s\)/);
+    const res = await post("/admin/outreach/prepare", { [`p:${p.id}`]: "1" });
+    assert.equal(res.statusCode, 303);
+    assert.equal(res.headers.location, "/admin/outreach/messages?view=eligible&done=prepared&prepared=1&existing=0&ineligible=0&refused=0&failed=0");
     assert.equal(await db.outreach.count(), 1);
-    await post("/admin/outreach/prepare");
+    await post("/admin/outreach/prepare", { [`p:${p.id}`]: "1" });
     assert.equal(await db.outreach.count(), 1, "repeating drafts nothing new");
   });
 

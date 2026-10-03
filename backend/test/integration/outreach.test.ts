@@ -402,7 +402,7 @@ describe("outreach (admin HTTP)", { skip: skipReason }, () => {
     const p = await createProspect(db, emailForm());
     await post(`/admin/prospects/${p.id}/outreach`);
     const o = await db.outreach.findFirstOrThrow();
-    const res = await post(`/admin/outreach/${o.id}/discard`, { reason: "Not now." });
+    const res = await post(`/admin/outreach/${o.id}/discard`, { reason: "Not now.", confirm: "1" });
     assert.equal(res.statusCode, 303);
     assert.equal((await db.outreach.findUniqueOrThrow({ where: { id: o.id } })).status, "cancelled");
     for (const path of ["send", "dispatch"]) assert.equal((await post(`/admin/outreach/${o.id}/${path}`)).statusCode, 404, path);

@@ -17,7 +17,7 @@ import {
   recentActivity,
   waitingQueue,
 } from "../outreach/operations.js";
-import { prepareEligibleOutreach, type PrepareReport } from "../outreach/prepare.js";
+import { PREPARE_LIMIT, PREPARE_OUTCOMES, prepareEligibleOutreach, prepareSelectedOutreach, type PrepareOutcome } from "../outreach/prepare.js";
 import type { OutreachSender } from "../outreach/sender.js";
 import { classifyReply, createOutreachDraft, discardOutreach, getOutreachDetail, outreachAttention, queueOutreach, recordReply } from "../outreach/service.js";
 import { ProspectError } from "../prospects.js";
@@ -32,7 +32,7 @@ const NOTICES: Record<string, string> = {
   drafted: "Draft prepared from the stored evidence. Nothing was sent.",
   existing: "This prospect already has an open message, so no new draft was made.",
   discarded: "Message discarded. It stays in the history as Cancelled.",
-  queued: "Queued. It is sent only while sending is switched on.",
+  queued: "Queued. Nothing was sent by this action: the dispatcher sends queued messages only while sending is switched on.",
   reply: "Reply recorded.",
   classified: "Reply classified.",
   confirmed: "Recorded as sent.",
@@ -44,6 +44,30 @@ const NOTICES: Record<string, string> = {
 
 const pick = (body: Form | undefined, keys: string[]): Values =>
   Object.fromEntries(keys.map((k) => [k, typeof body?.[k] === "string" ? body[k] : undefined]));
+
+/**
+ * The prospects chosen on the Eligible view. Each checkbox is its own field,
+ * "p:<prospect id>", because the admin's form parser keeps one value per name.
+ */
+const chosenProspects = (body: Form | undefined) =>
+  Object.keys(body ?? {}).flatMap((k) => {
+    const id = k.startsWith("p:") ? k.slice(2) : "";
+    return UUID_RE.test(id) ? [id] : [];
+  });
+
+/** A bulk preparation's result, as counts only (numbers, so nothing typed is reflected). */
+function preparedNotice(q: Record<string, string | undefined>): string | undefined {
+  const n = (k: PrepareOutcome) => (/^\d{1,3}$/.test(q[k] ?? "") ? Number(q[k]) : 0);
+  const parts = [
+    [n("prepared"), "draft prepared", "drafts prepared"],
+    [n("existing"), "already had an open message", "already had an open message"],
+    [n("ineligible"), "isn't eligible now", "aren't eligible now"],
+    [n("refused"), "changed while being drafted and was left alone", "changed while being drafted and were left alone"],
+    [n("failed"), "failed unexpectedly and was left alone (see the server log)", "failed unexpectedly and were left alone (see the server log)"],
+  ] as const;
+  const said = parts.filter(([count]) => count > 0).map(([count, one, many]) => `${count} ${count === 1 ? one : many}`);
+  return said.length ? `${said.join("; ")}. Nothing was queued or sent: review each draft, then queue it from its page.` : "No prospect was prepared.";
+}
 
 /**
  * Outreach admin. Registered inside the admin scope, so every route here
@@ -81,7 +105,7 @@ export async function outreachRoutes(app: FastifyInstance, opts: { config: Confi
     return html(reply, outreachDetailPage({ detail, invitation, ...extra }), reply.statusCode);
   };
 
-  const renderControl = async (reply: FastifyReply, extra: { notice?: string; errors?: string[]; prepared?: PrepareReport } = {}) => {
+  const renderControl = async (reply: FastifyReply, extra: { notice?: string; errors?: string[] } = {}) => {
     const now = new Date();
     const [sw, grouped, stuck, eligible, metrics, gmail, capacity, attention, activity, queue, openedInvitations] = await Promise.all([
       sendingSwitch(db),
@@ -118,7 +142,6 @@ export async function outreachRoutes(app: FastifyInstance, opts: { config: Confi
         eligible,
         metrics,
         gmail,
-        prepared: extra.prepared,
         activity,
         waiting: { ...queue, stale },
         totalMessages,
@@ -171,11 +194,24 @@ export async function outreachRoutes(app: FastifyInstance, opts: { config: Confi
     }
   });
 
-  /** Drafts (and optionally queues) every eligible prospect. Never sends. */
+  /**
+   * Drafts first messages for the prospects chosen on the Eligible view (at
+   * most PREPARE_LIMIT), each checked again first (prepareSelectedOutreach).
+   * Drafts only: a draft is queued from its own page, after review. Never
+   * sends. Redirects back with counts, so a refresh repeats nothing.
+   */
   app.post<{ Body: Form }>("/admin/outreach/prepare", writeLimit, async (req, reply) => {
-    const prepared = await prepareEligibleOutreach(db, { draft: draftOptions, compliance: config, apply: true, queue: req.body?.queue === "1" });
-    req.log.info({ drafted: prepared.drafted.length, queued: prepared.queued.length }, "outreach prepared");
-    return renderControl(reply, { prepared });
+    const back = "/admin/outreach/messages?view=eligible";
+    const chosen = chosenProspects(req.body);
+    if (!chosen.length) return reply.redirect(`${back}&done=prepare_none`, 303);
+    if (chosen.length > PREPARE_LIMIT) return reply.redirect(`${back}&done=prepare_too_many`, 303);
+    const results = await prepareSelectedOutreach(db, chosen, {
+      draft: draftOptions,
+      onError: (prospectId, err) => req.log.error({ err, prospectId }, "outreach preparation failed for one prospect"),
+    });
+    const counts = Object.fromEntries(PREPARE_OUTCOMES.map((o) => [o, String(results.filter((r) => r.outcome === o).length)]));
+    req.log.info({ counts, results: results.map((r) => ({ prospectId: r.prospectId, outcome: r.outcome, outreachId: r.outreachId })) }, "outreach drafts prepared");
+    return reply.redirect(`${back}&done=prepared&${new URLSearchParams(counts)}`, 303);
   });
 
   // ---------- one message ----------
@@ -189,21 +225,32 @@ export async function outreachRoutes(app: FastifyInstance, opts: { config: Confi
    * matched before /admin/outreach/:id.
    */
   app.get<{ Querystring: Record<string, string | undefined> }>("/admin/outreach/messages", async (req, reply) => {
-    const filters = parseMessageFilters(req.query ?? {});
-    const [campaigns, messages, unclassified, activity] = await Promise.all([
+    const q = req.query ?? {};
+    const filters = parseMessageFilters(q);
+    const [campaigns, grouped, unclassified, activity] = await Promise.all([
       messageCampaigns(db),
-      db.outreach.count(),
+      db.outreach.groupBy({ by: ["status"], _count: { _all: true } }),
       db.outreach.count({ where: { status: "replied", replyOutcome: null } }),
       db.invitation.count({ where: { firstOpenedAt: { not: null } } }),
     ]);
+    const statusCounts = Object.fromEntries(grouped.map((g) => [g.status, g._count._all]));
+    const messages = grouped.reduce((n, g) => n + g._count._all, 0);
     const nav = { eligible: null as number | null, messages, unclassified, activity };
     let data: MessagesPageData;
     if (filters.view === "replies") data = { view: "replies", filters, campaigns, nav, ...(await listReplies(db, filters)) };
     else if (filters.view === "activity") data = { view: "activity", filters, campaigns, nav, ...(await listActivity(db, filters)) };
     else if (filters.view === "eligible") {
       const eligible = await listEligible(db, filters, { draft: draftOptions, compliance: config });
-      data = { view: "eligible", filters, campaigns, nav: { ...nav, eligible: eligible.total }, ...eligible };
-    } else data = { view: "messages", filters, campaigns, nav, ...(await listMessages(db, filters)) };
+      const notice =
+        q.done === "prepared"
+          ? preparedNotice(q)
+          : q.done === "prepare_none"
+            ? "Choose at least one prospect to prepare."
+            : q.done === "prepare_too_many"
+              ? `Choose at most ${PREPARE_LIMIT} prospects at a time.`
+              : undefined;
+      data = { view: "eligible", filters, campaigns, nav: { ...nav, eligible: eligible.total }, notice, ...eligible };
+    } else data = { view: "messages", filters, campaigns, nav, statusCounts, ...(await listMessages(db, filters)) };
     return html(reply, outreachMessagesPage(data));
   });
 
@@ -227,8 +274,35 @@ export async function outreachRoutes(app: FastifyInstance, opts: { config: Confi
       }
     });
 
-  action("discard", "discarded", (id, body) => discardOutreach(db, id, body.reason), ["reason"]);
   action("queue", "queued", (id) => queueOutreach(db, id, config));
+
+  /**
+   * Discards a draft or a queued message so it can never be sent: needs a
+   * reason and an explicit confirmation, like revoking an invitation. It stays
+   * in the history as Cancelled. Its invitation is left exactly as it is
+   * (revoking is its own action), and the prospect may get a new draft.
+   */
+  app.post<{ Params: { id: string }; Body: Form }>("/admin/outreach/:id/discard", writeLimit, async (req, reply) => {
+    const { id } = req.params;
+    if (!UUID_RE.test(id)) return notFound(reply);
+    const body = req.body ?? {};
+    const reason = typeof body.reason === "string" ? body.reason.trim() : "";
+    const errors = [
+      ...(reason ? [] : ["Give a reason for discarding this message."]),
+      ...(body.confirm === "1" ? [] : ["Confirm that this message should never be sent."]),
+    ];
+    if (errors.length) {
+      reply.code(400);
+      return renderDetail(reply, id, { errors, values: { intent: "discard", reason } });
+    }
+    try {
+      await discardOutreach(db, id, reason);
+      req.log.info({ outreachId: id }, "outreach discarded");
+      return reply.redirect(`/admin/outreach/${id}?done=discarded`, 303);
+    } catch (err) {
+      return handleError(err, reply, (errs) => renderDetail(reply, id, { errors: errs, values: { intent: "discard", reason } }));
+    }
+  });
   action("reply", "reply", (id, body) => recordReply(db, id, { outcome: body.outcome, summary: body.summary, requireOutcome: true }), ["outcome", "summary"]);
   action("classify", "classified", (id, body) => classifyReply(db, id, body.outcome), ["outcome"]);
   action("confirm-sent", "confirmed", (id) => confirmStuckSent(db, id, sender.name));

@@ -35,8 +35,11 @@ export interface PrepareReport {
   skipped: { prospectId: string; businessName: string | null; reasons: string[] }[];
 }
 
+/** The most drafts one preparation prepares (the CLI's default, and the admin's hard limit). */
+export const PREPARE_LIMIT = 50;
+
 export async function prepareEligibleOutreach(db: Db, opts: PrepareOptions): Promise<PrepareReport> {
-  const limit = opts.limit ?? 50;
+  const limit = opts.limit ?? PREPARE_LIMIT;
   const prospects = await db.prospect.findMany({
     where: {
       status: { in: [...INITIAL_DRAFT_STATUSES] },
@@ -77,4 +80,77 @@ export async function prepareEligibleOutreach(db: Db, opts: PrepareOptions): Pro
     }
   }
   return report;
+}
+
+/** What happened to one prospect in a selected preparation. */
+export type PrepareOutcome =
+  /** A draft and its invitation were made. */
+  | "prepared"
+  /** It already had an open message: nothing new was made. */
+  | "existing"
+  /** It isn't eligible now (it may have changed since the page was shown), or doesn't exist. */
+  | "ineligible"
+  /** It passed the check, then drafting refused it: it changed in between. Nothing was made. */
+  | "refused"
+  /** Something unexpected went wrong for this one: nothing was made for it. */
+  | "failed";
+export const PREPARE_OUTCOMES: readonly PrepareOutcome[] = ["prepared", "existing", "ineligible", "refused", "failed"];
+
+export interface PrepareResult {
+  prospectId: string;
+  outcome: PrepareOutcome;
+  outreachId: string | null;
+  reasons: string[];
+}
+
+/**
+ * Drafts first messages for the prospects a person chose (at most
+ * PREPARE_LIMIT), one at a time, each in its own drafting transaction
+ * (createOutreachDraft, which makes the invitation with it). Every prospect is
+ * checked again here, whatever the page showed, by the same preview drafting
+ * uses; one prospect's problem never stops the rest. Never queues, never sends.
+ * `createDraft` is the drafting service, replaceable only by tests.
+ */
+export async function prepareSelectedOutreach(
+  db: Db,
+  prospectIds: readonly string[],
+  opts: { draft: DraftOptions; createDraft?: typeof createOutreachDraft; onError?: (prospectId: string, err: unknown) => void },
+): Promise<PrepareResult[]> {
+  const ids = [...new Set(prospectIds)];
+  if (ids.length > PREPARE_LIMIT) throw new ProspectError([`Choose at most ${PREPARE_LIMIT} prospects at a time.`]);
+  const createDraft = opts.createDraft ?? createOutreachDraft;
+  const results: PrepareResult[] = [];
+  for (const prospectId of ids) {
+    const result = (outcome: PrepareOutcome, reasons: string[] = [], outreachId: string | null = null) => results.push({ prospectId, outcome, outreachId, reasons });
+    let preview: Awaited<ReturnType<typeof previewOutreachDraft>>;
+    try {
+      preview = await previewOutreachDraft(db, prospectId, opts.draft);
+    } catch (err) {
+      if (err instanceof ProspectError) result("ineligible", err.messages);
+      else {
+        opts.onError?.(prospectId, err);
+        result("failed");
+      }
+      continue;
+    }
+    if (preview.open) {
+      result("existing", [], preview.open.id);
+      continue;
+    }
+    if (preview.errors.length || !preview.message) {
+      result("ineligible", preview.errors);
+      continue;
+    }
+    try {
+      const { outreach, created } = await createDraft(db, prospectId, opts.draft);
+      result(created ? "prepared" : "existing", [], outreach.id);
+    } catch (err) {
+      if (err instanceof ProspectError) result("refused", err.messages);
+      else {
+        opts.onError?.(prospectId, err);
+        result("failed");
+      }
+    }
+  }
+  return results;
 }

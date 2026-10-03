@@ -149,7 +149,41 @@ npm run outreach:prepare -- --apply           # store drafts
 npm run outreach:prepare -- --apply --queue   # store and queue them
 ```
 
-The admin **Outreach** page has the same two buttons.
+The admin doesn't prepare and queue in one step: there, a person chooses who
+gets a draft and reviews each one before queueing it (below).
+
+### Preparing, reviewing, and queueing in the admin
+
+```
+Eligible now ──Prepare──> Draft ──review, Queue──> Queued ──dispatcher, while sending is on──> Sent
+                            └──────── Discard ────────┴──> Cancelled (never sent)
+```
+
+- **Prepare.** **Outreach › Eligible now** lists who a first message can be
+  prepared for. Each row's **Prepare draft** drafts that prospect
+  (`POST /admin/prospects/:id/outreach`, the same route as the prospect's
+  page). Or tick several and **Prepare drafts for the chosen prospects**
+  (`POST /admin/outreach/prepare`, `prepareSelectedOutreach`): at most 50 at a
+  time, each checked again first and drafted in its own transaction, so one
+  prospect's problem never stops the rest. The page then says how many were
+  prepared, already had an open message, aren't eligible now, changed while
+  being drafted, or failed (logged on the server). Drafting makes the
+  invitation with the message, as always. **Nothing is queued or sent.**
+- **Review.** A draft's page opens with **DRAFT — NOT SENT**, then the
+  business and its qualification, the recipient and where the address was
+  found, the sender, template, campaign, the full message (its invitation link
+  hidden), the evidence it uses, and its invitation.
+- **Queue.** **Queue** on the draft's page checks everything again: the
+  prospect's eligibility, the recipient, suppression, the sender identity and
+  compliance, and that the message's own invitation hasn't been revoked (its
+  link would no longer work; the prospect stays exactly as eligible as
+  before). A second click changes nothing; two at once queue it once.
+  **Queueing sends nothing**: the page says **QUEUED — NOT SENT BY THIS
+  ACTION**, and the dispatcher sends it only while sending is on.
+- **Discard.** **Discard** stops a draft or a queued message for good; it
+  needs a reason and an explicit confirmation, and stays in the history as
+  Cancelled. Its invitation is left as it is: revoking is a separate action.
+  A sent message can't be discarded.
 
 ## Sending
 
@@ -443,7 +477,10 @@ Follow-up:      Outreach (follow-up) -> reuses its first message's Invitation, s
   nothing. The answer reveals only whether it's active and the business's own
   public name.
 - **Revoking** stops the link and keeps the record (`revokedAt`,
-  `revokeReason`). Repeating it changes nothing.
+  `revokeReason`). Repeating it changes nothing. It doesn't change whether the
+  prospect is eligible, but an unsent first message whose invitation is
+  revoked can't be queued (its link would no longer work): discard it and
+  prepare a new draft, which gets a new invitation.
 - **Activation** is measured, not stored: the first real (not sample)
   `scan_completed` in a session that arrived through the invitation, at or
   after its first open (`invitationActivations`).

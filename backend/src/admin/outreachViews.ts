@@ -16,10 +16,10 @@ import { invitationStatus } from "../invitations/status.js";
 import type { FunnelRow } from "../outreach/metrics.js";
 import type { SendingStatus } from "../outreach/dispatch.js";
 import { NO_CAMPAIGN, PAGE_SIZE, STALE_QUEUE_MS, type ActivityRow, type EligibleRow, type InvitationSummary, type MessageFilters, type MessageRow, type MessageView } from "../outreach/operations.js";
-import type { PrepareReport } from "../outreach/prepare.js";
+import { PREPARE_LIMIT, type PrepareReport } from "../outreach/prepare.js";
 import type { getOutreachDetail, outreachAttention, prospectOutreach } from "../outreach/service.js";
-import { FIELD_LIMITS } from "../prospects.js";
-import { MAX_SCORE, bandFor } from "../scoring.js";
+import { FIELD_LIMITS, scoringInputFromRecord } from "../prospects.js";
+import { MAX_SCORE, bandFor, scoreProspect } from "../scoring.js";
 import { appPage } from "./views.js";
 import { bandBadge, crumbs, emptyState, errorSummary, esc, extLink, fieldErrors, fmtDate, notice, options, pageHead, qualificationBadge, section, statusBadge } from "./ui.js";
 
@@ -209,6 +209,46 @@ function invitationSection(o: Detail, inv: InvitationView | null | undefined, va
   );
 }
 
+/**
+ * The message's state, as the first thing on its page: the status's own label
+ * and meaning (lifecycle.ts), and for the two unsent states, that nothing has
+ * been sent and what would send it.
+ */
+function messageState(o: Detail): string {
+  const label = OUTREACH_STATUS_LABELS[o.status].toUpperCase();
+  const [tone, glyph, title, detail]: [string, string, string, string] =
+    o.status === "draft"
+      ? ["warn", "✎", `${label} — NOT SENT`, `Review the message, the evidence it uses, and its invitation below. Queue it when it's right, or discard it. ${SENDING_NOTE}`]
+      : o.status === "queued" && o.sendStartedAt
+        ? ["neg", "⚠", `${label} — SEND OUTCOME UNKNOWN`, `A send started ${fmtDate(o.sendStartedAt)} and its outcome is unknown: check the provider, then record it below.`]
+        : o.status === "queued"
+          ? ["warn", "→", `${label} — NOT SENT BY THIS ACTION`, `It waits for the dispatcher. ${SENDING_NOTE} Discard it to stop it.`]
+          : o.status === "bounced" || o.status === "failed"
+            ? ["neg", "✕", label, OUTREACH_STATUS_MEANINGS[o.status]]
+            : o.status === "cancelled"
+              ? ["quiet", "—", label, OUTREACH_STATUS_MEANINGS[o.status]]
+              : ["pos", "✓", label, OUTREACH_STATUS_MEANINGS[o.status]];
+  return `<section class="o-status t-${tone}" aria-labelledby="state-h"><div class="o-status-main">
+  <h2 id="state-h" class="o-status-l"><span aria-hidden="true">${glyph}</span> ${esc(title)}</h2>
+  <p class="o-status-d">${esc(detail)}</p>
+</div></section>`;
+}
+
+/** Discarding: the same two-step disclosure as revoking, with a reason and an explicit confirmation. */
+function discardForm(o: Detail, values: Values, errors: string[]): string {
+  const own = values.intent === "discard";
+  const what = o.status === "draft" ? "draft" : "queued message";
+  return `<div class="card"><details class="rv-disregard"${own ? " open" : ""}><summary class="btn btn-danger">× Discard this ${what}…</summary>
+  <form method="post" action="/admin/outreach/${esc(o.id)}/discard" class="rv-reason-form" novalidate>
+    <p class="small" style="margin:0 0 10px">It will never be sent, and stays in the history as Cancelled. Its invitation is left as it is: revoke that separately if its link should stop working. The prospect can be prepared again.</p>
+    <label class="lbl" for="f-dreason">Why? <span class="muted" style="font-weight:400">(kept on the record)</span></label>
+    <input id="f-dreason" type="text" name="reason" value="${esc(own ? values.reason : "")}" maxlength="${FIELD_LIMITS.reason}"${own && errors.length ? ' aria-invalid="true"' : ""}>
+    <label class="small" style="display:flex;gap:8px;align-items:center;margin-top:10px"><input type="checkbox" name="confirm" value="1"> Yes, this message should never be sent.</label>
+    ${own ? errors.map((e) => `<div class="ferr">${esc(e)}</div>`).join("") : ""}
+    <div style="margin-top:10px"><button type="submit" class="btn-danger">Discard ${what}</button></div>
+  </form></details></div>`;
+}
+
 export function outreachDetailPage(opts: { detail: Detail; invitation?: InvitationView | null; notice?: string; errors?: string[]; values?: Values }): string {
   const { detail: o, values = {} } = opts;
   const id = esc(o.id);
@@ -225,7 +265,7 @@ export function outreachDetailPage(opts: { detail: Detail; invitation?: Invitati
         ? `<div class="card"><div class="card-h" style="margin:0">Not ready to queue</div><ul class="small" style="margin:6px 0 0">${o.queueErrors.map((e) => `<li>${esc(e)}</li>`).join("")}</ul></div>`
         : `<form method="post" action="/admin/outreach/${id}/queue" class="card stack">
   <div class="card-h" style="margin:0">Queue for sending</div>
-  <div><button type="submit">Queue</button> <span class="small muted">A first message moves the prospect to Ready to contact. It is sent only when sending is switched on.</span></div>
+  <div><button type="submit">Queue</button> <span class="small muted">Queueing sends nothing: the dispatcher sends queued messages only while sending is switched on. A first message moves the prospect to Ready to contact. Everything is checked again first.</span></div>
 </form>`
       : "",
     stuck
@@ -235,13 +275,7 @@ export function outreachDetailPage(opts: { detail: Detail; invitation?: Invitati
   <div><button type="submit">It was sent</button></div>
 </form>`
       : "",
-    open
-      ? `<form method="post" action="/admin/outreach/${id}/discard" class="card stack">
-  <div class="card-h" style="margin:0">Discard this ${o.status === "draft" ? "draft" : "message"}</div>
-  <div class="field"><label for="f-reason">Reason <span class="muted" style="font-weight:400">(optional)</span></label><input id="f-reason" type="text" name="reason" value="${esc(values.reason)}" maxlength="${FIELD_LIMITS.reason}"></div>
-  <div><button class="btn-danger" type="submit">Discard</button> <span class="small muted">It stays in the history as Cancelled.</span></div>
-</form>`
-      : "",
+    open ? discardForm(o, values, opts.errors ?? []) : "",
     awaiting
       ? `<form method="post" action="/admin/outreach/${id}/reply" class="card stack">
   <div class="card-h" style="margin:0">Record a reply</div>
@@ -261,18 +295,19 @@ export function outreachDetailPage(opts: { detail: Detail; invitation?: Invitati
   ].filter(Boolean);
 
   const factList = facts.length ? facts.map(factRow).join("") : `<div class="card">${emptyState("No facts recorded.")}</div>`;
+  // Why this business was contacted at all: its qualification, from the scoring the prospect pages use.
+  const qualification = scoreProspect(scoringInputFromRecord(o.prospect));
 
   return appPage(
     `${o.subject} · ReclaimBay admin`,
     "outreach",
-    `${crumbs([{ label: "Prospects", href: "/admin/prospects" }, { label: name, href: `/admin/prospects/${o.prospect.id}#outreach` }, { label: "Outreach" }])}
+    `${crumbs([{ label: "Outreach", href: "/admin/outreach" }, { label: "Messages", href: messagesHref({ status: o.status }) }, { label: o.subject }])}
 ${notice(opts.notice)}${errorSummary(opts.errors, fe, "Not done")}
 ${pageHead({
   title: o.subject,
   badges: `${outreachBadge(o.status)}<span class="muted small">${esc(OUTREACH_KIND_LABELS[o.kind])}</span><span class="muted small">Prospect: ${statusBadge(o.prospect.status)}</span>`,
-  lede: esc(OUTREACH_STATUS_MEANINGS[o.status]),
 })}
-<div class="callout${o.status === "draft" ? " warn" : ""}" style="margin-bottom:14px">${esc(SENDING_NOTE)}</div>
+${messageState(o)}
 ${o.suppressed ? `<div class="callout warn" style="margin-bottom:14px">${esc(o.recipientEmail)} is suppressed: it will never be emailed again.</div>` : ""}
 
 ${section(
@@ -280,6 +315,8 @@ ${section(
   "Message",
   `<div class="grid-2">
   <div class="card"><dl class="kv">
+    <dt>Business</dt><dd><a href="/admin/prospects/${esc(o.prospect.id)}">${esc(name)}</a> ${statusBadge(o.prospect.status)}</dd>
+    <dt>Qualification</dt><dd>${qualificationBadge(qualification.qualification)} <span class="small muted">Opportunity score <b>${qualification.score}</b>/${MAX_SCORE}</span> ${bandBadge(qualification.band)}</dd>
     <dt>To</dt><dd>${esc(o.recipientEmail)}<div class="src">found at ${extLink(o.recipientSourceUrl)}</div></dd>
     <dt>From</dt><dd>${o.senderEmail ? esc(`${o.senderName ?? ""} <${o.senderEmail}>`.trim()) : '<span class="muted">Not configured (OUTREACH_SENDER_EMAIL)</span>'}</dd>
     <dt>Subject</dt><dd>${esc(o.subject)}</dd>
@@ -355,7 +392,6 @@ export interface ControlPageData {
    * sender (OUTREACH_SENDER_EMAIL); `account` the Google account authorized to send as it.
    */
   gmail?: { mailbox: string | null; account: string | null; canAuthorize: boolean; authorized: boolean; problem: string | null } | null;
-  prepared?: PrepareReport;
 }
 
 const METRIC_COLUMNS: [keyof FunnelRow, string][] = [
@@ -497,20 +533,16 @@ ${tile(c.remaining === 0 ? "warn" : "info", "✉", `${c.used} / ${c.limit}`, "Se
   ].filter(Boolean);
   const attentionBlock = attention.length ? section("attention", "Needs attention", `<div class="stack">${attention.join("\n")}</div>`) : "";
 
-  const prepared = d.prepared
-    ? `<div class="callout" style="margin-bottom:12px">Prepared ${d.prepared.drafted.length} draft(s)${d.prepared.queued.length ? `, queued ${d.prepared.queued.length}` : ""}.${d.prepared.notQueued.length ? ` ${d.prepared.notQueued.length} not queued: ${esc(d.prepared.notQueued[0]!.reasons.join(" "))}` : ""}</div>`
-    : "";
   const skipped = d.eligible.skipped;
   const prepare = section(
     "prepare",
     "Prepare messages",
-    `<div class="card">${prepared}
+    `<div class="card">
 <p style="margin:0 0 12px">${eligibleN ? `<b>${plural(eligibleN, "prospect is", "prospects are")} eligible</b> for a first message now.` : "<b>No prospect is eligible</b> for a first message now."} <span class="muted">Each draft is written from that prospect's stored evidence; nothing is sent here.</span></p>
 ${
   eligibleN
-    ? `<div class="row"><form method="post" action="/admin/outreach/prepare" class="inline-form"><button type="submit">Prepare ${plural(eligibleN, "draft", "drafts")}</button></form>
-<form method="post" action="/admin/outreach/prepare" class="inline-form"><input type="hidden" name="queue" value="1"><button class="btn-secondary" type="submit">Prepare and queue</button></form></div>
-<p class="small muted" style="margin:10px 0 0">Queueing checks the sender identity and each message's opt-out and postal address. Queued messages are sent only while sending is on.</p>`
+    ? `<p style="margin:0"><a class="btn" href="${esc(messagesHref({ view: "eligible" }))}">Choose prospects to prepare</a></p>
+<p class="small muted" style="margin:10px 0 0">Prepare drafts for the prospects you choose, review each one, then queue it from its page. Queueing doesn't send: the dispatcher sends queued messages only while sending is on.</p>`
     : ""
 }
 ${
@@ -584,10 +616,11 @@ export type MessagesPageData = {
   campaigns: { campaign: string; count: number }[];
   nav: { eligible: number | null; messages: number; unclassified: number; activity: number };
 } & (
-  | { view: "messages"; total: number; rows: MessageRow[] }
+  | { view: "messages"; total: number; rows: MessageRow[]; statusCounts: Partial<Record<OutreachStatus, number>> }
   | { view: "replies"; total: number; unclassified: number; rows: MessageRow[] }
   | { view: "activity"; total: number; rows: ActivityRow[] }
-  | { view: "eligible"; total: number; capped: boolean; rows: EligibleRow[] }
+  /** `notice`: the result of a preparation, counts only (routes/adminOutreach.ts preparedNotice). */
+  | { view: "eligible"; total: number; capped: boolean; rows: EligibleRow[]; notice?: string }
 );
 
 const VIEW_TITLES: Record<MessageView, [string, string]> = {
@@ -699,21 +732,51 @@ function activityTable(rows: ActivityRow[]): string {
   );
 }
 
+/**
+ * The eligible list is one form: tick prospects and prepare their drafts
+ * together (POST /admin/outreach/prepare), or prepare one with its row's own
+ * button, which posts to the prospect's existing draft route instead. Each
+ * checkbox is its own field ("p:<id>"), since the admin's form parser keeps
+ * one value per name. Drafts only: nothing here queues or sends.
+ */
 function eligibleTable(rows: EligibleRow[]): string {
-  return table(
+  return `<form method="post" action="/admin/outreach/prepare" aria-label="Prepare drafts for eligible prospects">
+<div class="row" style="margin-bottom:10px"><button type="submit">Prepare drafts for the chosen prospects</button>
+<span class="small muted">Tick the ones to prepare (at most ${PREPARE_LIMIT} at a time). Each is checked again first. Drafts only: nothing is queued or sent. Review each draft, then queue it from its page.</span></div>
+${table(
     "Eligible prospects",
-    ["Prospect", "Location", "Business email", "Qualification", "Opportunity score", "Evidence"],
+    ["Choose", "Prospect", "Location", "Business email", "Qualification", "Opportunity score", "Evidence", "Draft"],
     rows.map(
       (p) => `<tr>
+  <td data-label="Choose"><input type="checkbox" name="p:${esc(p.id)}" value="1" aria-label="Choose ${esc(p.businessName ?? "this prospect")}"></td>
   <td>${businessCell(p)}</td>
   <td data-label="Location">${esc([p.city, p.state].filter(Boolean).join(", ")) || '<span class="muted">—</span>'}</td>
   <td data-label="Business email">${esc(p.email)}${p.emailSourceUrl ? `<div class="src">found at ${extLink(p.emailSourceUrl)}</div>` : ""}</td>
   <td data-label="Qualification">${qualificationBadge(p.qualification)}</td>
   <td data-label="Opportunity score"><span class="score-cell"><b>${p.score}</b><span class="of">/${MAX_SCORE}</span></span> ${bandBadge(bandFor(p.score))}</td>
   <td class="small" data-label="Evidence">${p.evidence} excerpt${p.evidence === 1 ? "" : "s"}<div class="sub">${p.known}/${p.totalSignals} signals known</div></td>
+  <td data-label="Draft"><button type="submit" class="btn-secondary" formaction="/admin/prospects/${esc(p.id)}/outreach">Prepare draft</button></td>
 </tr>`,
     ),
-  );
+  )}
+</form>`;
+}
+
+/** Quick links to the messages in each state, with counts (Messages view). */
+function statusLinks(d: Extract<MessagesPageData, { view: "messages" }>): string {
+  const links: [OutreachStatus, string][] = [
+    ["draft", "Drafts to review"],
+    ["queued", OUTREACH_STATUS_LABELS.queued],
+    ["sent", OUTREACH_STATUS_LABELS.sent],
+    ["replied", OUTREACH_STATUS_LABELS.replied],
+    ["bounced", OUTREACH_STATUS_LABELS.bounced],
+    ["failed", OUTREACH_STATUS_LABELS.failed],
+    ["cancelled", OUTREACH_STATUS_LABELS.cancelled],
+  ];
+  const chip = (status: OutreachStatus | null, label: string, n: number) =>
+    `<a class="chip${status === "draft" && n > 0 ? " attn" : ""}" href="${esc(messagesHref({ status }))}"${d.filters.status === status ? ' aria-current="true"' : ""}>${esc(label)} <span class="n">${n}</span></a>`;
+  const all = Object.values(d.statusCounts).reduce((n, v) => n + (v ?? 0), 0);
+  return `<nav class="chips" aria-label="Messages by status">${[chip(null, "Any status", all), ...links.map(([s, l]) => chip(s, l, d.statusCounts[s] ?? 0))].join("")}</nav>`;
 }
 
 const EMPTY: Record<MessageView, [string, string]> = {
@@ -738,8 +801,10 @@ export function outreachMessagesPage(d: MessagesPageData): string {
     `${title} · Outreach · ReclaimBay admin`,
     "outreach",
     `${crumbs([{ label: "Outreach", href: "/admin/outreach" }, { label: title }])}
+${d.view === "eligible" ? notice(d.notice) : ""}
 ${pageHead({ title, lede: esc(lede) })}
 ${outreachNav(d.view, d.nav)}
+${d.view === "messages" ? statusLinks(d) : ""}
 ${filterForm(d)}
 ${pager(d)}
 ${body || `<div class="card">${emptyState(emptyTitle, emptyHint)}</div>`}`,
