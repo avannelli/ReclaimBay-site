@@ -10,6 +10,7 @@
  * skipped.
  */
 import { parseArgs } from "node:util";
+import { safeConsole as console, sanitizeCliError } from "../logging.js";
 import { loadConfig } from "../config.js";
 import { createDb } from "../db.js";
 import { prepareEligibleOutreach } from "../outreach/prepare.js";
@@ -41,6 +42,8 @@ try {
   for (const n of r.notQueued) console.log(`  Not queued ${n.outreachId}: ${n.reasons.join(" ")}`);
   console.log(`  Not eligible (${r.skipped.length}):`);
   for (const s of r.skipped) console.log(`    ${s.businessName ?? s.prospectId}: ${s.reasons.join(" ")}`);
+} catch (err) {
+  throw sanitizeCliError(err);
 } finally {
   await db.$disconnect();
 }

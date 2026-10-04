@@ -9,6 +9,7 @@
  * is safe: a prospect with an open draft keeps that draft.
  */
 import { parseArgs } from "node:util";
+import { safeConsole as console, sanitizeCliError } from "../logging.js";
 import { loadConfig } from "../config.js";
 import { createDb } from "../db.js";
 import { createOutreachDraft, previewOutreachDraft } from "../outreach/service.js";
@@ -50,6 +51,8 @@ try {
       console.log(created ? `  Stored draft ${outreach.id}.` : `  An open message appeared meanwhile; kept ${outreach.id}.`);
     }
   }
+} catch (err) {
+  throw sanitizeCliError(err);
 } finally {
   await db.$disconnect();
 }

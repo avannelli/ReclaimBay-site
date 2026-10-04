@@ -1,4 +1,4 @@
-import Fastify from "fastify";
+import Fastify, { type FastifyLoggerOptions } from "fastify";
 import type { Config } from "./config.js";
 import type { Db } from "./db.js";
 import { adminRoutes } from "./routes/admin.js";
@@ -8,9 +8,12 @@ import { senderFromConfig, type OutreachSender } from "./outreach/sender.js";
 import type { ProcessDeps } from "./research/service.js";
 import { gmailOAuthRoutes } from "./routes/gmailOAuth.js";
 import { unsubscribeRoutes } from "./routes/unsubscribe.js";
+import { applicationLogger, registerRequestLogSanitization } from "./logging.js";
 
 /** Optional dependencies, injected by tests (production uses the defaults). */
 export interface AppDeps {
+  /** Optional log destination; the application sanitization policy always applies. */
+  logStream?: FastifyLoggerOptions["stream"];
   /** How automated research reaches the web (tests pass a fixture fetcher). */
   research?: ProcessDeps;
   /** The outreach email sender (tests pass a mock). Default: from the environment. */
@@ -24,7 +27,7 @@ const HEALTH_DB_TIMEOUT_MS = 2_000;
 export async function buildApp(config: Config, db: Db, logger: boolean = true, deps: AppDeps = {}) {
   const hops = config.trustProxyHops;
   const app = Fastify({
-    logger: logger ? { level: process.env.LOG_LEVEL ?? "info" } : false,
+    logger: logger ? applicationLogger(deps.logStream) : false,
     // Trust exactly the proxy hops in front of us (Railway's edge), so rate
     // limits key on the real client address and can't be spoofed via headers.
     trustProxy: hops > 0 ? (_addr: string, hop: number) => hop < hops : false,
@@ -34,6 +37,8 @@ export async function buildApp(config: Config, db: Db, logger: boolean = true, d
       customOptions: { removeAdditional: false, coerceTypes: false, allErrors: false },
     },
   });
+
+  registerRequestLogSanitization(app);
 
   app.get("/health", async (_req, reply) => {
     let database = false;

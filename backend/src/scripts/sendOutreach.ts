@@ -10,6 +10,7 @@
  * OUTREACH_PROVIDER (gmail); unset, it always stops at that check.
  */
 import { parseArgs } from "node:util";
+import { createContentLogger } from "../logging.js";
 import { loadConfig } from "../config.js";
 import { createDb } from "../db.js";
 import { dispatchQueued, stuckMessages } from "../outreach/dispatch.js";
@@ -22,8 +23,10 @@ const limit = Math.max(1, Number.parseInt(values.limit ?? "20", 10) || 20);
 const config = loadConfig();
 const db = createDb(config.databaseUrl);
 const sender = senderFromConfig(config);
+const content = createContentLogger();
+const console = content.console;
 try {
-  const r = await dispatchQueued(db, { config, sender, limit, dryRun: !apply });
+  const r = await dispatchQueued(db, { config, sender, limit, dryRun: !apply, observeMessage: content.remember });
   console.log(`${apply ? "APPLIED" : "DRY RUN (nothing is sent; pass --apply)"} with sender "${sender.name}".`);
   if (r.blockers.length) {
     console.log("Sending is blocked:");
@@ -38,6 +41,8 @@ try {
   for (const c of r.cancelled) console.log(`${apply ? "Cancelled" : "Would cancel"} ${c.outreachId}: ${c.reasons.join(" ")}`);
   const stuck = await stuckMessages(db);
   if (stuck.length) console.log(`Send outcome unknown, waiting for a person: ${stuck.map((s) => s.id).join(", ")}`);
+} catch (err) {
+  throw content.error(err);
 } finally {
   await db.$disconnect();
 }

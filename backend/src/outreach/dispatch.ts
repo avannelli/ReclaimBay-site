@@ -115,6 +115,8 @@ export interface DispatchOptions {
   /** List what would be sent; claim and send nothing. */
   dryRun?: boolean;
   now?: () => Date;
+  /** Observe the existing provider payload for log redaction; never changes dispatch. */
+  observeMessage?: (message: Readonly<OutgoingMessage>) => void;
 }
 
 export interface DispatchReport {
@@ -241,6 +243,10 @@ export async function dispatchQueued(db: Db, opts: DispatchOptions): Promise<Dis
       continue;
     }
     if (claim.kind === "skip") continue;
+
+    // Diagnostics must not prevent or change a claimed send. The logging
+    // observer handles its own sanitization failures by omitting output.
+    try { opts.observeMessage?.(claim.message); } catch { /* Observation only. */ }
 
     let result: SendResult;
     try {
