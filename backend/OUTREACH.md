@@ -432,6 +432,12 @@ example every 5 minutes. It is a dry run by default; `--apply` records.
   reply to a replied message is a duplicate.
 - It matches by Gmail thread, then by the marker quoted in a bounce, then by
   the sender's address. Unmatched mail is only counted.
+- **By address, only mail received after we wrote.** The address match takes
+  the latest message sent to that address at or before the mail arrived
+  (Gmail's received time against our `sentAt`). Mail received before any
+  message was sent to them (an earlier email, a contact-form message to
+  hello@) is never taken for a reply or an unsubscribe, and neither is mail
+  without a received time. Thread and bounce-marker matches are unchanged.
 - It prints counts only: own mail, auto-replies, delays, unmatched, and
   matched mail by kind and result, with our message id for each match. Never a
   sender's address, a subject, or any content

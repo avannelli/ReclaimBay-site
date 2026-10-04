@@ -245,6 +245,74 @@ describe("outreach through Gmail", { skip: skipReason }, () => {
     assert.equal(google.sendCalls.length, 4, "reading the mailbox never sends");
     void MAILBOX;
   });
+
+  test("mail by address is matched only if it arrived at or after our message was sent; earlier mail stays unmatched and records nothing", async () => {
+    const { google, client } = fakeGmail();
+    const sender = gmailSender(client);
+    const history = await queued(); // earlier mail, then a real answer, from the same address
+    const boundary = await queued(); // a reply received in the very millisecond we sent
+    const contact = await queued(); // a contact-path email to hello@, and an emailed "unsubscribe", both before outreach
+    const threaded = await queued(); // a reply in our own thread
+    await switchOn(db, sender);
+    await dispatchQueued(db, { config: CFG, sender });
+    const sentAt = async (o: { id: string }) => (await row(o.id)).sentAt!;
+    const thread = (o: { id: string }) => google.sent.find((s) => s.marker === o.id)!.threadId;
+    const DAY = 24 * 60 * 60 * 1000;
+    const replyEvents = () => db.outreachEvent.count({ where: { type: "replied" } });
+
+    google.inbox.push(
+      // 1. Historical: received three days before we wrote to them, from the same address, a new thread.
+      inbound("old-mail", "th-old", { From: `Owner <${history.p.email}>`, Subject: "Question about my car" }, [{ mimeType: "text/plain", text: "Earlier, unrelated." }], "Earlier, unrelated.", new Date((await sentAt(history.o)).getTime() - 3 * DAY)),
+      // 3. Boundary: received at exactly our send time. Inclusive by design (>=): sentAt is recorded only
+      // once Gmail has accepted our message, so mail stamped at that instant can't be from before it.
+      inbound("same-ms", "th-same", { From: `Owner <${boundary.p.email}>`, Subject: "Re: Declined work" }, [{ mimeType: "text/plain", text: "Yes." }], "Yes.", await sentAt(boundary.o)),
+      // 7. Contact path: a "Talk to ReclaimBay" email to hello@ a week before outreach, and an emailed unsubscribe two days before.
+      inbound("contact-mail", "th-contact", { From: `Owner <${contact.p.email}>`, To: MAILBOX, Subject: "Talk to ReclaimBay" }, [{ mimeType: "text/plain", text: "Shop name: ..." }], "Shop name: ...", new Date((await sentAt(contact.o)).getTime() - 7 * DAY)),
+      inbound("early-unsub", "th-unsub", { From: contact.p.email!, Subject: "unsubscribe" }, [], "", new Date((await sentAt(contact.o)).getTime() - 2 * DAY)),
+      // 4. Same thread: unchanged; matched by the thread whatever the address rule says.
+      inbound("in-thread", thread(threaded.o), { From: `Owner <${threaded.p.email}>`, Subject: "Re: Declined work" }, [{ mimeType: "text/plain", text: "Call me." }], "Call me."),
+      // 5. Unrelated mail: unmatched, as before.
+      inbound("stranger", "th-stranger", { From: "someone@else.example.com", Subject: "Hello" }),
+    );
+    // No received time at all: not trusted for an address match.
+    google.inbox.push({ ...inbound("no-date", "th-nodate", { From: `Owner <${history.p.email}>`, Subject: "Re: Declined work" }), internalDate: undefined });
+
+    const first = await pollGmailInbox(db, client, { apply: true });
+    const by = (r: typeof first, id: string) => r.items.find((i) => i.gmailId === id)!;
+    assert.deepEqual([by(first, "old-mail").result, by(first, "old-mail").outreachId], ["unmatched", null], "historical mail is not a reply");
+    assert.deepEqual([by(first, "same-ms").result, by(first, "same-ms").outreachId], ["recorded", boundary.o.id], "received at our send time: matched");
+    assert.deepEqual([by(first, "contact-mail").result, by(first, "early-unsub").result], ["unmatched", "unmatched"], "contact-path mail and an earlier unsubscribe aren't answers to the outreach");
+    assert.deepEqual([by(first, "in-thread").result, by(first, "in-thread").outreachId], ["recorded", threaded.o.id]);
+    assert.equal(by(first, "stranger").result, "unmatched");
+    assert.equal(by(first, "no-date").result, "unmatched", "no received time: no address match");
+
+    // Nothing recorded for the earlier mail: no reply, no summary, no Engaged, no suppression, no opt-out.
+    for (const q of [history, contact]) {
+      const o = await row(q.o.id);
+      assert.deepEqual([o.status, o.repliedAt, o.replySummary], ["sent", null, null]);
+      assert.equal((await db.prospect.findUniqueOrThrow({ where: { id: q.p.id } })).status, "contacted");
+      assert.equal(await db.outreachEvent.count({ where: { outreachId: q.o.id, type: { in: ["replied", "unsubscribed"] } } }), 0);
+      assert.equal(await db.emailSuppression.count({ where: { email: q.p.email! } }), 0);
+      assert.equal(await db.prospectStatusChange.count({ where: { prospectId: q.p.id, toStatus: { in: ["engaged", "do_not_contact"] } } }), 0);
+    }
+    assert.equal(await replyEvents(), 2, "only the boundary reply and the thread reply");
+
+    // 2. A real answer from the same address, after we wrote: matched and recorded, despite the earlier mail.
+    google.inbox.push(inbound("real-answer", "th-answer", { From: `Owner <${history.p.email}>`, Subject: "Re: Quick question" }, [{ mimeType: "text/plain", text: "Interested." }], "Interested.", new Date((await sentAt(history.o)).getTime() + 60 * 60 * 1000)));
+    const second = await pollGmailInbox(db, client, { apply: true });
+    assert.deepEqual([by(second, "real-answer").result, by(second, "real-answer").outreachId], ["recorded", history.o.id]);
+    assert.equal(by(second, "old-mail").result, "unmatched", "the earlier mail still never matches");
+    const answered = await row(history.o.id);
+    assert.deepEqual([answered.status, answered.replySummary], ["replied", "Interested."], "the summary is the answer's, not the earlier mail's");
+    assert.equal((await db.prospect.findUniqueOrThrow({ where: { id: history.p.id } })).status, "engaged");
+
+    // 6. Idempotent: reading it all again records nothing new.
+    const events = await db.outreachEvent.count();
+    const third = await pollGmailInbox(db, client, { apply: true });
+    assert.equal(await db.outreachEvent.count(), events);
+    assert.ok(third.items.every((i) => ["duplicate", "unmatched", "ignored"].includes(i.result)), JSON.stringify(third.items.map((i) => [i.gmailId, i.result])));
+    assert.equal(google.sendCalls.length, 4, "reading the mailbox never sends");
+  });
 });
 
 describe("authorizing the Gmail mailbox (HTTP)", { skip: skipReason }, () => {

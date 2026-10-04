@@ -32,13 +32,13 @@ export interface FakeCall {
 
 type Answer = { status: number; body: unknown } | "network";
 
-/** An inbound message, built from headers and text parts. */
-export function inbound(id: string, threadId: string, headers: Record<string, string>, parts: { mimeType: string; text: string }[] = [], snippet = ""): GmailMessage {
+/** An inbound message, built from headers and text parts, received now unless `receivedAt` says otherwise. */
+export function inbound(id: string, threadId: string, headers: Record<string, string>, parts: { mimeType: string; text: string }[] = [], snippet = "", receivedAt: Date = new Date()): GmailMessage {
   const toPart = (p: { mimeType: string; text: string }): GmailPart => ({ mimeType: p.mimeType, body: { data: Buffer.from(p.text).toString("base64url") } });
   return {
     id,
     threadId,
-    internalDate: String(Date.parse("2026-10-05T12:00:00Z")),
+    internalDate: String(receivedAt.getTime()),
     snippet,
     payload: {
       mimeType: parts.length > 1 ? "multipart/report" : (parts[0]?.mimeType ?? "text/plain"),

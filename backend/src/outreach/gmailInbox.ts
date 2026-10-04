@@ -138,15 +138,20 @@ export async function pollGmailInbox(
       const m = await client.getMessage(id, "full");
       const c = classifyInbound(m, own);
       const at = m.internalDate ? new Date(Number(m.internalDate)) : (opts.now?.() ?? new Date());
+      // When Gmail received it (internalDate, epoch ms). Null when Gmail didn't say.
+      const receivedAt = m.internalDate && Number.isFinite(Number(m.internalDate)) ? new Date(Number(m.internalDate)) : null;
       const item: InboxItem = { gmailId: id, kind: c.kind, from: c.from, subject: (headerOf(m, "Subject") ?? "").slice(0, 200), outreachId: null, result: "ignored" };
       report.items.push(item);
       if (c.kind === "own" || c.kind === "auto_reply" || c.kind === "delay") continue;
 
       let o = await matchByThread(db, client, m, c.markerOutreachId);
-      // An emailed unsubscribe or a reply from a new thread: the latest message sent to that address.
-      if (!o && (c.kind === "unsubscribe" || c.kind === "reply")) {
+      // An emailed unsubscribe or a reply from a new thread: the latest message sent to that address
+      // at or before this mail arrived. Mail received before we sent anything to them (an earlier,
+      // unrelated email, a contact-form message) can't be an answer to it, so it stays unmatched;
+      // so does mail whose received time Gmail didn't give. The thread match above is unaffected.
+      if (!o && receivedAt && (c.kind === "unsubscribe" || c.kind === "reply")) {
         o = await db.outreach.findFirst({
-          where: { recipientEmail: { equals: c.from, mode: "insensitive" }, status: { in: [...ATTEMPTED_STATUSES] } },
+          where: { recipientEmail: { equals: c.from, mode: "insensitive" }, status: { in: [...ATTEMPTED_STATUSES] }, sentAt: { not: null, lte: receivedAt } },
           orderBy: { sentAt: "desc" },
         });
       }
