@@ -6,9 +6,11 @@
 import assert from "node:assert/strict";
 import type { Db } from "../../src/db.js";
 import { hashInvitationToken } from "../../src/invitations/tokens.js";
+import { campaignOf } from "../../src/outreach/compose.js";
 import { dispatchQueued, setSendingSwitch, type SendingConfig } from "../../src/outreach/dispatch.js";
 import type { OutgoingMessage, OutreachSender, SendResult } from "../../src/outreach/sender.js";
 import { queueOutreach } from "../../src/outreach/service.js";
+import { referralUrl } from "../../src/prospects.js";
 
 /** A complete, compliant sender configuration. */
 export const CFG: SendingConfig = {
@@ -55,8 +57,17 @@ export async function draftedInvitation(db: Db, outreach: { id: string; body: st
 /**
  * A first message without an invitation, as drafted before Stage 4D: for tests
  * of createInvitationForOutreach itself, and of a message that has none.
+ * Restore the legacy template and referral link too: deleting only the
+ * invitation would leave a current message with a dead link.
  */
-export const withoutInvitation = (db: Db, outreachId: string) => db.invitation.deleteMany({ where: { outreachId } });
+export const withoutInvitation = (db: Db, outreachId: string) => db.$transaction(async (tx) => {
+  const o = await tx.outreach.findUniqueOrThrow({ where: { id: outreachId }, include: { prospect: true } });
+  const template = "intro@t1";
+  const campaign = campaignOf(template);
+  const body = o.body.replace(/https?:\/\/\S+?\/invite#[A-Za-z0-9_-]{43}(?![A-Za-z0-9_-])/, referralUrl(OPTS.siteUrl, o.prospect.referralCode, campaign));
+  await tx.invitation.deleteMany({ where: { outreachId } });
+  return tx.outreach.update({ where: { id: outreachId }, data: { template, campaign, body } });
+});
 
 /** Queues a draft and sends it through the real dispatcher with the mock provider. */
 export async function queueAndSend(db: Db, outreachId: string, sender: MockSender = mockSender()) {

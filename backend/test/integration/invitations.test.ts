@@ -46,8 +46,7 @@ describe("invitations", { skip: skipReason }, () => {
   /** A first message without an invitation (as before Stage 4D), to exercise createInvitationForOutreach itself. */
   const bare = async (prospectId: string) => {
     const o = await draft(prospectId);
-    await withoutInvitation(db, o.id);
-    return o;
+    return withoutInvitation(db, o.id);
   };
   /** A first message's own invitation, made by drafting it: its token and record. */
   const own = async (prospectId: string) => draftedInvitation(db, await draft(prospectId));

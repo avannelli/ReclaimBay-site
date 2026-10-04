@@ -236,10 +236,18 @@ describe("the send gate (real PostgreSQL)", { skip: skipReason }, () => {
       const message = await db.outreach.findUniqueOrThrow({ where: { id: o.id } });
       assert.equal(message.sendStartedAt, null);
       if (queued.status === "fulfilled") {
-        // Queued first, then revoked. (Phase C makes the send step refuse it.)
+        // Queued first, then revoked: dispatch must refuse it before claiming.
         assert.equal(message.status, "queued");
         assert.deepEqual(await historyOf(p.id), ["new->qualified", "null->new", "qualified->ready_to_contact"]);
         assert.deepEqual(await eventsOf(o.id), ["drafted", "queued"]);
+        const sender = mockSender();
+        await switchOn(db, sender);
+        const report = await dispatchQueued(db, { config: CFG, sender });
+        assert.ok(report.cancelled.some((c) => c.outreachId === o.id && c.reasons.some((r) => /invitation.*revoked/.test(r))));
+        assert.deepEqual(sender.calls, []);
+        const cancelled = await db.outreach.findUniqueOrThrow({ where: { id: o.id } });
+        assert.deepEqual([cancelled.status, cancelled.sendStartedAt, cancelled.sendAttempts], ["cancelled", null, 0]);
+        assert.deepEqual(await eventsOf(o.id), ["cancelled", "drafted", "queued"]);
       } else {
         // Revoked first: queueing was refused, and nothing about the prospect changed.
         assert.match((queued.reason as ProspectError).messages.join(" "), /invitation was revoked/);

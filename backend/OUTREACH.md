@@ -251,8 +251,16 @@ cancelled with the reason instead of sent:
   follow-up goes to its first message's address;
 - the address isn't suppressed, and wasn't contacted for another business;
 - no other first message may have reached this prospect;
+- the message's invitation still exists and hasn't been revoked (a follow-up
+  uses its first message's invitation; legacy referral-link messages need none);
 - the message carries the opt-out and the postal address, and was prepared
   for the configured sender.
+
+An invitation revoked after queueing is cancelled through the same eligibility
+path, with its reason in the message and event history. This happens under the
+send gate, before the claim or daily-limit count: no provider call or daily
+capacity is used. A revocation after the claim cannot stop a send already in
+progress; that send is still decided by the provider's outcome.
 
 ### The send gate
 

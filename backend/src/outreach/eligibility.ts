@@ -27,6 +27,7 @@ import { STATUS_LABELS } from "../prospectStatus.js";
 import { scoringInputFromRecord } from "../prospects.js";
 import { hasPublicContact, scoreProspect } from "../scoring.js";
 import { messageComplianceErrors, senderIdentityErrors, type ComplianceConfig, type MessageForCompliance } from "./compliance.js";
+import { FOLLOW_UP_TEMPLATE, INTRO_TEMPLATE } from "./compose.js";
 import {
   AWAITING_REPLY,
   OPEN_STATUSES,
@@ -183,5 +184,20 @@ export async function messageEligibilityErrors(
   cfg: ComplianceConfig,
   stage: "queue" | "send",
 ): Promise<string[]> {
-  return (await outreachEligibility(tx, { stage, kind: o.kind, prospect: o.prospect, firstMessageId: o.followUpOfId, message: { stored: o, cfg } })).errors;
+  const { errors } = await outreachEligibility(tx, { stage, kind: o.kind, prospect: o.prospect, firstMessageId: o.followUpOfId, message: { stored: o, cfg } });
+  if (stage === "send") {
+    // The dispatcher holds the send gate, as does revocation. Read again before
+    // claiming or using daily capacity; follow-ups reuse the first invitation.
+    const outreachId = o.kind === "follow_up" ? o.followUpOfId : o.id;
+    const invitation = outreachId
+      ? await tx.invitation.findUnique({ where: { outreachId }, select: { revokedAt: true } })
+      : null;
+    if (invitation?.revokedAt) {
+      errors.push("The invitation for this message was revoked, so its link no longer works.");
+    } else if (!invitation && (o.template === INTRO_TEMPLATE || o.template === FOLLOW_UP_TEMPLATE || o.body.includes("/invite#"))) {
+      // Legacy referral-link messages never had an invitation; keep them working.
+      errors.push("The invitation for this message is missing, so its link no longer works.");
+    }
+  }
+  return errors;
 }

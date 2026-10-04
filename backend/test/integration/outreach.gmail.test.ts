@@ -5,7 +5,8 @@ import type { FastifyInstance } from "fastify";
 import { buildApp } from "../../src/app.js";
 import { loadConfig } from "../../src/config.js";
 import type { Db } from "../../src/db.js";
-import { confirmStuckSent, dispatchQueued, stuckMessages } from "../../src/outreach/dispatch.js";
+import { revokeInvitationForOutreach } from "../../src/invitations/service.js";
+import { confirmStuckSent, dailyCapacity, dispatchQueued, stuckMessages } from "../../src/outreach/dispatch.js";
 import { gmailSender } from "../../src/outreach/gmail.js";
 import { gmailOAuthConfig, openSealedToken, type GmailOAuthConfig } from "../../src/outreach/gmailAuth.js";
 import { senderFromConfig } from "../../src/outreach/sender.js";
@@ -15,7 +16,7 @@ import { createOutreachDraft, queueOutreach } from "../../src/outreach/service.j
 import { addEvidence, createProspect } from "../../src/prospects.js";
 import { ACCOUNT, CLIENT_ID, FakeGoogle, MAILBOX, aliasGoogle, fakeGmail, inbound } from "../fixtures/fakeGmail.js";
 import { TEST_DATABASE_URL, freshDb, readyForm, skipReason, truncate } from "./helpers.js";
-import { CFG, OPTS, switchOn } from "./outreachHelpers.js";
+import { CFG, OPTS, mockSender, switchOn } from "./outreachHelpers.js";
 
 /*
  * The real dispatcher and inbox reader with the Gmail adapter, against a
@@ -55,6 +56,95 @@ describe("outreach through Gmail", { skip: skipReason }, () => {
     return { p, o: outreach };
   };
   const row = (id: string) => db.outreach.findUniqueOrThrow({ where: { id } });
+
+  test("an invitation revoked after queueing cancels before any Gmail call or daily-capacity claim", async () => {
+    const { google, client } = fakeGmail();
+    const sender = gmailSender(client);
+    const { p, o } = await queued();
+    const config = { ...CFG, outreachDailyLimit: 1 };
+    await switchOn(db, sender);
+    await revokeInvitationForOutreach(db, o.id, "Wrong shop.");
+    assert.equal((await row(o.id)).status, "queued", "revocation itself leaves the message alone");
+
+    const preview = await dispatchQueued(db, { config, sender, dryRun: true });
+    assert.equal(preview.cancelled[0]?.outreachId, o.id);
+    assert.deepEqual(preview.wouldSend, []);
+    assert.equal((await row(o.id)).status, "queued", "dry run writes nothing");
+
+    const report = await dispatchQueued(db, { config, sender });
+    assert.equal(report.cancelled[0]?.outreachId, o.id);
+    assert.match(report.cancelled[0]!.reasons.join(" "), /invitation.*revoked/);
+    assert.deepEqual([report.sent, report.failed, report.uncertain, report.unavailable], [[], [], [], []]);
+    assert.equal(google.calls.length, 0, "not even a Gmail authorization or readiness call");
+    const stored = await row(o.id);
+    assert.equal(stored.status, "cancelled");
+    assert.ok(stored.cancelledAt);
+    assert.match(stored.cancelReason!, /^No longer eligible: .*invitation.*revoked/);
+    assert.deepEqual([stored.sendStartedAt, stored.sentAt, stored.sendAttempts, stored.lastSendError, stored.failedAt, stored.failureReason, stored.providerMessageId, stored.openForProspectId], [null, null, 0, null, null, null, null, null]);
+    const events = await db.outreachEvent.findMany({ where: { outreachId: o.id }, orderBy: { createdAt: "asc" } });
+    assert.deepEqual(events.map((e) => e.type), ["drafted", "queued", "cancelled"]);
+    assert.match(events[2]!.detail!, /invitation.*revoked/);
+    assert.equal((await db.prospect.findUniqueOrThrow({ where: { id: p.id } })).status, "ready_to_contact");
+    assert.deepEqual(await dailyCapacity(db, config, new Date()), { used: 0, limit: 1, remaining: 1 });
+    assert.deepEqual((await dispatchQueued(db, { config, sender })).cancelled, [], "a repeat adds no cancellation event");
+    assert.equal(await db.outreachEvent.count({ where: { outreachId: o.id, type: "cancelled" } }), 1);
+  });
+
+  test("a revoked invitation does not use the last daily slot or stop an unrelated active invitation", async () => {
+    const { google, client } = fakeGmail();
+    const sender = gmailSender(client);
+    const blocked = await queued();
+    const valid = await queued();
+    // Fix candidate order independently of clock resolution.
+    await db.outreach.update({ where: { id: blocked.o.id }, data: { queuedAt: new Date(Date.now() - 1_000) } });
+    await revokeInvitationForOutreach(db, blocked.o.id, "Wrong shop.");
+    await switchOn(db, sender);
+    const config = { ...CFG, outreachDailyLimit: 1 };
+    const report = await dispatchQueued(db, { config, sender });
+    assert.deepEqual(report.cancelled.map((c) => c.outreachId), [blocked.o.id]);
+    assert.deepEqual(report.sent.map((s) => s.outreachId), [valid.o.id]);
+    assert.equal(report.stoppedBecause, null);
+    assert.deepEqual(google.sent.map((s) => s.marker), [valid.o.id]);
+    assert.equal(google.sendCalls.length, 1);
+    assert.deepEqual([(await row(blocked.o.id)).status, (await row(valid.o.id)).status], ["cancelled", "sent"]);
+    assert.deepEqual(await dailyCapacity(db, config, new Date()), { used: 1, limit: 1, remaining: 0 });
+  });
+
+  for (const missing of [false, true]) {
+    test(`a queued follow-up cannot send after its original invitation is ${missing ? "missing" : "revoked"}`, async () => {
+      const first = await queued();
+      const initial = mockSender();
+      await switchOn(db, initial);
+      await dispatchQueued(db, { config: CFG, sender: initial });
+      const followUp = (await createOutreachDraft(db, first.p.id, { ...OPTS, followUpOfId: first.o.id })).outreach;
+      await queueOutreach(db, followUp.id, CFG);
+      if (missing) await db.invitation.delete({ where: { outreachId: first.o.id } });
+      else await revokeInvitationForOutreach(db, first.o.id, "Wrong shop.");
+      const { google, client } = fakeGmail();
+      const config = { ...CFG, outreachDailyLimit: 2 };
+      const report = await dispatchQueued(db, { config, sender: gmailSender(client) });
+      assert.deepEqual(report.cancelled.map((c) => c.outreachId), [followUp.id]);
+      assert.match(report.cancelled[0]!.reasons.join(" "), missing ? /invitation.*missing/ : /invitation.*revoked/);
+      assert.equal(google.calls.length, 0);
+      const stored = await row(followUp.id);
+      assert.deepEqual([stored.status, stored.sendStartedAt, stored.sentAt, stored.sendAttempts, stored.lastSendError], ["cancelled", null, null, 0, null]);
+      assert.equal((await row(first.o.id)).status, "sent", "the original send's history stays intact");
+      assert.deepEqual(await dailyCapacity(db, config, new Date()), { used: 1, limit: 2, remaining: 1 });
+    });
+  }
+
+  test("a queued first message whose invitation is missing is cancelled without contacting Gmail", async () => {
+    const { o } = await queued();
+    await db.invitation.delete({ where: { outreachId: o.id } });
+    const { google, client } = fakeGmail();
+    const sender = gmailSender(client);
+    await switchOn(db, sender);
+    const report = await dispatchQueued(db, { config: CFG, sender });
+    assert.deepEqual(report.cancelled.map((c) => c.outreachId), [o.id]);
+    assert.match(report.cancelled[0]!.reasons.join(" "), /invitation.*missing/);
+    assert.equal(google.calls.length, 0);
+    assert.deepEqual([(await row(o.id)).status, (await row(o.id)).sendStartedAt], ["cancelled", null]);
+  });
 
   test("a send through Gmail stores Gmail's id and moves the prospect; the kill switch still rules", async () => {
     const { google, client } = fakeGmail();
