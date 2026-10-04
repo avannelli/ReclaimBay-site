@@ -10,6 +10,7 @@ import { gmailSender } from "../../src/outreach/gmail.js";
 import { gmailOAuthConfig, openSealedToken, type GmailOAuthConfig } from "../../src/outreach/gmailAuth.js";
 import { senderFromConfig } from "../../src/outreach/sender.js";
 import { pollGmailInbox } from "../../src/outreach/gmailInbox.js";
+import { inboxLogLines } from "../../src/outreach/inboxLog.js";
 import { createOutreachDraft, queueOutreach } from "../../src/outreach/service.js";
 import { addEvidence, createProspect } from "../../src/prospects.js";
 import { ACCOUNT, CLIENT_ID, FakeGoogle, MAILBOX, aliasGoogle, fakeGmail, inbound } from "../fixtures/fakeGmail.js";
@@ -215,6 +216,18 @@ describe("outreach through Gmail", { skip: skipReason }, () => {
     assert.deepEqual([by("in-unsub").kind, by("in-unsub").result], ["unsubscribe", "recorded"]);
     assert.deepEqual([by("in-stranger").kind, by("in-stranger").result], ["reply", "unmatched"]);
     assert.deepEqual([by("in-delay").kind, by("in-delay").result], ["delay", "ignored"]);
+
+    // What the job prints for this run: counts, and for matched mail only its kind, result, and our id.
+    const printed = inboxLogLines(r, { apply: true, mailbox: ACCOUNT }).join("\n");
+    for (const i of r.items) {
+      if (i.subject !== "unsubscribe") assert.ok(!printed.includes(i.subject), `subject never printed: ${i.subject}`);
+      if (i.from !== ACCOUNT) assert.ok(!printed.includes(i.from), `sender never printed: ${i.from}`);
+    }
+    assert.match(printed, /auto-replies 1, delays 1, unmatched 1, matched 3/);
+    assert.match(printed, /matched: .*reply recorded 1/);
+    assert.match(printed, /bounce recorded 1/);
+    assert.match(printed, /unsubscribe recorded 1/);
+    assert.ok(printed.includes(`reply recorded -> ${a.o.id}`), "matched mail keeps our message id");
 
     const ra = await row(a.o.id);
     assert.deepEqual([ra.status, ra.replyOutcome, ra.replySummary], ["replied", null, "Sounds interesting, call me."], "recorded unclassified, for a person");

@@ -431,7 +431,11 @@ example every 5 minutes. It is a dry run by default; `--apply` records.
   because a bounce carries Gmail's message id as its event id and a second
   reply to a replied message is a duplicate.
 - It matches by Gmail thread, then by the marker quoted in a bounce, then by
-  the sender's address. Unmatched mail is only reported.
+  the sender's address. Unmatched mail is only counted.
+- It prints counts only: own mail, auto-replies, delays, unmatched, and
+  matched mail by kind and result, with our message id for each match. Never a
+  sender's address, a subject, or any content
+  ([`src/outreach/inboxLog.ts`](src/outreach/inboxLog.ts)).
 - Gmail push notifications (a Pub/Sub watch, renewed every 7 days) could
   trigger a run sooner. That is extra infrastructure this volume doesn't need.
 

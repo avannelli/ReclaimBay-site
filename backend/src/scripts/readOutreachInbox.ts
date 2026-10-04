@@ -8,6 +8,8 @@
  *
  * Needs OUTREACH_PROVIDER=gmail and an authorized mailbox (see OUTREACH.md).
  * Fails closed if the authorization was revoked: nothing is recorded.
+ *
+ * It prints counts only (inboxLogLines): never a sender, subject, or content.
  */
 import { parseArgs } from "node:util";
 import { loadConfig } from "../config.js";
@@ -15,6 +17,7 @@ import { createDb } from "../db.js";
 import { GmailClient } from "../outreach/gmail.js";
 import { gmailCredentialsFromConfig } from "../outreach/gmailAuth.js";
 import { pollGmailInbox } from "../outreach/gmailInbox.js";
+import { inboxLogLines } from "../outreach/inboxLog.js";
 
 const { values } = parseArgs({ options: { apply: { type: "boolean", default: false }, days: { type: "string", default: "7" } } });
 const config = loadConfig();
@@ -33,11 +36,7 @@ const db = createDb(config.databaseUrl);
 try {
   const apply = values.apply === true;
   const r = await pollGmailInbox(db, new GmailClient(gmail), { apply, lookbackDays: Math.max(1, Number.parseInt(values.days ?? "7", 10) || 7) });
-  console.log(`${apply ? "APPLIED" : "DRY RUN (nothing is recorded; pass --apply)"}: ${r.checked} message(s) read from ${gmail.account}'s mailbox.`);
-  for (const i of r.items) {
-    if (i.kind === "own") continue;
-    console.log(`  ${i.kind.padEnd(14)} ${i.result.padEnd(14)} ${i.from} "${i.subject}"${i.outreachId ? ` -> ${i.outreachId}` : ""}`);
-  }
+  for (const line of inboxLogLines(r, { apply, mailbox: gmail.account })) console.log(line);
 } finally {
   await db.$disconnect();
 }
