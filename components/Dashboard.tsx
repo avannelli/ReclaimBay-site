@@ -9,6 +9,7 @@ import {
   undatedSplitNote,
 } from "@/lib/format";
 import { trackEvent, trackExport } from "@/lib/analytics";
+import { CONTACT_EMAIL, contactMailto } from "@/lib/contact";
 import { buildOpportunitiesCsv, exportFileName } from "@/lib/exportCsv";
 import { downloadSummaryPdf } from "@/lib/pdfReport";
 import { readTourState, saveTourState, type TourState } from "@/lib/prefs";
@@ -16,12 +17,14 @@ import { scrollPageTo } from "@/lib/scroll";
 import { buildSummaryText } from "@/lib/summaryText";
 import type { Analysis } from "@/lib/types";
 import BarBreakdown from "./BarBreakdown";
+import ContactLink from "./ContactLink";
 import { CountUp, FillBar, Reveal } from "./motion";
 import OpportunityList from "./OpportunityList";
 import { Dialog, InfoTip, dialogPrimary, dialogSecondary } from "./overlay";
 import PrivacyBadge from "./PrivacyBadge";
 import ReportTour from "./ReportTour";
 import SummaryBar from "./SummaryBar";
+import { button, size } from "./ui";
 
 interface Props {
   fileName: string;
@@ -302,6 +305,77 @@ const UTILITY_ICONS = {
   check: actionIcon("m4.5 10.5 3.5 3.5 7.5-8"),
   tour: actionIcon("M10 17.5a7.5 7.5 0 1 0 0-15 7.5 7.5 0 0 0 0 15zM12.9 7.1l-1.6 4.2-4.2 1.6 1.6-4.2z"),
 };
+
+// Links (not buttons) never match :enabled, so their hover is set here.
+const contactButton = `${button.primary} ${size.md} hover:bg-opportunity-hover active:brightness-95`;
+
+/**
+ * The report's closing next step: talk to ReclaimBay. The mailto link and
+ * the address are fixed constants (lib/contact.ts); nothing from the report
+ * goes into either. Clicking the button or copying the address records
+ * contact_clicked, with the report's usual sample flag.
+ */
+function ContactCard({ isSample }: { isSample: boolean }) {
+  const [copied, setCopied] = useState<"idle" | "copied" | "failed">("idle");
+  const timer = useRef(0);
+  useEffect(() => () => window.clearTimeout(timer.current), []);
+  const copyAddress = async () => {
+    trackEvent("contact_clicked", isSample);
+    let ok: boolean;
+    try {
+      await navigator.clipboard.writeText(CONTACT_EMAIL);
+      ok = true;
+    } catch {
+      ok = legacyCopy(CONTACT_EMAIL);
+    }
+    setCopied(ok ? "copied" : "failed");
+    window.clearTimeout(timer.current);
+    timer.current = window.setTimeout(() => setCopied("idle"), 2500);
+  };
+  return (
+    <section
+      aria-labelledby="contact-heading"
+      className="flex flex-col gap-5 rounded-2xl border border-line bg-surface px-5 py-6 shadow-sm sm:px-6 lg:flex-row lg:items-center lg:justify-between lg:gap-10"
+    >
+      <div className="max-w-2xl">
+        <h2 id="contact-heading" className="text-lg font-semibold tracking-tight text-navy">
+          Want help acting on this?
+        </h2>
+        <p className="mt-1.5 text-sm leading-relaxed text-pretty text-ink-2">
+          We&rsquo;re working with a small group of independent shops on turning
+          declined work into booked jobs. Tell us about your shop. Your report
+          stays on this device; we never see it.
+        </p>
+      </div>
+      <div className="flex flex-col gap-2.5 sm:flex-row sm:items-center sm:gap-4 lg:shrink-0 lg:flex-col lg:items-end lg:gap-2">
+        <a href={contactMailto()} onClick={() => trackEvent("contact_clicked", isSample)} className={contactButton}>
+          Talk to ReclaimBay
+        </a>
+        <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+          <span className="text-sm font-medium text-ink-2">{CONTACT_EMAIL}</span>
+          <UtilityAction onClick={copyAddress} icon={copied === "copied" ? UTILITY_ICONS.check : UTILITY_ICONS.copy}>
+            {/* Both labels share one grid cell so the width never changes. */}
+            <span className="grid">
+              <span aria-hidden className="invisible col-start-1 row-start-1">
+                Copied
+              </span>
+              <span className="col-start-1 row-start-1 text-left">
+                {copied === "copied" ? "Copied" : copied === "failed" ? "Copy failed" : "Copy"}
+              </span>
+            </span>
+          </UtilityAction>
+          <span role="status" className="sr-only">
+            {copied === "copied"
+              ? "Email address copied to the clipboard"
+              : copied === "failed"
+                ? "Copying failed. Your browser blocked clipboard access."
+                : ""}
+          </span>
+        </div>
+      </div>
+    </section>
+  );
+}
 
 export default function Dashboard({
   fileName,
@@ -646,6 +720,12 @@ export default function Dashboard({
                     <path d="M8 3v10M4 9l4 4 4-4" />
                   </svg>
                 </a>
+                <div className="mt-4 border-t border-white/10 pt-3">
+                  <ContactLink
+                    isSample={isSample}
+                    className="text-slate-400 decoration-slate-500 hover:text-white focus-visible:outline-opportunity"
+                  />
+                </div>
               </div>
             )}
           </div>
@@ -839,6 +919,10 @@ export default function Dashboard({
             )}
           </div>
         </details>
+      </Reveal>
+
+      <Reveal delay={100} className="print:hidden">
+        <ContactCard isSample={isSample} />
       </Reveal>
 
       <Reveal delay={100} className="print:hidden">

@@ -12,7 +12,7 @@
  * the tour, and exports never depend on analytics.
  */
 
-type ProductEvent = "landing_view" | "upload_started" | "scan_completed" | "tour_completed";
+type ProductEvent = "landing_view" | "upload_started" | "scan_completed" | "tour_completed" | "contact_clicked";
 export type ExportType = "pdf" | "csv" | "copied_summary";
 
 const API_URL = (process.env.NEXT_PUBLIC_ANALYTICS_API_URL ?? "").trim().replace(/\/+$/, "");

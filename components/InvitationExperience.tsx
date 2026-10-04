@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { openInvitation, tokenFromHash, type InvitationState } from "@/lib/invitation";
+import ContactLink from "./ContactLink";
 import { button, size } from "./ui";
 
 /*
@@ -11,7 +12,8 @@ import { button, size } from "./ui";
  * has answered, then exactly one of: the invitation, "no longer available"
  * (for a missing, unknown, revoked, or opted-out link alike, never saying
  * which), or "couldn't open" (the backend unreachable: never shown as a valid
- * invitation). Every action leads only to ReclaimBay's own home page.
+ * invitation). Every action leads only to ReclaimBay's own home page, or (on
+ * an active invitation) to its fixed contact address.
  */
 
 // Links (not buttons) never match :enabled, so their hover is set here.
@@ -140,6 +142,9 @@ export default function InvitationExperience() {
         <Link href="/" className={`${primaryLink} w-full sm:w-auto sm:min-w-56`}>
           Get started free
         </Link>
+      </div>
+      <div className="mt-5">
+        <ContactLink className="text-ink-3 decoration-slate-300 hover:text-navy focus-visible:outline-navy" />
       </div>
     </Card>
   );
