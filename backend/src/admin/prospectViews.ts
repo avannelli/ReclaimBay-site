@@ -44,6 +44,7 @@ import {
   statusBadge,
   stepper,
   type FieldErrors,
+  INTERNAL_TEST_TAG,
 } from "./ui.js";
 
 /* Admin pages for prospects. Server-rendered, no scripts, all values escaped. */
@@ -89,7 +90,7 @@ export function prospectListPage(opts: {
       const loc = [p.city, p.state].filter(Boolean).join(", ");
       const contact = [p.phone && '<span class="tag">Phone</span>', p.email && '<span class="tag">Email</span>'].filter(Boolean).join(" ");
       return `<tr>
-  <td><a class="name" href="/admin/prospects/${esc(p.id)}">${esc(p.businessName ?? "Unnamed prospect")}</a>${p.website ? `<div class="sub">${extLink(p.website)}</div>` : ""}</td>
+  <td><a class="name" href="/admin/prospects/${esc(p.id)}">${esc(p.businessName ?? "Unnamed prospect")}</a>${p.internalTest ? ` ${INTERNAL_TEST_TAG}` : ""}${p.website ? `<div class="sub">${extLink(p.website)}</div>` : ""}</td>
   <td class="hide-md" data-label="Location">${loc ? esc(loc) : '<span class="muted">—</span>'}${p.postalCode ? `<div class="sub">${esc(p.postalCode)}</div>` : ""}</td>
   <td data-label="Status">${statusBadge(p.status)}</td>
   <td data-label="Qualification">${qualificationBadge(result.qualification)}</td>
@@ -114,7 +115,7 @@ export function prospectListPage(opts: {
     `${pageHead({
       title: "Prospects",
       lede: "The businesses in your pipeline, tracked from first research to customer.",
-      actions: `<a class="btn" href="/admin/prospects/new">+ Add prospect</a>`,
+      actions: `<a class="btn" href="/admin/prospects/new">+ Add prospect</a><a class="btn btn-ghost" href="/admin/prospects/internal-test">Internal outreach test</a>`,
     })}
 <nav class="chips" aria-label="Filter by status">${chips}</nav>
 <form class="card filters" method="get" action="/admin/prospects" role="search" aria-label="Search and filter prospects">
@@ -252,27 +253,30 @@ const GATE_NOTES: Partial<Record<Status, string>> = {
 };
 
 export function prospectFormPage(
-  opts: { mode: "new" } | { mode: "edit"; id: string; name: string | null; status?: Status },
+  opts: { mode: "new" } | { mode: "internal" } | { mode: "edit"; id: string; name: string | null; status?: Status },
   values: Values,
   errors?: string[],
 ): string {
   const editing = opts.mode === "edit";
-  const action = editing ? `/admin/prospects/${esc(opts.id)}` : "/admin/prospects";
-  const title = editing ? `Edit ${opts.name ?? "prospect"}` : "Add prospect";
+  const internal = opts.mode === "internal";
+  const action = editing ? `/admin/prospects/${esc(opts.id)}` : internal ? "/admin/prospects/internal-test" : "/admin/prospects";
+  const title = editing ? `Edit ${opts.name ?? "prospect"}` : internal ? "Add internal outreach test" : "Add prospect";
   const fe = fieldErrors(errors);
   const gate = editing && opts.status ? GATE_NOTES[opts.status] : undefined;
   return appPage(
     `${title} · ReclaimBay admin`,
     "prospects",
-    `${crumbs([{ label: "Prospects", href: "/admin/prospects" }, ...(editing ? [{ label: opts.name ?? "Prospect", href: action }, { label: "Edit" }] : [{ label: "Add prospect" }])])}
-${pageHead({ title, lede: editing ? "Same steps as adding a prospect. Every rule is checked when you save." : "Record what public sources show. Qualification and the opportunity score are worked out from what you enter." })}
+    `${crumbs([{ label: "Prospects", href: "/admin/prospects" }, ...(editing ? [{ label: opts.name ?? "Prospect", href: action }, { label: "Edit" }] : [{ label: title }])])}
+${pageHead({ title, lede: editing ? "Same steps as adding a prospect. Every rule is checked when you save." : internal ? "A stand-in business whose email is a mailbox ReclaimBay controls, to prove outreach end to end." : "Record what public sources show. Qualification and the opportunity score are worked out from what you enter." })}
 ${errorSummary(errors, fe)}
+${internal ? `<div class="callout warn" style="margin-bottom:14px"><b>Internal test, not a business.</b> It is marked as an internal test permanently, from creation: that can't be changed later, and a real prospect can never be marked this way. It is drafted, queued, and sent exactly like any prospect, through every check (the deployment arm, the switch, the provider, the daily limit, recipient and suppression rules, the send gate), and needs the same qualification. Its activity is left out of the outreach funnel, the analytics summary, and prospect intent. Use a mailbox you control that is <b>not</b> the outreach account or its aliases, so replies from it reach the inbox reader.</div>` : ""}
 ${gate ? `<div class="callout warn" style="margin-bottom:14px">${gate}</div>` : ""}
 <form method="post" action="${action}" class="stack" novalidate>
   ${businessSections(values, fe)}
   ${signalSections(values, fe)}
   ${fieldset(6, "Review and save", `<p class="fs-note" style="margin:0 0 12px">${editing ? "Saving recalculates the score and re-checks the status requirements." : "The prospect starts as <b>New</b>. You can move it through the pipeline after creating it."}</p>
-  <div class="form-foot"><button type="submit" class="btn-primary-lg">${editing ? "Save changes" : "Create prospect"}</button><a class="btn btn-secondary btn-primary-lg" href="${editing ? action : "/admin/prospects"}">Cancel</a></div>`)}
+  ${internal ? `<label class="check" style="margin:0 0 12px;display:flex;gap:8px;align-items:flex-start"><input type="checkbox" name="confirmInternalTest" value="yes"${values.confirmInternalTest === "yes" ? " checked" : ""}${(fe.byField.get("confirmInternalTest") ?? []).length ? ' aria-invalid="true"' : ""}> <span>This is ReclaimBay's own internal outreach test, not a business. It stays marked as one permanently.</span></label>` : ""}
+  <div class="form-foot"><button type="submit" class="btn-primary-lg">${editing ? "Save changes" : internal ? "Create internal test" : "Create prospect"}</button><a class="btn btn-secondary btn-primary-lg" href="${editing ? action : "/admin/prospects"}">Cancel</a></div>`)}
 </form>`,
   );
 }
@@ -370,9 +374,10 @@ ${statusErrs.map((e) => `<div class="ferr">${esc(e)}</div>`).join("")}
 ${notice(opts.notice)}${errorSummary(opts.errors, fe, "Not done")}
 ${pageHead({
   title: p.businessName ?? "Unnamed prospect",
-  badges: `${statusBadge(p.status)}${location ? `<span class="muted">${esc(location)}</span>` : ""}<span class="muted small">Status since ${fmtDay(p.statusChangedAt)}</span>`,
+  badges: `${statusBadge(p.status)}${p.internalTest ? INTERNAL_TEST_TAG : ""}${location ? `<span class="muted">${esc(location)}</span>` : ""}<span class="muted small">Status since ${fmtDay(p.statusChangedAt)}</span>`,
   actions: `<a class="btn" href="/admin/prospects/${id}/edit">Edit</a>${allowed.length ? `<a class="btn btn-secondary" href="#status">Change status</a>` : ""}`,
 })}
+${p.internalTest ? `<div class="callout warn" style="margin-bottom:14px"><b>Internal outreach test.</b> Not a business: ReclaimBay's own mailbox. It is sent through every normal check, and its activity is left out of the outreach funnel, the analytics summary, and prospect intent. Its own activity is shown below.</div>` : ""}
 ${stale ? `<div class="callout warn" style="margin-bottom:14px">The saved score (${p.score}, ${esc(p.scoreVersion ?? "never scored")}) differs from the current scoring ${esc(SCORING_VERSION)}. Saving the prospect or running <code>npm run prospects:rescore</code> updates it. The numbers on this page are always current.</div>` : ""}
 
 <div class="grid-2">

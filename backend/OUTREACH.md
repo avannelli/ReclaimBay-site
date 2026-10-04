@@ -644,7 +644,39 @@ Each figure is counted at one level, by one campaign:
   be compared with outcomes even after rescoring. Messages queued before this
   was recorded have none; nothing back-fills them.
 
+- **Internal tests are left out.** Messages, invitations, opt-outs, and status
+  history of an [internal outreach test](#internal-outreach-test) prospect
+  never count here.
+
 Revenue isn't recorded yet; billing comes later.
+
+## Internal outreach test
+
+To prove the whole path once (prepare, queue, the sender job, Gmail, the
+invitation link, a reply, the inbox job) before any real business is emailed,
+a prospect can be created as an **internal outreach test**: ReclaimBay's own
+mailbox standing in for a business.
+
+- **One explicit mark, in the database.** `Prospect.internalTest`, set only by
+  its own admin form (Prospects, **Internal outreach test**), which requires
+  confirming "This is ReclaimBay's own internal outreach test, not a
+  business". It is permanent: no edit, status change, import, or approval
+  reads or writes it, so a real prospect can never become a test and a test
+  can never become real. No name, address, or campaign convention is involved.
+- **No exceptions.** It is drafted, queued (by a person), and sent by the same
+  code as any prospect: the same qualification and published-email rules, the
+  deployment arm, the switch, the provider's checks, the daily limit (a test
+  send uses it), recipient ownership, suppression, the send gate, and the
+  inbox reader's usual matching. A unit test enforces that no sending or inbox
+  module mentions it.
+- **Left out of the business numbers:** the outreach funnel (above), and the
+  analytics summary and prospect intent on the admin dashboard. Operations
+  still show it, labelled **Internal test**: the Outreach page's counts and
+  needs-attention list, the messages, replies, and activity views, and its own
+  prospect page with its activity.
+- **Use a mailbox you control that isn't the outreach account or any of its
+  aliases.** The inbox reader ignores mail from those addresses (its own), so
+  a reply from them would never be recorded.
 
 ## Safety checklist before the first real email
 

@@ -26,6 +26,7 @@ import {
   addEvidence,
   addNote,
   changeStatus,
+  createInternalTestProspect,
   createProspect,
   deleteEvidence,
   formValuesOf,
@@ -215,6 +216,19 @@ export async function adminRoutes(app: FastifyInstance, opts: { config: Config; 
   });
 
   app.get("/admin/prospects/new", (_req, reply) => html(reply, prospectFormPage({ mode: "new" }, {})));
+
+  // An internal outreach test prospect: its own form and route, the only way one is created.
+  app.get("/admin/prospects/internal-test", (_req, reply) => html(reply, prospectFormPage({ mode: "internal" }, {})));
+
+  app.post<{ Body: Form }>("/admin/prospects/internal-test", writeLimit, async (req, reply) => {
+    try {
+      const prospect = await createInternalTestProspect(db, req.body ?? {});
+      req.log.info({ prospectId: prospect.id, internalTest: true }, "internal test prospect created");
+      return reply.redirect(`/admin/prospects/${prospect.id}?done=created`, 303);
+    } catch (err) {
+      return handleError(err, reply, (errors) => html(reply, prospectFormPage({ mode: "internal" }, req.body ?? {}, errors), reply.statusCode));
+    }
+  });
 
   app.post<{ Body: Form }>("/admin/prospects", writeLimit, async (req, reply) => {
     try {

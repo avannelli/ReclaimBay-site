@@ -244,6 +244,8 @@ export interface ProspectDetails {
   observedAt?: Partial<Record<string, Date>>;
   evidence?: { signalKey: string; sourceUrl: string; excerpt: string; createdAt?: Date }[];
   notes?: string[];
+  /** Only createInternalTestProspect sets this. */
+  internalTest?: boolean;
 }
 
 /**
@@ -259,6 +261,7 @@ export async function insertProspect(tx: Tx, input: ProspectInput, referralCode:
       referralCode,
       status: "new",
       statusChangedAt: now,
+      internalTest: details.internalTest === true,
       ...scoreData(scoringInputOf(input), now),
     },
   });
@@ -276,7 +279,7 @@ export async function insertProspect(tx: Tx, input: ProspectInput, referralCode:
     await tx.prospectNote.createMany({ data: details.notes.map((body) => ({ prospectId: prospect.id, body })) });
   }
   await tx.prospectStatusChange.create({
-    data: { prospectId: prospect.id, fromStatus: null, toStatus: "new", reason: "Created", createdAt: now },
+    data: { prospectId: prospect.id, fromStatus: null, toStatus: "new", reason: details.internalTest ? "Created as an internal outreach test" : "Created", createdAt: now },
   });
   return prospect;
 }
@@ -284,11 +287,35 @@ export async function insertProspect(tx: Tx, input: ProspectInput, referralCode:
 export async function createProspect(db: Db, raw: Raw) {
   const { input, errors } = parseProspectInput(raw);
   if (errors.length) throw new ProspectError(errors);
+  return insertWithFreshCode(db, input);
+}
 
+/** The note an internal test prospect carries from creation. */
+export const INTERNAL_TEST_NOTE =
+  "Internal outreach test: ReclaimBay's own mailbox standing in for a business. Every sending check applies as for any prospect; it is left out of the outreach funnel, the analytics summary, and prospect intent.";
+
+/**
+ * Creates an internal outreach test prospect: the only way a prospect is ever
+ * marked internalTest, and only with the explicit confirmation from its own
+ * admin form. Otherwise exactly createProspect: the same validation,
+ * qualification, and (later) the same drafting, queueing, and sending checks.
+ * The mark is never changed afterwards: no edit, status change, or import
+ * reads or writes it.
+ */
+export async function createInternalTestProspect(db: Db, raw: Raw) {
+  const { input, errors } = parseProspectInput(raw);
+  if (raw.confirmInternalTest !== "yes") {
+    errors.push("Confirm that this is ReclaimBay's own internal outreach test, not a business.");
+  }
+  if (errors.length) throw new ProspectError(errors);
+  return insertWithFreshCode(db, input, { internalTest: true, notes: [INTERNAL_TEST_NOTE] });
+}
+
+async function insertWithFreshCode(db: Db, input: ProspectInput, details: ProspectDetails = {}) {
   // A code collision is astronomically unlikely, but retry rather than fail.
   for (let attempt = 0; ; attempt++) {
     try {
-      return await db.$transaction((tx) => insertProspect(tx, input, generateReferralCode()));
+      return await db.$transaction((tx) => insertProspect(tx, input, generateReferralCode(), details));
     } catch (err) {
       const target = (err as { meta?: { target?: unknown } }).meta?.target;
       const isCodeClash = (err as { code?: string }).code === "P2002" && String(target ?? "").includes("referralCode");

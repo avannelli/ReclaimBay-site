@@ -26,6 +26,9 @@ export const signalLabel = (key: string) => SIGNAL_DEFS.find((s) => s.key === ke
 
 // ---------- badges ----------
 
+/** The tag every view shows for an internal outreach test prospect (Prospect.internalTest). */
+export const INTERNAL_TEST_TAG = '<span class="tag" style="border-color:var(--amber);color:var(--warn)">Internal test</span>';
+
 export const statusBadge = (s: Status) => `<span class="st st-${s}">${esc(STATUS_LABELS[s])}</span>`;
 export const candidateBadge = (s: CandidateStatus) => `<span class="st cs-${s}">${esc(CANDIDATE_STATUS_LABELS[s])}</span>`;
 export const qualificationBadge = (q: Qualification, extraClass = "") =>

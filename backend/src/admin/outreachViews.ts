@@ -21,7 +21,7 @@ import type { getOutreachDetail, outreachAttention, prospectOutreach } from "../
 import { FIELD_LIMITS, scoringInputFromRecord } from "../prospects.js";
 import { MAX_SCORE, bandFor, scoreProspect } from "../scoring.js";
 import { appPage } from "./views.js";
-import { bandBadge, crumbs, emptyState, errorSummary, esc, extLink, fieldErrors, fmtDate, notice, options, pageHead, qualificationBadge, section, statusBadge } from "./ui.js";
+import { bandBadge, crumbs, emptyState, errorSummary, esc, extLink, fieldErrors, fmtDate, notice, options, pageHead, qualificationBadge, section, statusBadge, INTERNAL_TEST_TAG } from "./ui.js";
 
 /* Admin pages for outreach. Server-rendered, no scripts, all values escaped. */
 
@@ -95,8 +95,8 @@ function statusReason(m: MessageRow): string {
 const replyLabel = (m: Pick<MessageRow, "status" | "replyOutcome">) =>
   m.status !== "replied" ? '<span class="muted">—</span>' : m.replyOutcome ? esc(REPLY_OUTCOME_LABELS[m.replyOutcome]) : "<b>Not yet classified</b>";
 
-const businessCell = (p: { id: string; businessName: string | null }, sub?: string) =>
-  `<a class="name" href="/admin/prospects/${esc(p.id)}">${esc(p.businessName ?? "Prospect")}</a>${sub ? `<div class="sub">${esc(sub)}</div>` : ""}`;
+const businessCell = (p: { id: string; businessName: string | null; internalTest?: boolean }, sub?: string) =>
+  `<a class="name" href="/admin/prospects/${esc(p.id)}">${esc(p.businessName ?? "Prospect")}</a>${p.internalTest ? ` ${INTERNAL_TEST_TAG}` : ""}${sub ? `<div class="sub">${esc(sub)}</div>` : ""}`;
 
 const campaignCell = (c: string | null) => (c ? `<code style="white-space:nowrap">${esc(c)}</code>` : '<span class="muted">—</span>');
 
@@ -305,7 +305,7 @@ export function outreachDetailPage(opts: { detail: Detail; invitation?: Invitati
 ${notice(opts.notice)}${errorSummary(opts.errors, fe, "Not done")}
 ${pageHead({
   title: o.subject,
-  badges: `${outreachBadge(o.status)}<span class="muted small">${esc(OUTREACH_KIND_LABELS[o.kind])}</span><span class="muted small">Prospect: ${statusBadge(o.prospect.status)}</span>`,
+  badges: `${outreachBadge(o.status)}${o.prospect.internalTest ? INTERNAL_TEST_TAG : ""}<span class="muted small">${esc(OUTREACH_KIND_LABELS[o.kind])}</span><span class="muted small">Prospect: ${statusBadge(o.prospect.status)}</span>`,
 })}
 ${messageState(o)}
 ${o.suppressed ? `<div class="callout warn" style="margin-bottom:14px">${esc(o.recipientEmail)} is suppressed: it will never be emailed again.</div>` : ""}

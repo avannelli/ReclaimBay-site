@@ -128,19 +128,23 @@ const empty = (campaign: string): FunnelRow => ({
   lost: 0,
 });
 
-/** One row per campaign, plus a total row ("all"). */
+/** Real outreach only: an internal test prospect (Prospect.internalTest) is never counted in the funnel. */
+export const REAL_PROSPECT = { internalTest: false } satisfies Prisma.ProspectWhereInput;
+
+/** One row per campaign, plus a total row ("all"). Internal tests are left out. */
 export async function outreachMetrics(db: Db): Promise<FunnelRow[]> {
   const [messages, optOuts, invitations, history] = await Promise.all([
     db.outreach.findMany({
+      where: { prospect: REAL_PROSPECT },
       select: { id: true, prospectId: true, kind: true, campaign: true, status: true, queuedAt: true, sentAt: true, replyOutcome: true },
       orderBy: { createdAt: "asc" },
     }),
     // Only the two event types that aren't statuses, not every message's whole log.
-    db.outreachEvent.findMany({ where: { type: { in: ["unsubscribed", "complained"] } }, select: { outreachId: true, type: true } }),
-    db.invitation.findMany({ where: SENT_INVITATION, select: { id: true, campaign: true, firstOpenedAt: true } }),
+    db.outreachEvent.findMany({ where: { type: { in: ["unsubscribed", "complained"] }, outreach: { prospect: REAL_PROSPECT } }, select: { outreachId: true, type: true } }),
+    db.invitation.findMany({ where: { ...SENT_INVITATION, prospect: REAL_PROSPECT }, select: { id: true, campaign: true, firstOpenedAt: true } }),
     // Outcome statuses of emailed prospects only; which of them fall in the round is decided below.
     db.prospectStatusChange.findMany({
-      where: { toStatus: { in: OUTCOME_STATUSES }, prospect: { outreach: { some: { sentAt: { not: null } } } } },
+      where: { toStatus: { in: OUTCOME_STATUSES }, prospect: { ...REAL_PROSPECT, outreach: { some: { sentAt: { not: null } } } } },
       select: { prospectId: true, toStatus: true, createdAt: true },
     }),
   ]);

@@ -55,6 +55,10 @@ no arguments, so nothing from a report can reach it, and nothing about it is
 sent here except the `contact_clicked` event above. A contact click counts as
 high intent in the admin funnel.
 
+Activity of an internal outreach test prospect (see
+[OUTREACH.md](OUTREACH.md#internal-outreach-test)) is left out of the admin
+dashboard's numbers and prospect rows; it shows only on its own prospect page.
+
 ## Referral links
 
 ```

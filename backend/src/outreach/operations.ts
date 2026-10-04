@@ -97,7 +97,7 @@ const MESSAGE_SELECT = {
   repliedAt: true,
   replyOutcome: true,
   replySummary: true,
-  prospect: { select: { id: true, businessName: true } },
+  prospect: { select: { id: true, businessName: true, internalTest: true } },
   invitation: { select: { id: true, firstOpenedAt: true, openCount: true, revokedAt: true } },
 } satisfies Prisma.OutreachSelect;
 
@@ -192,7 +192,7 @@ async function activityRows(db: Db, items: Awaited<ReturnType<typeof invitationA
       firstOpenedAt: true,
       openCount: true,
       revokedAt: true,
-      prospect: { select: { id: true, businessName: true } },
+      prospect: { select: { id: true, businessName: true, internalTest: true } },
       outreach: { select: { id: true, subject: true, status: true, recipientEmail: true } },
     },
   });
@@ -226,6 +226,7 @@ export interface EligibleRow {
   emailSourceUrl: string | null;
   score: number;
   qualification: ReturnType<typeof scoreProspect>["qualification"];
+  internalTest: boolean;
   known: number;
   totalSignals: number;
   evidence: number;
@@ -259,6 +260,7 @@ export async function listEligible(db: Db, f: MessageFilters, opts: { draft: Dra
         emailSourceUrl: p.emailSourceUrl,
         score: result.score,
         qualification: result.qualification,
+        internalTest: p.internalTest,
         known: result.known,
         totalSignals: result.total,
         evidence: p._count.evidence,

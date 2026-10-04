@@ -48,17 +48,25 @@ interface EventCountRow {
   sessions: number;
 }
 
+/*
+ * Internal outreach tests (Prospect.internalTest) are left out of every number
+ * here: their sessions and events are ReclaimBay's own, not a business's. A
+ * test's activity shows only on its own prospect page.
+ */
 export async function loadSummary(db: Db): Promise<Summary> {
   const [counts, visitors, attributed] = await Promise.all([
     db.$queryRaw<EventCountRow[]>`
-      SELECT "eventType"::text AS "eventType", "isSample",
-             COUNT(*)::int AS events, COUNT(DISTINCT "sessionId")::int AS sessions
-      FROM "ProductEvent"
+      SELECT e."eventType"::text AS "eventType", e."isSample",
+             COUNT(*)::int AS events, COUNT(DISTINCT e."sessionId")::int AS sessions
+      FROM "ProductEvent" e
+      LEFT JOIN "Prospect" p ON p.id = e."prospectId"
+      WHERE p."internalTest" IS NOT TRUE
       GROUP BY 1, 2`,
-    db.analyticsSession.count(),
+    db.analyticsSession.count({ where: { OR: [{ prospectId: null }, { prospect: { internalTest: false } }] } }),
     db.$queryRaw<{ n: number }[]>`
-      SELECT COUNT(DISTINCT "prospectId")::int AS n
-      FROM "AnalyticsSession" WHERE "prospectId" IS NOT NULL`,
+      SELECT COUNT(DISTINCT s."prospectId")::int AS n
+      FROM "AnalyticsSession" s JOIN "Prospect" p ON p.id = s."prospectId"
+      WHERE NOT p."internalTest"`,
   ]);
 
   const pick = (eventType: string, isSample: boolean) =>
@@ -106,6 +114,7 @@ export async function loadProspectRows(db: Db): Promise<ProspectRow[]> {
              MAX(e."createdAt") AS "lastActivity"
       FROM "Prospect" p
       LEFT JOIN "ProductEvent" e ON e."prospectId" = p.id
+      WHERE NOT p."internalTest"
       GROUP BY p.id
       ORDER BY "lastActivity" DESC NULLS LAST, p."createdAt" DESC`,
     db.$queryRaw<RawProspectRow[]>`

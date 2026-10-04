@@ -28,7 +28,8 @@ const GATED: Record<string, Record<string, number>> = {
 const UNGATED: Record<string, string[]> = {
   "outreach/dispatch.ts": [],
   "outreach/service.ts": ["createOutreachDraft"],
-  "prospects.ts": ["createProspect"],
+  // Creating a prospect (createProspect, createInternalTestProspect): a New prospect with no messages.
+  "prospects.ts": ["insertWithFreshCode"],
   "invitations/service.ts": ["createInvitationForOutreach", "openInvitation"],
 };
 
