@@ -268,6 +268,22 @@ function queueAction(item: QueueItem, view: QueueView): string {
   }
 }
 
+/**
+ * What the automation decided, above the lanes: most businesses are approved
+ * or rejected by the rules (approval@a1, rejection@r1), so Review is the
+ * exception a person handles.
+ */
+function automationSummary(a: Queue["automation"]): string {
+  const item = (label: string, n: number, sub?: string) => `<div><dt>${esc(label)}${sub ? ` <span style="font-weight:400">${esc(sub)}</span>` : ""}</dt><dd>${n}</dd></div>`;
+  return `<section aria-label="What the automation decided" style="margin-bottom:16px"><dl class="metrics">
+${item("Auto-approved", a.autoApproved, a.approved > a.autoApproved ? `(+${a.approved - a.autoApproved} by a person)` : undefined)}
+${item("Review", a.review, "a person decides")}
+${item("Rejected", a.rejected, a.autoRejected ? `(${a.autoRejected} automatically)` : undefined)}
+${item("Researching", a.researching)}
+${item("Not researched", a.notResearched)}
+</dl></section>`;
+}
+
 function queueRow(item: QueueItem, view: QueueView): string {
   const { candidate: c, result, outsideTarget, step } = item;
   const tone = STEP_TONE[step.kind];
@@ -289,6 +305,8 @@ function queueRow(item: QueueItem, view: QueueView): string {
     decisionReason: c.decisionReason,
     automatic: isAutoApproved(c),
   });
+  // Ready to approve: a person approves it because the automatic rule held it. Say why.
+  const reason = step.kind === "ready" && item.held ? `Automatic approval held it: ${item.held.replace(/\.$/, "")}.` : why;
   // Only what adds to the state above: an unusual research outcome, a non-default category tier, a related location.
   const latest = c.research[0];
   const meta = [
@@ -302,7 +320,7 @@ function queueRow(item: QueueItem, view: QueueView): string {
   ].filter(Boolean);
   return `<li class="q-row t-${tone}" id="c-${esc(c.id)}">
   <div class="q-id"><h3 class="q-name"><a href="/admin/discovery/candidates/${esc(c.id)}">${esc(c.businessName)}</a></h3>${where ? `<div class="q-where">${where}</div>` : ""}</div>
-  <div class="q-state">${verdict(tone, STEP_GLYPHS[step.kind], STEP_LABELS[step.kind])}<p class="q-why">${esc(why)}</p></div>
+  <div class="q-state">${verdict(tone, STEP_GLYPHS[step.kind], STEP_LABELS[step.kind])}<p class="q-why">${esc(reason)}</p></div>
   <div class="q-qual"><span class="q-k">Qualification</span>${qualification}</div>
   <div class="q-act">${queueAction(item, view)}</div>
   <div class="q-meta">${meta.join('<span class="q-dot" aria-hidden="true">·</span>')}</div>
@@ -323,7 +341,7 @@ export function discoveryPage(opts: {
   errors?: string[];
 }): string {
   const { providers, queue, runs, runCount, imports, filters: f, values = {} } = opts;
-  const { counts, view } = queue;
+  const { counts, view, automation } = queue;
   const providerLabel = (name: string) => providers.find((p) => p.name === name)?.label ?? name;
   const fe = fieldErrors(opts.errors);
   const advanced = Boolean(f.status || f.qualification || f.band || f.state || f.city || f.flagged || f.tier || f.category || f.provider || (f.sort && f.sort !== "discovered"));
@@ -452,6 +470,7 @@ export function discoveryPage(opts: {
   <div class="actions"><a class="btn btn-secondary" href="#find">Find new businesses</a><a class="btn btn-ghost" href="/admin/discovery/candidates/new">Add candidate</a></div>
 </div>
 ${noticeHtml}${errorSummary(opts.errors, fe, "Not done")}
+${automationSummary(automation)}
 <section class="q-tiles" aria-label="What needs attention">${(["decision", "ready", "verify", "research"] as const).map(tile).join("")}</section>
 
 <section class="q-queue" id="candidates" aria-labelledby="queue-h">

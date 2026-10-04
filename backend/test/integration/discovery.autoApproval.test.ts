@@ -4,7 +4,7 @@ import type { FastifyInstance } from "fastify";
 import { buildApp } from "../../src/app.js";
 import { loadConfig } from "../../src/config.js";
 import type { Db } from "../../src/db.js";
-import { AUTO_APPROVED_PREFIX } from "../../src/discovery/autoApproval.js";
+import { AUTO_APPROVED_PREFIX, AUTO_REJECTED_PREFIX, REOPENED_PREFIX } from "../../src/discovery/autoApproval.js";
 import {
   approveCandidate,
   autoApproveCandidate,
@@ -14,8 +14,11 @@ import {
   setCandidateCategory,
 } from "../../src/discovery/service.js";
 import type { DiscoveredBusiness } from "../../src/discovery/types.js";
+import { previewOutreachDraft } from "../../src/outreach/service.js";
+import { createProspect } from "../../src/prospects.js";
 import { enqueueResearch, processResearch } from "../../src/research/service.js";
-import { fixtureWeb, independentShop, page } from "../fixtures/researchSite.js";
+import { fixtureWeb, independentShop, page, type Fixture } from "../fixtures/researchSite.js";
+import { OPTS } from "./outreachHelpers.js";
 import { TEST_DATABASE_URL, freshDb, skipReason, truncate } from "./helpers.js";
 
 /*
@@ -203,6 +206,148 @@ describe("automatic approval (service)", { skip: skipReason }, () => {
   });
 });
 
+/** A Midas franchise location: its own site, verified by name, phone, and address, under the chain's brand. */
+const MIDAS_HOST = "midasoxnard.example.com";
+const MIDAS_SITE = `https://${MIDAS_HOST}/`;
+const midasBusiness = (): Partial<DiscoveredBusiness> => ({ businessName: "Midas (Oxnard Blvd)", website: MIDAS_SITE, phone: "+18055550202", streetAddress: "100 Oxnard Blvd" });
+const midasSite = () => {
+  const routes: Record<string, Fixture> = independentShop(MIDAS_HOST, "(805) 555-0202");
+  routes[MIDAS_SITE] = {
+    body: page(
+      "Midas Oxnard | Brakes, Oil Changes and Auto Repair",
+      `<h1>Midas Oxnard</h1><p>Our 6 service bays are open Monday to Friday.</p><p>Call <a href="tel:+18055550202">(805) 555-0202</a> · 100 Oxnard Blvd, Oxnard, CA 93033</p><footer>© 2025 Midas</footer>`,
+    ),
+  };
+  return fixtureWeb(routes);
+};
+/** The clean shop without a contact page: no email anywhere on its site. */
+const noEmail = () => {
+  const routes: Record<string, Fixture> = independentShop(HOST);
+  delete routes[`https://${HOST}/contact-us`];
+  return fixtureWeb(routes);
+};
+
+describe("automatic rejection and the re-decision pass (service)", { skip: skipReason }, () => {
+  let db: Db;
+  before(async () => {
+    db = await freshDb();
+  });
+  beforeEach(async () => truncate(db));
+  after(async () => db?.$disconnect());
+
+  const candidate = async (over: Partial<DiscoveredBusiness> = {}) => {
+    const b = business(over);
+    await ingestBusinesses(db, { runId: null, provider: "overture", query: null }, [b]);
+    return db.discoveryCandidate.findFirstOrThrow({ where: { externalId: b.externalId } });
+  };
+  /** Research; `decide: false` is research as it ran before automatic rejection existed (approval only off too). */
+  const research = async (id: string, web: ReturnType<typeof fixtureWeb>, decide = true) => {
+    const [q] = (await enqueueResearch(db, [id], "admin")).queued;
+    return processResearch(db, q!.researchId, { makeFetcher: web.makeFetcher, today: TODAY, autoApprove: decide });
+  };
+  const full = (id: string) => db.discoveryCandidate.findUniqueOrThrow({ where: { id }, include: { notes: true } });
+  const autoNotes = (notes: { body: string }[]) => notes.filter((n) => n.body.startsWith(AUTO_REJECTED_PREFIX));
+
+  test("a franchise location: research records the chain brand with its source, and it is rejected automatically; no prospect", async () => {
+    const c = await candidate(midasBusiness());
+    await research(c.id, midasSite());
+    const after = await full(c.id);
+    assert.equal(after.status, "rejected");
+    assert.match(after.decisionReason!, /^Automatically rejected \(rejection@r1\): Independent shop is No: "Franchise or chain brand "midas": Midas Oxnard.*" \(https:\/\/midasoxnard\.example\.com\/\)\./);
+    assert.equal(autoNotes(after.notes).length, 1, "the reason is recorded once, as a note");
+    assert.equal(await db.prospect.count(), 0);
+    const evidence = await db.candidateEvidence.findFirstOrThrow({ where: { candidateId: c.id, signalKey: "independent_shop" } });
+    assert.equal(evidence.origin, "research", "the rejection rests on research's own sourced evidence");
+  });
+
+  test("approved with an email on the business's own site: a prospect that outreach can prepare a first message for", async () => {
+    const c = await candidate();
+    await research(c.id, fixtureWeb(independentShop(HOST)));
+    const after = await full(c.id);
+    assert.equal(after.status, "approved");
+    const prospect = await db.prospect.findUniqueOrThrow({ where: { id: after.prospectId! } });
+    assert.equal(prospect.email, `service@${HOST}`);
+    assert.equal(prospect.emailSourceUrl, `https://${HOST}/contact-us`);
+    const preview = await previewOutreachDraft(db, prospect.id, OPTS);
+    assert.deepEqual(preview.errors, [], "outreach eligibility: nothing stops a first draft");
+    assert.ok(preview.message);
+  });
+
+  test("approved with no email on the site: a prospect, but not eligible for outreach", async () => {
+    const c = await candidate();
+    await research(c.id, noEmail());
+    const after = await full(c.id);
+    assert.equal(after.status, "approved");
+    const prospect = await db.prospect.findUniqueOrThrow({ where: { id: after.prospectId! } });
+    assert.equal(prospect.email, null);
+    assert.match((await previewOutreachDraft(db, prospect.id, OPTS)).errors.join(" "), /public business email/);
+  });
+
+  test("a business that is already a prospect: the automatic decision never creates a second prospect, and doesn't reject it either", async () => {
+    // (A confident duplicate is never stored as a candidate at all; this one became a prospect after it was discovered.)
+    const c = await candidate();
+    await createProspect(db, { businessName: "Saviers Road Auto Repair", website: SITE, city: "Oxnard", state: "CA", phone: "(805) 555-0101", phoneSourceUrl: `${SITE}contact-us` });
+    await research(c.id, fixtureWeb(independentShop(HOST)));
+    const after = await full(c.id);
+    assert.equal(after.status, "researched", "held for a person to mark it a duplicate");
+    assert.equal(await db.prospect.count(), 1, "no second prospect");
+    const r = (await runAutoApproval(db, { apply: true, candidateIds: [c.id] }))[0]!;
+    assert.equal(r.assessment.decision, "review");
+    assert.match(r.assessment.reasons.join(" "), /An existing prospect matches this candidate/);
+    assert.equal(await db.prospect.count(), 1);
+  });
+
+  test("the re-decision pass rejects a chain researched before automatic rejection existed, once; repeating changes nothing", async () => {
+    const c = await candidate(midasBusiness());
+    await research(c.id, midasSite(), false);
+    assert.equal((await full(c.id)).status, "researched", "as research left it before rejection@r1");
+
+    const dry = await runAutoApproval(db, { apply: false });
+    assert.deepEqual(dry.map((r) => [r.businessName, r.assessment.decision]), [["Midas (Oxnard Blvd)", "reject"]]);
+    assert.equal((await full(c.id)).status, "researched", "a dry run changes nothing");
+
+    const first = await runAutoApproval(db, { apply: true });
+    assert.equal(first[0]!.rejected, true);
+    const rejected = await full(c.id);
+    assert.equal(rejected.status, "rejected");
+
+    // Again: nothing to decide (it is no longer Researched), so nothing changes.
+    const second = await runAutoApproval(db, { apply: true });
+    assert.deepEqual(second, []);
+    const again = await runAutoApproval(db, { apply: true, candidateIds: [c.id] });
+    assert.equal(again[0]!.rejected, undefined);
+    const same = await full(c.id);
+    assert.equal(same.decidedAt!.getTime(), rejected.decidedAt!.getTime());
+    assert.equal(autoNotes(same.notes).length, 1, "no duplicate history");
+    assert.equal(await db.prospect.count(), 0);
+  });
+
+  test("a person's hold survives repeated automation, and so does a person's reopening", async () => {
+    // A hold: research shows a chain, but a person asked for a look first.
+    const held = await candidate(midasBusiness());
+    await research(held.id, midasSite(), false);
+    await changeCandidateStatus(db, held.id, "needs_review", null);
+    await runAutoApproval(db, { apply: true, candidateIds: [held.id] });
+    await runAutoApproval(db, { apply: true, candidateIds: [held.id] });
+    assert.equal((await full(held.id)).status, "needs_review");
+
+    // A reopening: rejected automatically, reopened by a person, researched again: only a person rejects it now.
+    await db.discoveryCandidate.delete({ where: { id: held.id } });
+    const c = await candidate(midasBusiness());
+    await research(c.id, midasSite());
+    assert.equal((await full(c.id)).status, "rejected");
+    await changeCandidateStatus(db, c.id, "discovered", null);
+    const reopened = await full(c.id);
+    assert.ok(reopened.notes.some((n) => n.body.startsWith(REOPENED_PREFIX) && n.body.includes("Automatically rejected")));
+    await research(c.id, midasSite());
+    await runAutoApproval(db, { apply: true, candidateIds: [c.id] });
+    const after = await full(c.id);
+    assert.equal(after.status, "researched", "held for a person, not rejected again");
+    const r = (await runAutoApproval(db, { apply: false, candidateIds: [c.id] }))[0]!;
+    assert.notEqual(r.assessment.decision, "reject");
+  });
+});
+
 describe("automatic approval (admin HTTP)", { skip: skipReason }, () => {
   const SECRET = "integration-test-secret-0123456789";
   const FORM = { "content-type": "application/x-www-form-urlencoded" };
@@ -241,6 +386,23 @@ describe("automatic approval (admin HTTP)", { skip: skipReason }, () => {
     const c = await db.discoveryCandidate.findUniqueOrThrow({ where: { id: auto } });
     const prospectPage = (await get(`/admin/prospects/${c.prospectId}`)).body;
     assert.match(prospectPage, /Approved automatically \(approval@a1\) from a discovery candidate/);
+  });
+
+  test("the Discovery summary shows what the automation decided; a rejection says why", async () => {
+    await make(fixtureWeb(independentShop(HOST)));
+    const b = business(midasBusiness());
+    await ingestBusinesses(db, { runId: null, provider: "overture", query: null }, [b]);
+    const chain = await db.discoveryCandidate.findFirstOrThrow({ where: { externalId: b.externalId } });
+    const [q] = (await enqueueResearch(db, [chain.id], "admin")).queued;
+    await processResearch(db, q!.researchId, { makeFetcher: midasSite().makeFetcher, today: TODAY });
+
+    const list = (await get("/admin/discovery")).body;
+    assert.match(list, /<section aria-label="What the automation decided"/);
+    assert.match(list, /<dt>Auto-approved<\/dt><dd>1<\/dd>/);
+    assert.match(list, /<dt>Rejected <span style="font-weight:400">\(1 automatically\)<\/span><\/dt><dd>1<\/dd>/);
+    assert.match(list, /<dt>Review <span style="font-weight:400">a person decides<\/span><\/dt><dd>0<\/dd>/);
+    const rejected = (await get("/admin/discovery?view=disregarded")).body;
+    assert.match(rejected, /Automatically rejected \(rejection@r1\): Independent shop is No/);
   });
 
   test("an administrator sees why a candidate is held, and can still approve it", async () => {

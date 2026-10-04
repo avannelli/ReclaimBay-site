@@ -91,7 +91,7 @@ URLs plus the discovery record URL. The detail page lists them together under
 | `researched` | Research recorded, and every recorded fact has a public source. |
 | `needs_review` | Waiting for a human look. Every possible duplicate enters here. |
 | `approved` | Approved by a person, or automatically as a clean, high-confidence lead (see "Automatic approval"). It is now a Prospect (status New). Terminal. |
-| `rejected` | A human decided it should not enter the pipeline (reason required). |
+| `rejected` | A human decided it should not enter the pipeline (reason required), or research showed with sources that it can never qualify (see "Automatic rejection"). |
 | `duplicate` | The same business as another candidate or prospect (reason required). |
 
 **Allowed manual moves** (anything else is refused):
@@ -544,15 +544,18 @@ approval gates, and decides one of three outcomes.
 - every existing approval requirement passes (evidence for every signal, the
   prospect validators, no confident duplicate of an existing prospect).
 
-**Blocked:** wrong category, or a person rejected it or marked it a duplicate.
+**Rejected automatically:** see "Automatic rejection" below.
+**Blocked:** a wrong category a person set, or a person rejected it or marked
+it a duplicate.
 **Held for human review:** everything else, with the reasons listed.
 
 **When it runs.** After each completed research run (the run is stored first;
-the approval is a separate, atomic step that re-checks the rule inside its own
+the decision is a separate, atomic step that re-checks the rules inside its own
 transaction and claims only from Researched). For candidates researched before
-this rule existed: `npm run discovery:auto-approve` (dry run; `-- --apply` to
-approve; `-- --candidate <id>` for specific candidates). Repeating it never
-creates a second prospect.
+these rules existed, the re-decision pass: `npm run discovery:auto-approve`
+(dry run; `-- --apply` to approve and reject; `-- --candidate <id>` for
+specific candidates). It never researches again. Repeating it never creates a
+second prospect and changes nothing already decided.
 
 **Audit.** An automatic approval records why: the candidate's decision reason
 and a candidate note ("Automatically approved (approval@a1): target category
@@ -568,6 +571,49 @@ verdict with its reasons.
 Needs review). A person can hold a candidate by moving it to Needs review,
 reject it, or change its category; the rule never overrides any of that, and it
 never runs on approved, rejected, or duplicate candidates. It sends nothing.
+
+### Automatic rejection (rules `rejection@r1`)
+
+The reverse of automatic approval, in the same rule file and the same step: a
+candidate that research showed, with sources, can never qualify is rejected
+without a click. It adds no research rules; it reads what research and the
+category check already stored.
+
+**Reject automatically** only when the candidate is **Researched**, its latest
+research run **completed**, and at least one of these holds:
+- a required criterion (Independent shop, Offers general repair) is **No**,
+  recorded by research (origin `research`), with research's own evidence: a
+  quote and the page URL. Research records Independent shop = No only from the
+  business's own, verified website: a chain or franchise brand in the site's
+  title or headings, or dealership activity;
+- the category check says **outside the target category**: from the website
+  (with the page URL), or from the business name or provider when research
+  found no general repair on the website (a collision-only shop, for example).
+
+**Never automatically**, whatever the grounds: a criterion or category a
+person recorded; a hold (Needs review); a candidate a person reopened after a
+rejection (reopening leaves a "Reopened by a person" note, and from then on
+only a person rejects it); a No without research evidence; research
+disagreeing with something a person recorded; a name saying another trade
+while the website shows general repair (conflicting evidence); a failed or
+unfinished research run. Unknown criteria and unconfirmed ownership never
+give grounds. All of these stay for review, with their reasons.
+
+**Audit.** The candidate's status becomes Rejected, with the decision reason
+and a candidate note, written once: "Automatically rejected (rejection@r1):
+Independent shop is No: "Franchise or chain brand "jiffy lube": …" (page URL)."
+It creates no prospect. A person can reopen it (Rejected → Discovered).
+
+### The Discovery summary
+
+Above the review lanes, the Discovery page shows what the automation decided
+across all candidates: **Auto-approved** (and how many more a person
+approved), **Review** (a person decides: the Needs decision, Ready to approve,
+and Needs verification lanes, and research that found too little),
+**Rejected** (and how many automatically), **Researching**, and **Not
+researched** (including a failed run, to run again). Review is the exception
+queue. A candidate in Ready to approve says why the automatic rule held it
+(its first reason).
 
 ## Scoring and qualification
 

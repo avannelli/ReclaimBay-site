@@ -122,14 +122,19 @@ describe("category check (service)", { skip: skipReason }, () => {
     assert.match(after.categoryReason!, /^Website describes shoe repair, boot repair, vacuum repair, lamp repair and sharpening; no automotive services or vocabulary/);
     const fact = await db.researchFact.findFirst({ where: { researchId: run.id, field: "business_category" } });
     assert.equal(fact?.value, "Wrong category");
+    // The website's sourced verdict, with no person involved yet: rejected automatically (rejection@r1).
+    assert.equal(after.status, "rejected");
+    assert.match(after.decisionReason!, /^Automatically rejected \(rejection@r1\): Outside the target category: Website describes shoe repair/);
 
-    // A person decides otherwise; research keeps that and says so.
+    // A person decides otherwise, and reopens it; research keeps the person's decision and says so.
     await setCandidateCategory(db, c.id, "in_target", "Owner confirmed they also repair cars.");
+    await changeCandidateStatus(db, c.id, "discovered", null);
     const [q2] = (await enqueueResearch(db, [c.id], "admin")).queued;
     const run2 = (await processResearch(db, q2!.researchId, { makeFetcher: popsWeb().makeFetcher, today: TODAY }))!;
     const kept = await db.discoveryCandidate.findUniqueOrThrow({ where: { id: c.id } });
     assert.deepEqual([kept.categoryVerdict, kept.categorySource], ["in_target", "manual"]);
     assert.ok((run2.warnings as string[]).some((w) => /a person set the category; the person's decision was kept/.test(w)));
+    assert.notEqual(kept.status, "rejected", "never rejected again automatically against the person's decision");
   });
 
   test("the list: a category filter, and wrong category is never ranked, qualified, or banded", async () => {

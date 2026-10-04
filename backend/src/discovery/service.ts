@@ -35,7 +35,7 @@ import {
 } from "./candidateStatus.js";
 import { duplicateState, isDuplicateAnswer, isFlagged, matchReasons, type DuplicateAnswer } from "./duplicateReview.js";
 import { ACTIVE_LANES, LANES, nextStep, type Lane, type NextStep } from "./workQueue.js";
-import { AUTO_APPROVAL_RULES, assessAutoApproval, type AutoApprovalAssessment, type LatestResearch } from "./autoApproval.js";
+import { AUTO_APPROVAL_RULES, AUTO_REJECTED_PREFIX, REOPENED_PREFIX, assessAutoApproval, isAutoApproved, type AutoApprovalAssessment, type LatestResearch } from "./autoApproval.js";
 import { nameCategory } from "./categories.js";
 import {
   CATEGORY_VERDICT_LABELS,
@@ -629,6 +629,11 @@ export async function changeCandidateStatus(db: Db, id: string, toRaw: string, r
       },
     });
     if (count !== 1) throw new ProspectError(["The status changed meanwhile. Reload and try again."], "conflict");
+    if (current.status === "rejected" && to === "discovered") {
+      // From now on only a person rejects it (rejection@r1 reads this note).
+      const was = current.decisionReason ? ` It had been rejected: ${current.decisionReason}` : "";
+      await tx.candidateNote.create({ data: { candidateId: id, body: `${REOPENED_PREFIX}.${was}`.slice(0, 2000) } });
+    }
     return { from: current.status, to };
   });
 }
@@ -972,7 +977,7 @@ export async function approveCandidate(db: Db, id: string, opts: { automatic?: b
     if (c.status === "approved" || c.prospectId) throw new ProspectError(["Already approved."], "conflict");
     let automatic: AutoApprovalAssessment | null = null;
     if (opts.automatic) {
-      automatic = assessAutoApproval({ ...c, latestRun: await latestResearch(tx, id) });
+      automatic = assessAutoApproval(await decisionFacts(tx, c));
       if (automatic.decision !== "approve") throw new ProspectError(automatic.reasons, "conflict");
     }
 
@@ -1055,15 +1060,24 @@ async function latestResearch(db: Db | Tx, candidateId: string): Promise<LatestR
     orderBy: { queuedAt: "desc" },
     include: { facts: { where: { field: "business_type" }, take: 1 } },
   });
-  if (!run) return null;
-  const type = run.facts[0];
-  return { status: run.status, outcome: run.outcome, version: run.version, warnings: run.warnings, businessType: type ? { value: type.value, note: type.note } : null };
+  return run ? asLatestResearch(run) : null;
 }
 
-/** What the automatic-approval rule says about a candidate now (read-only). */
+const asLatestResearch = (run: { status: string; outcome: string | null; version: string; warnings: unknown; facts: { value: string | null; note: string | null }[] }): LatestResearch => {
+  const type = run.facts[0];
+  return { status: run.status, outcome: run.outcome, version: run.version, warnings: run.warnings, businessType: type ? { value: type.value, note: type.note } : null };
+};
+
+/** Everything the automatic rules read about a candidate: its record, its latest run, and whether a person reopened it. */
+async function decisionFacts(db: Db | Tx, c: CandidateWithResearch) {
+  const reopened = await db.candidateNote.count({ where: { candidateId: c.id, body: { startsWith: REOPENED_PREFIX } } });
+  return { ...c, latestRun: await latestResearch(db, c.id), reopenedByPerson: reopened > 0 };
+}
+
+/** What the automatic rules say about a candidate now (read-only). */
 export async function assessCandidateApproval(db: Db, id: string): Promise<AutoApprovalAssessment | null> {
   const c = await db.discoveryCandidate.findUnique({ where: { id }, include: candidateInclude });
-  return c ? assessAutoApproval({ ...c, latestRun: await latestResearch(db, id) }) : null;
+  return c ? assessAutoApproval(await decisionFacts(db, c)) : null;
 }
 
 export interface AutoApprovalOutcome {
@@ -1072,6 +1086,44 @@ export interface AutoApprovalOutcome {
   assessment: AutoApprovalAssessment;
   /** Set when this call created the prospect. */
   prospectId?: string;
+  /** True when this call rejected the candidate. */
+  rejected?: boolean;
+}
+
+/**
+ * Rejects the candidate if, and only if, rejection@r1 says so, re-checked
+ * inside the transaction. Claimed only from Researched, so nothing a person
+ * did (a hold, an approval, their own rejection) is ever overwritten, and a
+ * repeat changes nothing: the reason and its note are written once, by the
+ * call that moved it.
+ */
+export async function autoRejectCandidate(db: Db, id: string): Promise<AutoApprovalOutcome | null> {
+  return db.$transaction(async (tx) => {
+    const c = await tx.discoveryCandidate.findUnique({ where: { id }, include: candidateInclude });
+    if (!c) return null;
+    const assessment = assessAutoApproval(await decisionFacts(tx, c));
+    if (assessment.decision !== "reject") return { candidateId: id, businessName: c.businessName, assessment };
+    const now = new Date();
+    const { count } = await tx.discoveryCandidate.updateMany({
+      where: { id, status: "researched", prospectId: null },
+      data: { status: "rejected", statusChangedAt: now, decidedAt: now, decisionReason: assessment.approvalNote!.slice(0, 500) },
+    });
+    if (count !== 1) return { candidateId: id, businessName: c.businessName, assessment };
+    await tx.candidateNote.create({ data: { candidateId: id, body: assessment.approvalNote! } });
+    return { candidateId: id, businessName: c.businessName, assessment, rejected: true };
+  });
+}
+
+/**
+ * The automatic decision for one candidate: approve (approval@a1), reject
+ * (rejection@r1), or leave it for review. Run after every completed research
+ * run, and by the re-decision pass. Safe to repeat.
+ */
+export async function autoDecideCandidate(db: Db, id: string): Promise<AutoApprovalOutcome | null> {
+  const assessment = await assessCandidateApproval(db, id);
+  if (!assessment) return null;
+  if (assessment.decision === "reject") return autoRejectCandidate(db, id);
+  return autoApproveCandidate(db, id);
 }
 
 /**
@@ -1095,8 +1147,11 @@ export async function autoApproveCandidate(db: Db, id: string): Promise<AutoAppr
 }
 
 /**
- * The automatic-approval rule over researched candidates (or the given ones):
- * a dry run reports what would happen; `apply` approves the eligible ones.
+ * The re-decision pass: the automatic rules over researched candidates (or
+ * the given ones), without researching again. A dry run reports what would
+ * happen; `apply` approves and rejects the ones the rules decide. Idempotent:
+ * an approved or rejected candidate is no longer Researched, so it is left
+ * as it is.
  */
 export async function runAutoApproval(db: Db, opts: { apply: boolean; candidateIds?: readonly string[] }): Promise<AutoApprovalOutcome[]> {
   const rows = await db.discoveryCandidate.findMany({
@@ -1106,7 +1161,7 @@ export async function runAutoApproval(db: Db, opts: { apply: boolean; candidateI
   });
   const out: AutoApprovalOutcome[] = [];
   for (const { id } of rows) {
-    const r = opts.apply ? await autoApproveCandidate(db, id) : await (async () => {
+    const r = opts.apply ? await autoDecideCandidate(db, id) : await (async () => {
       const c = await db.discoveryCandidate.findUniqueOrThrow({ where: { id }, select: { businessName: true } });
       return { candidateId: id, businessName: c.businessName, assessment: (await assessCandidateApproval(db, id))! };
     })();
@@ -1229,7 +1284,24 @@ export type QueueView = (typeof QUEUE_VIEWS)[number];
 export const isQueueView = (v: unknown): v is QueueView => (QUEUE_VIEWS as readonly unknown[]).includes(v);
 
 type ScoredCandidate = Awaited<ReturnType<typeof scoredCandidates>>["scored"][number];
-export type QueueItem = ScoredCandidate & { step: NextStep };
+/** `held`: for Ready to approve, why automatic approval didn't approve it (reviewQueue fills it in). */
+export type QueueItem = ScoredCandidate & { step: NextStep; held?: string | null };
+
+/**
+ * What the automation has decided, for the Discovery summary: approved
+ * (automatically, or by a person), the exception queue a person reviews,
+ * rejected or closed (automatically, or by a person), research running,
+ * and not yet researched (or research failed, to run again).
+ */
+export interface AutomationSummary {
+  approved: number;
+  autoApproved: number;
+  review: number;
+  rejected: number;
+  autoRejected: number;
+  researching: number;
+  notResearched: number;
+}
 
 const inView = (view: QueueView, s: NextStep) =>
   view === "all" ||
@@ -1262,7 +1334,23 @@ function stepOf(r: ScoredCandidate): NextStep {
  */
 export async function reviewQueue(db: Db, filters: CandidateFilters, view: QueueView = "all") {
   const { ordered, ...rest } = await orderedQueue(db, filters, view);
-  return { ...rest, items: ordered.slice(0, CANDIDATE_LIST_LIMIT) };
+  const items = ordered.slice(0, CANDIDATE_LIST_LIMIT);
+  // Ready to approve means a person approves it: say why the automatic rule held it. One query for the shown items.
+  const ready = items.filter((i) => i.step.kind === "ready");
+  if (ready.length) {
+    const runs = await db.candidateResearch.findMany({
+      where: { candidateId: { in: ready.map((i) => i.candidate.id) } },
+      orderBy: { queuedAt: "desc" },
+      include: { facts: { where: { field: "business_type" }, take: 1 } },
+    });
+    const latest = new Map<string, LatestResearch>();
+    for (const r of runs) if (!latest.has(r.candidateId)) latest.set(r.candidateId, asLatestResearch(r));
+    for (const i of ready) {
+      const a = assessAutoApproval({ ...i.candidate, latestRun: latest.get(i.candidate.id) ?? null });
+      i.held = a.decision === "review" ? (a.reasons[0] ?? null) : a.decision === "approve" ? "It meets every condition; the next automatic pass will approve it." : null;
+    }
+  }
+  return { ...rest, items };
 }
 
 /** The whole queue for a view in queue order, uncapped: the display limit applies only in reviewQueue. */
@@ -1273,11 +1361,22 @@ async function orderedQueue(db: Db, filters: CandidateFilters, view: QueueView) 
   let duplicates = 0;
   let disregarded = 0;
   let completed = 0;
+  const automation: AutomationSummary = { approved: 0, autoApproved: 0, review: 0, rejected: 0, autoRejected: 0, researching: 0, notResearched: 0 };
   for (const i of items) {
     counts[i.step.lane]++;
     if (i.step.kind === "duplicate") duplicates++;
     if (i.step.kind === "disregarded" || i.step.kind === "duplicate_closed") disregarded++;
     if (i.step.kind === "approved") completed++;
+    const kind = i.step.kind;
+    if (kind === "approved") {
+      automation.approved++;
+      if (isAutoApproved(i.candidate)) automation.autoApproved++;
+    } else if (kind === "disregarded" || kind === "duplicate_closed") {
+      automation.rejected++;
+      if (i.candidate.decisionReason?.startsWith(AUTO_REJECTED_PREFIX)) automation.autoRejected++;
+    } else if (kind === "research_running") automation.researching++;
+    else if (kind === "not_researched" || kind === "research_failed") automation.notResearched++;
+    else automation.review++;
   }
   const active = ACTIVE_LANES.reduce((n, l) => n + counts[l], 0);
   // A stable sort keeps the chosen order inside each lane.
@@ -1288,6 +1387,7 @@ async function orderedQueue(db: Db, filters: CandidateFilters, view: QueueView) 
     notRanked,
     total: ordered.length,
     counts: { ...counts, duplicates, disregarded, completed, active, all: items.length },
+    automation,
     ordered,
   };
 }
@@ -1373,7 +1473,7 @@ export async function getCandidateDetail(db: Db, id: string) {
   ]);
   const result = scoreCandidate(candidate);
   const approvalBlockers = approvalBlockersOf(candidate);
-  const autoApproval = assessAutoApproval({ ...candidate, latestRun: await latestResearch(db, id) });
+  const autoApproval = assessAutoApproval(await decisionFacts(db, candidate));
   return { candidate, result, outsideTarget: isOutsideTarget(candidate), autoApproval, dupCandidate, dupProspect, relCandidate, relProspect, approvalBlockers };
 }
 

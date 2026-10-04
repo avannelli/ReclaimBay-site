@@ -10,10 +10,11 @@
  *     research disagrees with a person, it says so in a warning.
  *   - Contact (phone, email) is set only from the business's own, verified
  *     website, and only when none is stored yet. It is never removed.
- *   - A run never approves anything or creates a prospect itself. After a
- *     completed run, the automatic-approval rule (discovery/autoApproval.ts)
- *     decides separately whether the candidate is a clean enough lead to
- *     become a Prospect without a click; anything less waits for a person.
+ *   - A run never approves, rejects, or creates a prospect itself. After a
+ *     completed run, the automatic rules (discovery/autoApproval.ts) decide
+ *     separately: a clean enough lead becomes a Prospect without a click
+ *     (approval@a1), one research showed can never qualify is rejected
+ *     (rejection@r1), and anything else waits for a person.
  *   - Re-running is safe: each run replaces the previous run's research
  *     signals and evidence instead of adding to them. Runs are kept as
  *     history (the newest RESEARCH_HISTORY per candidate).
@@ -22,7 +23,7 @@
  */
 import type { Db } from "../db.js";
 import { researchGateErrors } from "../discovery/approval.js";
-import { autoApproveCandidate } from "../discovery/service.js";
+import { autoDecideCandidate } from "../discovery/service.js";
 import { CATEGORY_VERDICT_LABELS, automatedMayReplace, categoryFields, isOutsideTarget } from "../discovery/categoryCheck.js";
 import { phoneKey } from "../discovery/normalize.js";
 import type { Prisma } from "../generated/prisma/client.js";
@@ -68,7 +69,7 @@ export async function enqueueResearch(db: Db, candidateIds: readonly string[], t
 export interface ProcessDeps {
   /** A fresh fetcher per run (tests inject one that never touches the network). */
   makeFetcher?: () => PoliteFetcher;
-  /** Apply the automatic-approval rule after a completed run (default true). */
+  /** Apply the automatic rules (approve, reject, or leave for review) after a completed run (default true). */
   autoApprove?: boolean;
   today?: Date;
   sleep?: (ms: number) => Promise<void>;
@@ -130,7 +131,7 @@ export async function processResearch(db: Db, researchId: string, deps: ProcessD
     });
   }
   // Separate from the run: the run is stored whatever the approval decides.
-  if (deps.autoApprove !== false && stored.status === "completed") await autoApproveCandidate(db, c.id);
+  if (deps.autoApprove !== false && stored.status === "completed") await autoDecideCandidate(db, c.id);
   return stored;
 }
 
