@@ -1,9 +1,16 @@
 /*
  * Integration test setup. Tests run against TEST_DATABASE_URL, which is
- * migrated and then TRUNCATED, so it must be a disposable local database:
+ * migrated and then TRUNCATED, so it must be a disposable local database on
+ * a real PostgreSQL server:
  *
- *   npx prisma dev                      # prints a postgres:// URL
- *   TEST_DATABASE_URL=<that url> npm run test:integration
+ *   createdb reclaimbay_test             # a throwaway database, never reclaimbay_dev
+ *   TEST_DATABASE_URL=postgresql://<user>:<password>@localhost:5432/reclaimbay_test npm run test:integration
+ *
+ * The full suite needs a real PostgreSQL server. Prisma's local emulator
+ * (`npx prisma dev`) is not enough: all of its connections share one
+ * database session, so the automatic research worker-lock tests
+ * (research.autorun.test.ts), which need genuinely separate sessions, fail
+ * there. They check for this first (assertSeparateSessions) and say so.
  *
  * Without TEST_DATABASE_URL every integration test is skipped.
  */
@@ -48,6 +55,37 @@ export async function freshDb(): Promise<Db> {
   const db = createDb(TEST_DATABASE_URL);
   await truncate(db);
   return db;
+}
+
+/** An advisory-lock key used only by assertSeparateSessions, never by the application. */
+const SESSION_PROBE_LOCK = 51_120_999;
+
+/**
+ * Fails unless TEST_DATABASE_URL gives each connection its own PostgreSQL
+ * session: a lock one connection holds must be refused to another. The
+ * worker-lock tests depend on exactly that; Prisma's emulator shares one
+ * session between connections and would make them fail confusingly. Both
+ * probe connections are always closed.
+ */
+export async function assertSeparateSessions(url = TEST_DATABASE_URL) {
+  const a = createDb(url, { max: 1 });
+  const b = createDb(url, { max: 1 });
+  try {
+    const take = async (conn: Db) => (await conn.$queryRaw<{ locked: boolean }[]>`SELECT pg_try_advisory_lock(${SESSION_PROBE_LOCK}) AS locked`)[0]?.locked === true;
+    const first = await take(a);
+    const second = await take(b);
+    if (first) await a.$queryRaw`SELECT pg_advisory_unlock(${SESSION_PROBE_LOCK})`;
+    if (second) await b.$queryRaw`SELECT pg_advisory_unlock(${SESSION_PROBE_LOCK})`;
+    if (!first || second) {
+      throw new Error(
+        "TEST_DATABASE_URL does not provide separate PostgreSQL sessions: a lock held by one connection was not refused to another. " +
+          "The worker-lock tests need a real PostgreSQL server; Prisma's local emulator (npx prisma dev) is not sufficient. " +
+          "See test/integration/helpers.ts.",
+      );
+    }
+  } finally {
+    await Promise.allSettled([a.$disconnect(), b.$disconnect()]);
+  }
 }
 
 export async function truncate(db: Db) {

@@ -68,6 +68,7 @@ enum EventType {
   scan_completed
   tour_completed
   report_exported
+  contact_clicked
 }
 
 enum ExportType {

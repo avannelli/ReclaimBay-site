@@ -286,6 +286,7 @@ const EVENT_LABELS: [string, string][] = [
   ["scan_completed", "Real scans"],
   ["report_exported", "Exports"],
   ["tour_completed", "Tours"],
+  ["contact_clicked", "Contact clicks"],
 ];
 
 export function prospectDetailPage(opts: {

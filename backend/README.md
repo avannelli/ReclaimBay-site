@@ -19,7 +19,7 @@ extra field, a wrong type, or a value outside the allowlist:
 | Field        | Allowed values                                                    |
 | ------------ | ----------------------------------------------------------------- |
 | `sessionId`  | Lowercase v4 UUID from `crypto.randomUUID()` (required)           |
-| `event`      | `landing_view`, `upload_started`, `scan_completed`, `tour_completed`, `report_exported` (required) |
+| `event`      | `landing_view`, `upload_started`, `scan_completed`, `tour_completed`, `report_exported`, `contact_clicked` (required) |
 | `ref`        | `null` or `rb_` + 8 to 32 lowercase letters/digits                |
 | `campaign`   | `null` or 1 to 64 chars of `a-z 0-9 . _ -`                        |
 | `isSample`   | boolean                                                           |
@@ -38,6 +38,7 @@ path into a request.
 | `scan_completed`  | Analysis succeeds (`isSample: true` for the sample report)   |
 | `tour_completed`  | The guided tour is finished with **Done** (not dismissed)    |
 | `report_exported` | After a successful PDF download, CSV download, or summary copy |
+| `contact_clicked` | **Talk to ReclaimBay** is clicked, or the contact address is copied (the report's contact card and quiet links, the invitation page) |
 
 The browser ID is stored in `localStorage` as `reclaimbay_analytics_session_v1`
 and reused across visits. There is no fingerprinting and there are no cookies.
@@ -47,6 +48,12 @@ the product changes.
 
 Sample-report activity is stored with `isSample = true`. The admin never counts
 it as a real scan, tour, or export; it only shows up in the Sample column.
+
+The contact path is a `mailto:` link to hello@reclaimbay.com with a fixed
+subject and a blank template (`lib/contact.ts` in the site). It is built with
+no arguments, so nothing from a report can reach it, and nothing about it is
+sent here except the `contact_clicked` event above. A contact click counts as
+high intent in the admin funnel.
 
 ## Referral links
 

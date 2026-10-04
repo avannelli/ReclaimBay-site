@@ -106,7 +106,7 @@ function attentionStrip(a: Attention): string {
 }
 
 function activityRow(r: ProspectRow, highlightId?: string): string {
-  const real = r.uploads + r.scans + r.tours + r.exports;
+  const real = r.uploads + r.scans + r.tours + r.exports + r.contacts;
   const any = r.visits + real + r.sampleEvents > 0;
   const sampleOnly = real === 0 && r.sampleEvents > 0;
   const name = r.id
@@ -121,6 +121,7 @@ function activityRow(r: ProspectRow, highlightId?: string): string {
   <td class="num hide-sm" data-label="Uploads">${n(r.uploads)}</td>
   <td class="num" data-label="Real scans">${n(r.scans)}${r.sampleEvents ? `<div class="sub">+${r.sampleEvents} sample</div>` : ""}</td>
   <td class="num hide-sm" data-label="Exports">${n(r.exports)}${r.exports > 0 ? `<div class="sub">${esc(r.exportTypes.join(", "))}</div>` : ""}</td>
+  <td class="num" data-label="Contact clicks">${n(r.contacts)}</td>
   <td class="hide-md small" data-label="Last activity">${fmtDate(r.lastActivity)}</td>
   <td data-label="Intent">${r.highIntent ? '<span class="pill">High</span>' : '<span class="muted">—</span>'}</td>
 </tr>`;
@@ -133,20 +134,21 @@ export function dashboardPage({ summary: s, rows, attention, highlightId }: Dash
     ["Uploads started", String(s.uploadSessions), `${s.uploadEvents} upload events`],
     ["Real scans completed", String(s.realScanSessions), `${s.realScanEvents} ${s.realScanEvents === 1 ? "scan" : "scans"} · ${s.sampleScanEvents} sample excluded`],
     ["Exports", String(s.realExportSessions), `${s.realExportEvents} real exports`],
+    ["Contact clicks", String(s.contactClickSessions), `${s.contactClickEvents} real ${s.contactClickEvents === 1 ? "click" : "clicks"}`],
     ["Scan conversion", fmtPct(s.scanConversionRate), "visitors with a real scan"],
   ];
   const kpis = tiles
     .map(([label, value, hint]) => `<div class="kpi"><div class="k-label">${esc(label)}</div><div class="k-value">${esc(value)}</div><div class="k-hint">${esc(hint)}</div></div>`)
     .join("");
 
-  const hasActivity = rows.some((r) => r.visits + r.uploads + r.scans + r.tours + r.exports + r.sampleEvents > 0 || r.lastActivity);
+  const hasActivity = rows.some((r) => r.visits + r.uploads + r.scans + r.tours + r.exports + r.contacts + r.sampleEvents > 0 || r.lastActivity);
   const table = hasActivity
     ? `<div class="scroll"><table class="tbl cards">
 <caption class="sr-only">Prospect activity from referral links</caption>
-<thead><tr><th scope="col">Prospect</th><th scope="col" class="hide-md">Referral</th><th scope="col" class="num">Visits</th><th scope="col" class="num hide-sm">Uploads</th><th scope="col" class="num">Real scans</th><th scope="col" class="num hide-sm">Exports</th><th scope="col" class="hide-md">Last activity</th><th scope="col">Intent</th></tr></thead>
+<thead><tr><th scope="col">Prospect</th><th scope="col" class="hide-md">Referral</th><th scope="col" class="num">Visits</th><th scope="col" class="num hide-sm">Uploads</th><th scope="col" class="num">Real scans</th><th scope="col" class="num hide-sm">Exports</th><th scope="col" class="num">Contact clicks</th><th scope="col" class="hide-md">Last activity</th><th scope="col">Intent</th></tr></thead>
 <tbody>${rows.map((r) => activityRow(r, highlightId)).join("\n")}</tbody>
 </table></div>
-<p class="small muted" style="margin-top:8px">Uploads, real scans, and exports count real activity only; sample-report activity is shown separately. High intent means a real scan and a real export.</p>`
+<p class="small muted" style="margin-top:8px">Uploads, real scans, exports, and contact clicks count real activity only; sample-report activity is shown separately. High intent means a real scan and a real export, or a contact click.</p>`
     : `<div class="card">${emptyState("No prospect activity yet.", "Activity appears here once someone opens a prospect's referral link.", `<a class="btn btn-secondary" href="/admin/prospects">View prospects</a>`)}</div>`;
 
   return appPage(

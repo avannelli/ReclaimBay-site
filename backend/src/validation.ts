@@ -10,6 +10,7 @@ export const EVENT_TYPES = [
   "scan_completed",
   "tour_completed",
   "report_exported",
+  "contact_clicked",
 ] as const;
 
 export const EXPORT_TYPES = ["pdf", "csv", "copied_summary"] as const;

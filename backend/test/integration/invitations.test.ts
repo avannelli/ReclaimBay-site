@@ -310,6 +310,17 @@ describe("invitation open endpoint (HTTP)", { skip: skipReason }, () => {
     assert.equal((await invitationActivations(db, [r.invitation.id])).size, 1);
   });
 
+  test("a contact click after opening an invitation belongs to the invited prospect", async () => {
+    const { p, r } = await invited();
+    const other = await invited();
+    const sessionId = randomUUID();
+    await open({ token: r.token, sessionId });
+    assert.equal((await event({ sessionId, event: "contact_clicked", isSample: false })).statusCode, 204);
+    const clicks = await db.productEvent.findMany({ where: { eventType: "contact_clicked" } });
+    assert.deepEqual(clicks.map((e) => e.prospectId), [p.id]);
+    assert.notEqual(p.id, other.p.id);
+  });
+
   test("first touch is kept: a browser that arrived through another business's ?ref= link stays with it", async () => {
     const earlier = await prospect();
     const sessionId = randomUUID();

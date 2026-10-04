@@ -18,7 +18,7 @@ import {
   runAutoResearch,
 } from "../../src/research/service.js";
 import { fixtureWeb, independentShop, page, type Fixture } from "../fixtures/researchSite.js";
-import { TEST_DATABASE_URL, freshDb, skipReason, truncate } from "./helpers.js";
+import { TEST_DATABASE_URL, assertSeparateSessions, freshDb, skipReason, truncate } from "./helpers.js";
 
 /*
  * The automatic research worker (discovery:research --auto) against a real,
@@ -116,31 +116,39 @@ describe("automatic research worker (real PostgreSQL)", { skip: skipReason }, ()
 
   // ---------- the worker lock ----------
 
-  test("two automatic workers at once: exactly one gets the lock; the other exits cleanly", async () => {
-    const first = await acquireWorkerLock(TEST_DATABASE_URL);
-    assert.ok(first, "the first worker takes the lock");
-    try {
-      assert.equal(await acquireWorkerLock(TEST_DATABASE_URL), null, "a second worker can't");
-      await candidate();
-      const second = await auto();
-      assert.equal(second.outcome, "locked");
-      assert.equal(await db.candidateResearch.count(), 0, "the locked-out worker queued nothing");
-    } finally {
-      await first.release();
-    }
-    const again = await acquireWorkerLock(TEST_DATABASE_URL);
-    assert.ok(again, "released: the next worker gets it");
-    await again.release();
-  });
+  describe("the worker lock (needs separate PostgreSQL sessions)", () => {
+    // Fail fast, with the reason, on a database that can't run these tests (e.g. Prisma's emulator).
+    before(async () => assertSeparateSessions());
 
-  test("two workers racing for the lock: one runs, one reports locked", async () => {
-    await candidate(clean());
-    // Slow websites, so the winner is still working when the other asks for the lock.
-    const w = web();
-    const slow = { ...deps(), makeFetcher: () => new PoliteFetcher({ get: async (u, o) => (await new Promise((r) => setTimeout(r, 200)), w.get(u, o)), sleep: async () => undefined }) };
-    const [a, b] = await Promise.all([auto({ deps: slow }), auto({ deps: slow })]);
-    assert.deepEqual([a.outcome, b.outcome].sort(), ["done", "locked"]);
-    assert.equal(await db.candidateResearch.count(), 1, "the candidate was researched once");
+    test("two automatic workers at once: exactly one gets the lock; the other exits cleanly", async () => {
+      const first = await acquireWorkerLock(TEST_DATABASE_URL);
+      assert.ok(first, "the first worker takes the lock");
+      try {
+        const competing = await acquireWorkerLock(TEST_DATABASE_URL);
+        // Released before the assertion: a lock left open here would keep this file's process alive.
+        await competing?.release();
+        assert.equal(competing, null, "a second worker can't");
+        await candidate();
+        const second = await auto();
+        assert.equal(second.outcome, "locked");
+        assert.equal(await db.candidateResearch.count(), 0, "the locked-out worker queued nothing");
+      } finally {
+        await first.release();
+      }
+      const again = await acquireWorkerLock(TEST_DATABASE_URL);
+      assert.ok(again, "released: the next worker gets it");
+      await again.release();
+    });
+
+    test("two workers racing for the lock: one runs, one reports locked", async () => {
+      await candidate(clean());
+      // Slow websites, so the winner is still working when the other asks for the lock.
+      const w = web();
+      const slow = { ...deps(), makeFetcher: () => new PoliteFetcher({ get: async (u, o) => (await new Promise((r) => setTimeout(r, 200)), w.get(u, o)), sleep: async () => undefined }) };
+      const [a, b] = await Promise.all([auto({ deps: slow }), auto({ deps: slow })]);
+      assert.deepEqual([a.outcome, b.outcome].sort(), ["done", "locked"]);
+      assert.equal(await db.candidateResearch.count(), 1, "the candidate was researched once");
+    });
   });
 
   // ---------- G2: stale runs release their candidate ----------

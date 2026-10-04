@@ -15,6 +15,9 @@ export interface Summary {
   realScanEvents: number;
   realExportSessions: number;
   realExportEvents: number;
+  /** Real (not sample) "Talk to ReclaimBay" clicks and contact-address copies. */
+  contactClickSessions: number;
+  contactClickEvents: number;
   sampleScanEvents: number;
   scanConversionRate: number | null;
 }
@@ -31,6 +34,7 @@ export interface ProspectRow {
   scans: number;
   tours: number;
   exports: number;
+  contacts: number;
   exportTypes: string[];
   sampleEvents: number;
   lastActivity: Date | null;
@@ -63,6 +67,7 @@ export async function loadSummary(db: Db): Promise<Summary> {
   const uploads = pick("upload_started", false);
   const scans = pick("scan_completed", false);
   const exportsReal = pick("report_exported", false);
+  const contacts = pick("contact_clicked", false);
 
   return {
     attributedProspects: attributed[0]?.n ?? 0,
@@ -73,6 +78,8 @@ export async function loadSummary(db: Db): Promise<Summary> {
     realScanEvents: scans.events,
     realExportSessions: exportsReal.sessions,
     realExportEvents: exportsReal.events,
+    contactClickSessions: contacts.sessions,
+    contactClickEvents: contacts.events,
     sampleScanEvents: pick("scan_completed", true).events,
     scanConversionRate: visitors > 0 ? scans.sessions / visitors : null,
   };
@@ -92,6 +99,7 @@ export async function loadProspectRows(db: Db): Promise<ProspectRow[]> {
              COUNT(e.id) FILTER (WHERE e."eventType" = 'scan_completed' AND NOT e."isSample")::int AS scans,
              COUNT(e.id) FILTER (WHERE e."eventType" = 'tour_completed' AND NOT e."isSample")::int AS tours,
              COUNT(e.id) FILTER (WHERE e."eventType" = 'report_exported' AND NOT e."isSample")::int AS exports,
+             COUNT(e.id) FILTER (WHERE e."eventType" = 'contact_clicked' AND NOT e."isSample")::int AS contacts,
              array_agg(DISTINCT e."exportType"::text)
                FILTER (WHERE e."eventType" = 'report_exported' AND NOT e."isSample") AS "exportTypes",
              COUNT(e.id) FILTER (WHERE e."isSample")::int AS "sampleEvents",
@@ -108,6 +116,7 @@ export async function loadProspectRows(db: Db): Promise<ProspectRow[]> {
              COUNT(e.id) FILTER (WHERE e."eventType" = 'scan_completed' AND NOT e."isSample")::int AS scans,
              COUNT(e.id) FILTER (WHERE e."eventType" = 'tour_completed' AND NOT e."isSample")::int AS tours,
              COUNT(e.id) FILTER (WHERE e."eventType" = 'report_exported' AND NOT e."isSample")::int AS exports,
+             COUNT(e.id) FILTER (WHERE e."eventType" = 'contact_clicked' AND NOT e."isSample")::int AS contacts,
              array_agg(DISTINCT e."exportType"::text)
                FILTER (WHERE e."eventType" = 'report_exported' AND NOT e."isSample") AS "exportTypes",
              COUNT(e.id) FILTER (WHERE e."isSample")::int AS "sampleEvents",
@@ -123,7 +132,7 @@ export async function loadProspectRows(db: Db): Promise<ProspectRow[]> {
   return rows.map((r) => ({
     ...r,
     exportTypes: (r.exportTypes ?? []).filter(Boolean).sort(),
-    // High intent = a real scan AND a real export. Nothing more elaborate.
-    highIntent: r.scans > 0 && r.exports > 0,
+    // High intent = a real scan AND a real export, or asking to talk. Nothing more elaborate.
+    highIntent: (r.scans > 0 && r.exports > 0) || r.contacts > 0,
   }));
 }

@@ -230,4 +230,42 @@ describe("admin prospect workflow (HTTP)", { skip: skipReason }, () => {
     assert.match(detail.body, /<dt>Exports<\/dt><dd>1<\/dd>/);
     assert.equal((await get("/health", false)).statusCode, 200);
   });
+
+  test("contact_clicked: accepted on the existing allow-list, counted as real intent, sample clicks excluded", async () => {
+    const id = await createViaHttp();
+    const { referralCode } = await db.prospect.findUniqueOrThrow({ where: { id } });
+    const sessionId = randomUUID();
+    const send = (payload: Record<string, unknown>) =>
+      app.inject({ method: "POST", url: "/api/events", headers: { origin: "https://reclaimbay.com" }, payload });
+
+    assert.equal((await send({ sessionId, ref: referralCode, event: "landing_view", isSample: false })).statusCode, 204);
+    // Clicked on the sample report: recorded, never counted as real intent.
+    assert.equal((await send({ sessionId, event: "contact_clicked", isSample: true })).statusCode, 204);
+    let funnel = (await get("/admin")).body;
+    assert.match(funnel, /<div class="k-label">Contact clicks<\/div><div class="k-value">0<\/div><div class="k-hint">0 real clicks<\/div>/);
+    assert.match(funnel, /data-label="Contact clicks"><span class="muted">0<\/span><\/td>/);
+    assert.doesNotMatch(funnel, /class="pill">High/, "a sample click isn't intent");
+
+    // Two real clicks (the button, then copying the address) from one browser.
+    assert.equal((await send({ sessionId, event: "contact_clicked", isSample: false })).statusCode, 204);
+    assert.equal((await send({ sessionId, event: "contact_clicked", isSample: false, ref: null, campaign: null, exportType: null })).statusCode, 204);
+
+    // The contract is unchanged: no export type on it, and no extra field of any kind.
+    assert.equal((await send({ sessionId, event: "contact_clicked", isSample: false, exportType: "pdf" })).statusCode, 400);
+    for (const extra of [{ total: 5 }, { email: "owner@shop.example" }, { fileName: "declined.csv" }, { message: "hello" }]) {
+      assert.equal((await send({ sessionId, event: "contact_clicked", isSample: false, ...extra })).statusCode, 400, `rejects ${Object.keys(extra)[0]}`);
+    }
+    assert.equal((await send({ sessionId, event: "contact_requested", isSample: false })).statusCode, 400, "only the one new event name");
+
+    const stored = await db.productEvent.findMany({ where: { eventType: "contact_clicked" }, orderBy: { createdAt: "asc" } });
+    assert.deepEqual(stored.map((e) => [e.isSample, e.prospectId, e.exportType]), [[true, id, null], [false, id, null], [false, id, null]]);
+
+    funnel = (await get("/admin")).body;
+    assert.match(funnel, /<div class="k-label">Contact clicks<\/div><div class="k-value">1<\/div><div class="k-hint">2 real clicks<\/div>/, "summary: one browser, two real clicks");
+    assert.match(funnel, /data-label="Contact clicks">2<\/td>/, "per prospect");
+    assert.match(funnel, /class="pill">High/, "a real contact click is high intent");
+    const detail = (await get(`/admin/prospects/${id}`)).body;
+    assert.match(detail, /<dt>Contact clicks<\/dt><dd>2<\/dd>/, "prospect page");
+    assert.match(detail, /<dt>Sample activity<\/dt><dd>1<\/dd>/);
+  });
 });
