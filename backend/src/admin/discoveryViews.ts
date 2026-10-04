@@ -2,7 +2,7 @@ import type { getCandidateDetail, queuePosition, recentRuns, reviewQueue, QueueI
 import { ACTION_LABELS, ACTIVE_LANES, LANE_HINTS, LANE_LABELS, STEP_GLYPHS, STEP_LABELS, STEP_TONE, stepReason, type Lane } from "../discovery/workQueue.js";
 import type { recentImports } from "../discovery/staging.js";
 import { OUTCOME_LABELS, type ResearchOutcome } from "../research/researcher.js";
-import type { candidateResearch, researchQueue } from "../research/service.js";
+import type { automaticResearchStatus, candidateResearch, researchQueue } from "../research/service.js";
 import { CANDIDATE_SORTS, DEFAULT_BUSINESS_TYPE } from "../discovery/service.js";
 import { AUTO_APPROVAL_LABELS, AUTO_APPROVAL_RULES, isAutoApproved } from "../discovery/autoApproval.js";
 import { CATEGORY_RULES } from "../discovery/categories.js";
@@ -50,6 +50,7 @@ type Runs = Awaited<ReturnType<typeof recentRuns>>;
 type Imports = Awaited<ReturnType<typeof recentImports>>;
 type ResearchView = Awaited<ReturnType<typeof candidateResearch>>;
 type ResearchQueue = Awaited<ReturnType<typeof researchQueue>>;
+type AutoResearchStatus = Awaited<ReturnType<typeof automaticResearchStatus>>;
 
 const SIGNAL_DEFS = SIGNALS as readonly SignalDefinition[];
 /** Short labels so the sort menu fits its column. */
@@ -284,6 +285,14 @@ ${item("Not researched", a.notResearched)}
 </dl></section>`;
 }
 
+/** The automatic research worker's state, from the runs it queued; amber when candidates wait but it hasn't run within the hour. */
+function autoResearchLine(a: AutoResearchStatus): string {
+  const line = `<b>Automatic research:</b> last run ${a.lastRunAt ? fmtDate(a.lastRunAt) : "never"} · ${a.researched24h} researched, ${a.failed24h} failed in the last 24 hours · waiting: ${a.waitingFresh} new, ${a.waitingRetries} to retry`;
+  return a.stale
+    ? `<section aria-label="Automatic research" class="callout warn" style="margin-bottom:16px">${line}<div class="small">Candidates are waiting, but automatic research hasn't run in the last hour. Check the scheduled research service.</div></section>`
+    : `<section aria-label="Automatic research" class="small muted" style="margin:-8px 0 16px">${line}</section>`;
+}
+
 function queueRow(item: QueueItem, view: QueueView): string {
   const { candidate: c, result, outsideTarget, step } = item;
   const tone = STEP_TONE[step.kind];
@@ -334,6 +343,7 @@ export function discoveryPage(opts: {
   runCount: number;
   imports: Imports;
   research?: ResearchQueue;
+  autoResearch?: AutoResearchStatus;
   filters: Values;
   values?: Values;
   notice?: string;
@@ -471,6 +481,7 @@ export function discoveryPage(opts: {
 </div>
 ${noticeHtml}${errorSummary(opts.errors, fe, "Not done")}
 ${automationSummary(automation)}
+${opts.autoResearch ? autoResearchLine(opts.autoResearch) : ""}
 <section class="q-tiles" aria-label="What needs attention">${(["decision", "ready", "verify", "research"] as const).map(tile).join("")}</section>
 
 <section class="q-queue" id="candidates" aria-labelledby="queue-h">

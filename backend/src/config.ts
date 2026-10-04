@@ -32,6 +32,11 @@ export interface Config {
    * also needs the admin's global switch on and a configured provider.
    */
   outreachSendingArmed: boolean;
+  /**
+   * Arm for the automatic research worker (RESEARCH_AUTORUN_ENABLED=1):
+   * without it `discovery:research --auto` exits at once.
+   */
+  researchAutorunEnabled: boolean;
   /** This backend's public base URL, for one-click unsubscribe links. */
   publicApiUrl: string | null;
   /** New outreach sends per rolling 24 hours (OUTREACH_DAILY_LIMIT, 1-500; default 20). */
@@ -87,6 +92,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       postalAddress: env.OUTREACH_POSTAL_ADDRESS?.trim().slice(0, 300) || null,
     },
     outreachSendingArmed: env.OUTREACH_SENDING_ENABLED === "1",
+    researchAutorunEnabled: env.RESEARCH_AUTORUN_ENABLED === "1",
     publicApiUrl: env.PUBLIC_API_URL?.trim().replace(/\/+$/, "") || null,
     outreachDailyLimit: Math.min(500, Math.max(1, Number.parseInt(env.OUTREACH_DAILY_LIMIT ?? "20", 10) || 20)),
     outreachProvider: env.OUTREACH_PROVIDER?.trim() || null,

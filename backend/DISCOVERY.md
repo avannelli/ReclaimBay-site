@@ -363,8 +363,10 @@ approved, rejected, and duplicate candidates are not researched.
   kept); a site that blocks automated access is **completed** with outcome
   `access_blocked` (runs from rules r1 recorded a robots.txt block as
   `robots_disallowed`). A run
-  whose worker died is marked failed after 10 minutes and is never retried
-  automatically: run it again.
+  whose worker died is marked failed after 10 minutes, and its candidate
+  returns from Researching to Discovered (unless it moved on, or another run
+  is queued or running for it). Only the automatic worker retries it, within
+  the limits below; otherwise run it again.
 
 **Admin workflow.** On a candidate, **Run research** (or Run research again)
 queues a run; it is processed in the background (about 10 seconds per site).
@@ -380,7 +382,54 @@ shows its research outcome.
 npm run discovery:research -- --candidate <id> [--candidate <id> ...]
 npm run discovery:research -- --limit 5 [--tier core] [--city Oxnard]
 npm run discovery:research -- --process          # only process what is queued
+npm run discovery:research -- --auto [--limit 10]  # the automatic worker (below)
 ```
+
+Queueing is atomic per candidate: it locks the candidate's row before
+checking for a queued or running run, so two requests at once (two admins, the
+admin and the worker) make exactly one run.
+
+### The automatic research worker (`--auto`)
+
+One invocation researches a small batch and exits; Railway Cron (planned:
+every 15 minutes, `npm run discovery:research -- --auto --limit 10`) runs it
+again. It never sends anything and never starts outreach.
+
+1. **Armed or nothing.** Without `RESEARCH_AUTORUN_ENABLED=1` it exits at once.
+2. **One at a time.** It takes a PostgreSQL session advisory lock on a
+   connection of its own (`pg_try_advisory_lock`); if another worker holds it,
+   it exits cleanly. The lock goes when the worker exits or its connection
+   closes.
+3. **Releases stranded work:** stale runs fail, their candidates return to
+   Discovered (above).
+4. **Selects**, after any runs already queued: never-researched candidates
+   (newest first), then eligible retries (oldest attempt first). Only
+   Discovered candidates not outside the target category: never a person's
+   hold (Needs review), Researched, approved, rejected, or duplicate ones.
+   Queued with trigger `scheduled`.
+5. **Researches** queued runs one at a time, oldest first, at most `--limit`
+   (default 10, at most 25), 1 second apart; each completed run is followed by
+   the automatic decision (approval@a1, rejection@r1, or review).
+6. **Stops** when nothing is left, at the limit, after a 10-minute time budget
+   (it starts no new candidate after that), or on SIGTERM/SIGINT; a stop never
+   interrupts the candidate in progress.
+7. Prints **one summary line**. Exit code 0 (also when disarmed, locked, or
+   with nothing to do); 1 only for an unexpected error.
+
+**Retries** (`retryDecision`, from the run history; no new table). A candidate
+is tried again only when its latest run **failed without an outcome** (an
+error, or interrupted) or **couldn't reach the website**
+(`website_unreachable`); at most **3 attempts** in all, the first included;
+at least **24 hours** after the last attempt. Never retried: any other
+outcome (no website, access blocked, robots.txt, mismatch, unconfirmed,
+verified), and any candidate that isn't Discovered. After the third attempt a
+person decides.
+
+**On the Discovery page**, under the automation summary, one line from the
+runs the worker queued: the last automatic run, how many it researched and how
+many failed in the last 24 hours, and how many candidates are waiting (new,
+and to retry). It turns amber when candidates are waiting and no automatic run
+happened in the last hour.
 
 **Real-data validation (Ventura County, 2026-10-01, rules r1).** Ten
 deliberately chosen candidates, 45 requests per pass (robots.txt included), under a minute:
@@ -979,8 +1028,9 @@ Discovery sends nothing to analytics, and no customer report data is involved.
 - Finding a website for a candidate that has none (no free, terms-compatible
   search API), and reading sources other than the business's own website
   (maps, directories, social pages, state registries).
-- Researching all candidates at once, or on a schedule: research runs on
-  request, for one candidate or a batch of at most 10 (admin) / 25 (CLI).
+- Researching all candidates at once: research runs on request, for one
+  candidate or a batch of at most 10 (admin) / 25 (CLI), or in small
+  scheduled batches by the automatic worker once its cron service exists.
 - Removing a provider website research found to be wrong: it is flagged; a
   person removes it.
 - Contacting anyone. No email, calls, outreach, follow-ups, or campaigns.
@@ -1021,7 +1071,8 @@ Discovery sends nothing to analytics, and no customer report data is involved.
 - A chain's location page (e.g. jiffylube.com) can verify as the location's
   website; the chain brand then sets Independent shop to "no".
 - The in-process research worker stops if the web process restarts; queued
-  runs are picked up by the next action or `npm run discovery:research -- --process`.
+  runs are picked up by the next action, `npm run discovery:research -- --process`,
+  or the automatic worker.
 
 ## Tests
 
@@ -1031,13 +1082,16 @@ npm test                    # unit: normalization, dedupe rules A-G and the matc
                             # (no provider phone), privacy, and Overture: releases, category tiers,
                             # record mapping, boundaries, importer stats, query safety; automated research:
                             # robots.txt, HTML reading, ownership verification, every signal rule,
-                            # contact rules, conflicts, retries and failures (fixture websites only)
+                            # contact rules, conflicts, retries and failures (fixture websites only);
+                            # the automatic worker's retry rules, time budget, and stop (fake clock)
 TEST_DATABASE_URL=<local url> npm run test:integration
                             # runs, dedupe against candidates and prospects, research, lifecycle,
                             # approval, provenance, the admin pages over HTTP, the pipeline
                             # (import/staging/pruning, queued runs, reclaim, tiers, provider phone),
                             # Overture end to end with the network source replaced, and automated
                             # research (queue, reconciliation, idempotency, failures, admin pages)
+                            # and the automatic worker (atomic queueing, the worker lock, stale
+                            # release, selection, retries, the decision after research, its status)
                             # against fixture websites (no live sites)
 ```
 

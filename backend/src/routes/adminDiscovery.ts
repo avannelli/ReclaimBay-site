@@ -24,7 +24,7 @@ import {
   updateCandidate,
 } from "../discovery/service.js";
 import { recentImports } from "../discovery/staging.js";
-import { MAX_BATCH, autoResearchIds, candidateResearch, enqueueResearch, processQueuedResearch, researchQueue, type ProcessDeps } from "../research/service.js";
+import { MAX_BATCH, autoResearchIds, automaticResearchStatus, candidateResearch, enqueueResearch, processQueuedResearch, researchQueue, type ProcessDeps } from "../research/service.js";
 import { ProspectError } from "../prospects.js";
 
 type Form = Record<string, string>;
@@ -100,14 +100,15 @@ export async function discoveryRoutes(app: FastifyInstance, opts: { config: Conf
     extra: { notice?: string; noticeLink?: { href: string; label: string }; errors?: string[]; values?: Values; view?: QueueView } = {},
   ) => {
     const { view = "all", ...rest } = extra;
-    const [queue, runs, runCount, imports, research] = await Promise.all([
+    const [queue, runs, runCount, imports, research, autoResearch] = await Promise.all([
       reviewQueue(db, filters, view),
       recentRuns(db),
       db.discoveryRun.count(),
       recentImports(db),
       researchQueue(db),
+      automaticResearchStatus(db),
     ]);
-    return html(reply, discoveryPage({ providers: providerOptions, queue, runs, runCount, imports, research, filters, ...rest }));
+    return html(reply, discoveryPage({ providers: providerOptions, queue, runs, runCount, imports, research, autoResearch, filters, ...rest }));
   };
 
   /** Where a queue action returns to: the same view, with a confirmation keyed by `done`. */

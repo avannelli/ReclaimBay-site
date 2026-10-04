@@ -21,7 +21,7 @@
  *   - One queued or running run per candidate at a time.
  *   - Failures are recorded on the run; nothing retries in a loop.
  */
-import type { Db } from "../db.js";
+import { createDb, type Db } from "../db.js";
 import { researchGateErrors } from "../discovery/approval.js";
 import { autoDecideCandidate } from "../discovery/service.js";
 import { CATEGORY_VERDICT_LABELS, automatedMayReplace, categoryFields, isOutsideTarget } from "../discovery/categoryCheck.js";
@@ -40,7 +40,7 @@ export const MAX_BATCH = 10;
 /** Pause between two candidates in a batch (different sites; politeness only). */
 export const BETWEEN_CANDIDATES_MS = 1_000;
 
-export type ResearchTrigger = "admin" | "batch" | "cli";
+export type ResearchTrigger = "admin" | "batch" | "cli" | "scheduled";
 
 const NOT_RESEARCHABLE = new Set(["approved", "rejected", "duplicate"]);
 
@@ -54,6 +54,8 @@ export async function enqueueResearch(db: Db, candidateIds: readonly string[], t
   const out: EnqueueResult = { queued: [], skipped: [] };
   for (const candidateId of [...new Set(candidateIds)].slice(0, max)) {
     await db.$transaction(async (tx) => {
+      // One queueing decision per candidate at a time: a concurrent request waits, then sees the run this one made.
+      await tx.$queryRaw`SELECT id FROM "DiscoveryCandidate" WHERE id = ${candidateId}::uuid FOR UPDATE`;
       const c = await tx.discoveryCandidate.findUnique({ where: { id: candidateId }, select: { status: true } });
       if (!c) return void out.skipped.push({ candidateId, reason: "not found" });
       if (NOT_RESEARCHABLE.has(c.status)) return void out.skipped.push({ candidateId, reason: `candidate is ${c.status}` });
@@ -311,12 +313,27 @@ async function pruneHistory(tx: Tx, candidateId: string) {
   if (old.length) await tx.candidateResearch.deleteMany({ where: { id: { in: old.map((o) => o.id) } } });
 }
 
-/** Marks runs whose worker stopped responding as failed. They are not retried automatically. */
+/**
+ * Marks runs whose worker stopped responding as failed, and returns each such
+ * run's candidate from Researching to Discovered when nothing else is queued
+ * or running for it (a candidate that has since moved on is left alone). The
+ * automatic worker may try it again later (retryDecision); nothing retries here.
+ */
 export async function failStaleResearch(db: Db, staleAfterMs = STALE_RESEARCH_MS) {
+  const cutoff = new Date(Date.now() - staleAfterMs);
+  const stale = await db.candidateResearch.findMany({ where: { status: "running", heartbeatAt: { lt: cutoff } }, select: { id: true, candidateId: true } });
+  if (!stale.length) return 0;
+  const now = new Date();
   const { count } = await db.candidateResearch.updateMany({
-    where: { status: "running", heartbeatAt: { lt: new Date(Date.now() - staleAfterMs) } },
-    data: { status: "failed", error: "Interrupted: the research stopped before it finished. Run it again.", finishedAt: new Date() },
+    where: { id: { in: stale.map((r) => r.id) }, status: "running", heartbeatAt: { lt: cutoff } },
+    data: { status: "failed", error: "Interrupted: the research stopped before it finished. Run it again.", finishedAt: now },
   });
+  for (const candidateId of new Set(stale.map((r) => r.candidateId))) {
+    await db.discoveryCandidate.updateMany({
+      where: { id: candidateId, status: "researching", research: { none: { status: { in: ["queued", "running"] } } } },
+      data: { status: "discovered", statusChangedAt: now },
+    });
+  }
   return count;
 }
 
@@ -398,3 +415,239 @@ export const autoResearchIds = (
     .slice(0, max)
     .map((r) => r.candidate.id);
 
+// ---------- the automatic research worker (discovery:research --auto) ----------
+
+/** The automatic worker's session lock (pg_try_advisory_lock): one automatic worker at a time. */
+export const RESEARCH_WORKER_LOCK = 51_120_001;
+/** An automatic run starts no new candidate after this long. */
+export const AUTO_TIME_BUDGET_MS = 10 * 60 * 1000;
+/** Research attempts per candidate, the first included, before only a person tries again. */
+export const MAX_RESEARCH_ATTEMPTS = 3;
+/** Least time between two automatic attempts at the same candidate. */
+export const RETRY_AFTER_MS = 24 * 60 * 60 * 1000;
+/** The most candidates one automatic invocation takes (the CLI's own cap). */
+export const MAX_BATCH_AUTO = 25;
+
+export interface RunHistoryEntry {
+  status: string;
+  outcome: string | null;
+  queuedAt: Date;
+  finishedAt: Date | null;
+}
+
+/**
+ * Whether automatic research may try a candidate again, from its run history
+ * (newest first). Only a transient failure is retried: a run that failed
+ * without an outcome (an error, or interrupted), or a website that couldn't
+ * be reached; and only when fewer than MAX_RESEARCH_ATTEMPTS runs exist and
+ * the last ended at least RETRY_AFTER_MS ago. Anything else (any other
+ * outcome, completed or not, or a run in progress) is never retried. Pure.
+ */
+export function retryDecision(runs: readonly RunHistoryEntry[], now: Date): { retry: boolean; reason: string } {
+  const latest = runs[0];
+  if (!latest) return { retry: false, reason: "never researched" };
+  if (latest.status === "queued" || latest.status === "running") return { retry: false, reason: "research is queued or running" };
+  const transient = latest.status === "failed" && (latest.outcome === null || latest.outcome === "website_unreachable");
+  if (!transient) return { retry: false, reason: `research finished (${latest.outcome ?? latest.status})` };
+  if (runs.length >= MAX_RESEARCH_ATTEMPTS) return { retry: false, reason: `${runs.length} attempts made` };
+  const at = latest.finishedAt ?? latest.queuedAt;
+  if (now.getTime() - at.getTime() < RETRY_AFTER_MS) return { retry: false, reason: "tried less than 24 hours ago" };
+  return { retry: true, reason: "a transient failure, retried" };
+}
+
+/**
+ * Candidates the automatic worker may research: Discovered (never a person's
+ * hold, and nothing already decided or closed), and not outside the target
+ * category.
+ */
+const AUTO_RESEARCHABLE = {
+  status: "discovered",
+  OR: [{ categoryVerdict: null }, { categoryVerdict: { not: "wrong_category" } }],
+} satisfies Prisma.DiscoveryCandidateWhereInput;
+
+/** What the automatic worker would take now: never-researched candidates first (newest first), then eligible retries (oldest attempt first). */
+export async function autoResearchSelection(db: Db, limit: number, now = new Date()) {
+  const fresh = await db.discoveryCandidate.findMany({
+    where: { ...AUTO_RESEARCHABLE, research: { none: {} } },
+    orderBy: [{ discoveredAt: "desc" }, { id: "asc" }],
+    take: limit,
+    select: { id: true },
+  });
+  const tried = await db.discoveryCandidate.findMany({
+    where: { ...AUTO_RESEARCHABLE, research: { some: {} } },
+    select: { id: true, research: { orderBy: { queuedAt: "desc" }, select: { status: true, outcome: true, queuedAt: true, finishedAt: true } } },
+  });
+  const retries = tried
+    .filter((c) => retryDecision(c.research, now).retry)
+    .sort((a, b) => (a.research[0]!.finishedAt ?? a.research[0]!.queuedAt).getTime() - (b.research[0]!.finishedAt ?? b.research[0]!.queuedAt).getTime() || a.id.localeCompare(b.id));
+  return { fresh: fresh.map((c) => c.id), retries: retries.map((c) => c.id) };
+}
+
+/** How many candidates are waiting for the automatic worker: never researched, and eligible retries. */
+export async function autoResearchWaiting(db: Db, now = new Date()) {
+  const [fresh, { retries }] = await Promise.all([
+    db.discoveryCandidate.count({ where: { ...AUTO_RESEARCHABLE, research: { none: {} } } }),
+    autoResearchSelection(db, 0, now),
+  ]);
+  return { fresh, retries: retries.length };
+}
+
+/**
+ * Takes the automatic worker's lock on a connection of its own (a session
+ * lock lives as long as its connection). Null when another worker holds it.
+ * `release` unlocks and closes the connection.
+ */
+export async function acquireWorkerLock(databaseUrl: string): Promise<{ release: () => Promise<void> } | null> {
+  // One connection, never closed for being idle: closing it would drop the lock.
+  const conn = createDb(databaseUrl, { max: 1, idleTimeoutMillis: 0 });
+  try {
+    const [row] = await conn.$queryRaw<{ locked: boolean }[]>`SELECT pg_try_advisory_lock(${RESEARCH_WORKER_LOCK}) AS locked`;
+    if (!row?.locked) {
+      await conn.$disconnect();
+      return null;
+    }
+  } catch (err) {
+    await conn.$disconnect();
+    throw err;
+  }
+  return {
+    release: async () => {
+      try {
+        await conn.$queryRaw`SELECT pg_advisory_unlock(${RESEARCH_WORKER_LOCK})`;
+      } finally {
+        await conn.$disconnect();
+      }
+    },
+  };
+}
+
+export type DrainStop = "done" | "limit" | "budget" | "signal";
+
+/**
+ * Processes one item at a time until there is nothing left, `limit` items
+ * were taken, the time budget is spent, or a stop was requested. A stop or a
+ * spent budget never interrupts the item in progress: it is only checked
+ * before starting the next one. `next` returns null when nothing is left.
+ */
+export async function drainWithBudget<T>(opts: {
+  next: () => Promise<{ result: T | null } | null>;
+  limit: number;
+  budgetMs: number;
+  clock: () => number;
+  shouldStop: () => boolean;
+  sleep: (ms: number) => Promise<void>;
+  pauseMs: number;
+}): Promise<{ results: T[]; stoppedBy: DrainStop }> {
+  const start = opts.clock();
+  const results: T[] = [];
+  for (let i = 0; ; i++) {
+    if (i >= opts.limit) return { results, stoppedBy: "limit" };
+    if (i > 0) await opts.sleep(opts.pauseMs);
+    if (opts.shouldStop()) return { results, stoppedBy: "signal" };
+    if (opts.clock() - start >= opts.budgetMs) return { results, stoppedBy: "budget" };
+    const item = await opts.next();
+    if (!item) return { results, stoppedBy: "done" };
+    if (item.result !== null) results.push(item.result);
+  }
+}
+
+export interface AutoResearchReport {
+  /** disabled: the arm is off; locked: another worker holds the lock; otherwise why it stopped. */
+  outcome: "disabled" | "locked" | DrainStop;
+  reclaimed: number;
+  queuedFresh: number;
+  queuedRetries: number;
+  completed: number;
+  failed: number;
+  approved: number;
+  rejected: number;
+  review: number;
+  elapsedMs: number;
+}
+
+/**
+ * One invocation of the automatic research worker (discovery:research
+ * --auto), for Railway Cron: off unless armed; one worker at a time (the
+ * lock); stale runs released; new candidates, then eligible retries, queued
+ * as "scheduled"; then queued runs processed oldest first, sequentially, up
+ * to `limit` and within the time budget, each followed by the automatic
+ * decision (approval@a1, rejection@r1, or review). It never sends anything.
+ */
+export async function runAutoResearch(
+  db: Db,
+  opts: {
+    enabled: boolean;
+    databaseUrl: string;
+    limit: number;
+    budgetMs?: number;
+    shouldStop?: () => boolean;
+    clock?: () => number;
+    deps?: ProcessDeps;
+    /** Tests replace the lock; the worker always uses one. */
+    lock?: () => Promise<{ release: () => Promise<void> } | null>;
+  },
+): Promise<AutoResearchReport> {
+  const clock = opts.clock ?? Date.now;
+  const started = clock();
+  const report: AutoResearchReport = { outcome: "done", reclaimed: 0, queuedFresh: 0, queuedRetries: 0, completed: 0, failed: 0, approved: 0, rejected: 0, review: 0, elapsedMs: 0 };
+  if (!opts.enabled) return { ...report, outcome: "disabled" };
+  const lock = await (opts.lock ?? (() => acquireWorkerLock(opts.databaseUrl)))();
+  if (!lock) return { ...report, outcome: "locked" };
+  try {
+    const limit = Math.max(1, Math.min(MAX_BATCH_AUTO, opts.limit));
+    report.reclaimed = await failStaleResearch(db);
+    // Runs already waiting (queued earlier, by a person or a previous invocation) go first and count toward the limit.
+    const slots = Math.max(0, limit - (await db.candidateResearch.count({ where: { status: "queued" } })));
+    const { fresh, retries } = slots ? await autoResearchSelection(db, slots, new Date(clock())) : { fresh: [], retries: [] };
+    const picked = [...fresh, ...retries].slice(0, slots);
+    const queued = picked.length ? (await enqueueResearch(db, picked, "scheduled", slots)).queued.map((q) => q.candidateId) : [];
+    report.queuedFresh = queued.filter((id) => fresh.includes(id)).length;
+    report.queuedRetries = queued.length - report.queuedFresh;
+
+    const sleep = opts.deps?.sleep ?? ((ms: number) => new Promise((r) => setTimeout(r, ms)));
+    const { results, stoppedBy } = await drainWithBudget({
+      limit,
+      budgetMs: opts.budgetMs ?? AUTO_TIME_BUDGET_MS,
+      clock,
+      shouldStop: opts.shouldStop ?? (() => false),
+      sleep,
+      pauseMs: BETWEEN_CANDIDATES_MS,
+      next: async () => {
+        const run = await db.candidateResearch.findFirst({ where: { status: "queued" }, orderBy: { queuedAt: "asc" }, select: { id: true } });
+        if (!run) return null;
+        return { result: await processResearch(db, run.id, opts.deps) };
+      },
+    });
+    report.outcome = stoppedBy;
+    for (const r of results) {
+      if (r.status !== "completed") {
+        report.failed++;
+        continue;
+      }
+      report.completed++;
+      const c = await db.discoveryCandidate.findUnique({ where: { id: r.candidateId }, select: { status: true } });
+      if (c?.status === "approved") report.approved++;
+      else if (c?.status === "rejected") report.rejected++;
+      else report.review++;
+    }
+  } finally {
+    await lock.release();
+  }
+  return { ...report, elapsedMs: clock() - started };
+}
+
+/** The automatic worker's state for the Discovery page, from the runs it queued ("scheduled"). */
+export async function automaticResearchStatus(db: Db, now = new Date()) {
+  const since = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+  const [last, completed, failed, waiting] = await Promise.all([
+    db.candidateResearch.findFirst({ where: { trigger: "scheduled" }, orderBy: { queuedAt: "desc" }, select: { queuedAt: true } }),
+    db.candidateResearch.count({ where: { trigger: "scheduled", status: "completed", finishedAt: { gte: since } } }),
+    db.candidateResearch.count({ where: { trigger: "scheduled", status: "failed", finishedAt: { gte: since } } }),
+    autoResearchWaiting(db, now),
+  ]);
+  const lastRunAt = last?.queuedAt ?? null;
+  const waitingTotal = waiting.fresh + waiting.retries;
+  // Candidates are waiting, but no automatic run in the last hour: the scheduled worker isn't running.
+  const stale = waitingTotal > 0 && (!lastRunAt || now.getTime() - lastRunAt.getTime() > 60 * 60 * 1000);
+  return { lastRunAt, researched24h: completed, failed24h: failed, waitingFresh: waiting.fresh, waitingRetries: waiting.retries, stale };
+}
