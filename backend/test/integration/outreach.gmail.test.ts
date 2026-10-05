@@ -287,7 +287,7 @@ describe("outreach through Gmail", { skip: skipReason }, () => {
       inbound("in-reply", thread(a.o), { From: `Owner <${a.p.email}>`, Subject: "Re: Declined work at G Auto" }, [{ mimeType: "text/plain", text: "Sounds interesting, call me." }], "Sounds interesting, call me."),
       inbound("in-ooo", thread(b.o), { From: `Front <${b.p.email}>`, Subject: "Automatic reply: Declined work", "Auto-Submitted": "auto-replied" }),
       inbound("in-dsn", thread(c.o), { From: "Mail Delivery Subsystem <mailer-daemon@googlemail.com>", Subject: "Delivery Status Notification (Failure)" }, [
-        { mimeType: "message/delivery-status", text: "Action: failed\nStatus: 5.1.1\nDiagnostic-Code: smtp; 550 5.1.1 does not exist" },
+        { mimeType: "message/delivery-status", text: `Action: failed\nStatus: 5.1.1\nFinal-Recipient: rfc822; ${c.p.email}\nDiagnostic-Code: smtp; 550 5.1.1 does not exist` },
       ]),
       inbound("in-unsub", "th-new", { From: `${d.p.email}`, Subject: "unsubscribe" }),
       inbound("in-stranger", "th-other", { From: "someone@else.example.com", Subject: "Hello" }),

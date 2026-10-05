@@ -12,6 +12,7 @@ const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? o
 export function inboxLogLines(r: InboxReport, opts: { apply: boolean; mailbox: string }): string[] {
   const count = (pred: (i: InboxReport["items"][number]) => boolean) => r.items.filter(pred).length;
   const matched = r.items.filter((i) => i.outreachId);
+  const review = r.items.filter((i) => i.result === "ambiguous" || i.result === "unresolved");
   const byOutcome = new Map<string, number>();
   for (const i of matched) byOutcome.set(`${i.kind} ${i.result}`, (byOutcome.get(`${i.kind} ${i.result}`) ?? 0) + 1);
 
@@ -19,6 +20,7 @@ export function inboxLogLines(r: InboxReport, opts: { apply: boolean; mailbox: s
     `${opts.apply ? "APPLIED" : "DRY RUN (nothing is recorded; pass --apply)"}: ${plural(r.checked, "message")} read from ${opts.mailbox}'s mailbox.`,
     `  own ${count((i) => i.kind === "own")}, auto-replies ${count((i) => i.kind === "auto_reply")}, delays ${count((i) => i.kind === "delay")}, unmatched ${count((i) => i.result === "unmatched")}, matched ${matched.length}`,
     ...(count((i) => i.result === "review_open" || i.result === "would review") ? [`  emailed unsubscribe needs review ${count((i) => i.result === "review_open" || i.result === "would review")} (no automatic suppression; see admin outreach)`] : []),
+    ...(review.length ? [`  Inbox needs operator review ${review.length}: inspect Gmail; no reply or bounce suppression recorded.`, ...review.map((i) => `  ${i.kind} ${i.result} (${i.attribution?.reason ?? "insufficient_identity"}); candidate outreach: ${i.attribution?.candidateOutreachIds.join(", ") || "none"}`)] : []),
     ...(byOutcome.size ? [`  matched: ${[...byOutcome].map(([k, n]) => `${k} ${n}`).join(", ")}`] : []),
     // Our own message id is enough to find the message in the admin; nothing about the mail itself.
     ...matched.map((i) => `  ${i.kind} ${i.result} -> ${i.outreachId}`),

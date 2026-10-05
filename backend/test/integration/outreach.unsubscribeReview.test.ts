@@ -313,7 +313,8 @@ describe("ambiguous emailed unsubscribe (real PostgreSQL, fake Gmail)", { skip: 
   test("normal delegated replies and multiple chronological OutreachReply records retain existing semantics", async () => {
     const a = await sent(); const f = mailbox([a], "delegate@shop.example");
     f.google.inbox[0]!.payload!.headers!.find((h) => h.name === "Subject")!.value = "Re: Hello";
-    f.google.inbox.push(inbound("second-reply", "shared-thread", { From: "other@shop.example", Subject: "Re: Hello" }, [], "Second reply", new Date(AT.getTime() + 1)));
+    f.google.inbox[0]!.payload!.headers!.push({ name: "In-Reply-To", value: `<${a.o.providerMessageId}@fake.gmail.example>` });
+    f.google.inbox.push(inbound("second-reply", "shared-thread", { From: "other@shop.example", Subject: "Re: Hello", "In-Reply-To": `<${a.o.providerMessageId}@fake.gmail.example>` }, [], "Second reply", new Date(AT.getTime() + 1)));
     const r = await ingest(f); assert.ok(r.items.every((i) => i.result === "recorded"));
     const replies = await db.outreachReply.findMany({ orderBy: { receivedAt: "asc" } });
     assert.deepEqual(replies.map((r) => r.gmailMessageId), ["in-unsubscribe", "second-reply"]);

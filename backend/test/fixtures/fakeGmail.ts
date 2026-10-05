@@ -160,6 +160,8 @@ export class FakeGoogle {
         const split = decoded.indexOf("\r\n\r\n");
         const headers = split >= 0 ? decoded.slice(0, split).split("\r\n").map((line) => ({ name: line.slice(0, line.indexOf(":")), value: line.slice(line.indexOf(":") + 1).trim() })) : [];
         if (!headers.some((h) => h.name === "X-ReclaimBay-Outreach") && sent.marker) headers.push({ name: "X-ReclaimBay-Outreach", value: sent.marker });
+        // Gmail assigns its own RFC Message-ID, distinct from the API's message ID.
+        if (!headers.some((h) => h.name.toLowerCase() === "message-id")) headers.push({ name: "Message-ID", value: `<${sent.id}@fake.gmail.example>` });
         const data = split >= 0 ? Buffer.from(decoded.slice(split + 4), "base64").toString("base64url") : "";
         return reply({ status: 200, body: { id: sent.id, threadId: sent.threadId, internalDate: sent.internalDate, labelIds: ["SENT"], payload: { mimeType: "text/plain", headers, body: { data } } } });
       }

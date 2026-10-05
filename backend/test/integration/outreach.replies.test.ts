@@ -361,7 +361,7 @@ describe("individual outreach replies (PostgreSQL and fake Gmail)", { skip: skip
     const b = await sent();
     const { google, client, thread } = mailbox(a.o);
     google.sent.push({ id: b.o.providerMessageId!, threadId: `thread-${b.o.id}`, marker: b.o.id, raw: "" });
-    google.inbox.push(inbound("bounce", thread, { From: "mailer-daemon@example.com", Subject: "Delivery failure" }, [{ mimeType: "message/delivery-status", text: "Action: failed\nStatus: 5.1.1\nDiagnostic-Code: smtp; No mailbox" }], "", AT));
+    google.inbox.push(inbound("bounce", thread, { From: "mailer-daemon@example.com", Subject: "Delivery failure" }, [{ mimeType: "message/delivery-status", text: `Action: failed\nStatus: 5.1.1\nFinal-Recipient: rfc822; ${a.p.email}\nDiagnostic-Code: smtp; No mailbox` }], "", AT));
     google.inbox.push(inbound("unsubscribe", `thread-${b.o.id}`, { From: b.p.email!, Subject: "Re: unsubscribe" }, [], "", AT));
     const first = await pollGmailInbox(db, client, { apply: true });
     assert.deepEqual(first.items.map((r) => [r.kind, r.result]), [["bounce", "recorded"], ["unsubscribe", "recorded"]]);

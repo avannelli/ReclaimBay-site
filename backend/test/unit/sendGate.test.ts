@@ -40,6 +40,7 @@ const UNGATED: Record<string, string[]> = {
 /** Helpers that run inside a caller's transaction: they must never take the gate themselves. */
 const HELPERS: Record<string, string[]> = {
   "outreach/records.ts": ["cancelOne", "cancelOpenOutreach", "suppressEmail"],
+  "outreach/inboxAttribution.ts": ["resolveInboxAttribution"],
   "outreach/service.ts": ["moveOutreachInTx", "advanceProspect", "queueBlockers", "recordSentInTx", "applyReplyOutcome", "recordReplyInTx", "unsubscribeOutreachInTx"],
   "prospects.ts": ["changeStatusInTx", "insertProspect"],
   "invitations/service.ts": ["createInvitationInTx", "revokeInvitationInTx", "attributeSession"],

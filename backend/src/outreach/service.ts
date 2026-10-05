@@ -39,6 +39,7 @@ import {
 } from "./lifecycle.js";
 import { messageEligibilityErrors, outreachEligibility } from "./eligibility.js";
 import { isSuppressed, lockOutreach, lockSendGate, logOutreachEvent, sendInProgress, suppressEmail } from "./records.js";
+import { resolveInboxAttribution, type InboxEvidence, type InboxAttribution } from "./inboxAttribution.js";
 
 type Tx = Prisma.TransactionClient;
 
@@ -338,6 +339,8 @@ export async function recordSentInTx(tx: Tx, id: string, provider: string, provi
 
 /** A provider notification, normalised. Adapters translate their webhooks into this. */
 export interface ProviderEvent {
+  /** Gmail's read-only evidence: attribution is rechecked under the gate. */
+  inboxEvidence?: InboxEvidence;
   provider: string;
   type: "sent" | "delivered" | "bounced" | "failed" | "complained";
   /** The provider's id for this notification; a repeat is ignored. */
@@ -351,7 +354,7 @@ export interface ProviderEvent {
   at?: Date;
 }
 
-export type ProviderEventResult = "recorded" | "duplicate" | "unknown_message" | "ignored";
+export type ProviderEventResult = "recorded" | "duplicate" | "unknown_message" | "ignored" | "unresolved" | "ambiguous";
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
@@ -369,7 +372,7 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
  *   failed      -> failed
  *   complained  logged; the address is suppressed; the prospect becomes Do not contact
  */
-export async function applyProviderEvent(db: Db, ev: ProviderEvent): Promise<{ result: ProviderEventResult; outreachId: string | null }> {
+export async function applyProviderEvent(db: Db, ev: ProviderEvent): Promise<{ result: ProviderEventResult; outreachId: string | null; attribution?: InboxAttribution }> {
   const at = ev.at ?? new Date();
   const eventId = ev.providerEventId?.slice(0, 200) ?? null;
   const o =
@@ -381,11 +384,21 @@ export async function applyProviderEvent(db: Db, ev: ProviderEvent): Promise<{ r
   }
   if (ev.type === "bounced" && ev.permanent === false) return { result: "ignored", outreachId: o.id };
   const reason = ev.reason?.slice(0, 500) ?? null;
+  let rejectedAttribution: InboxAttribution | undefined;
 
   try {
     const result = await db.$transaction(async (tx): Promise<ProviderEventResult> => {
       await lockSendGate(tx);
       await lockOutreach(tx, o.id);
+      let recipientEmail = o.recipientEmail;
+      if (ev.inboxEvidence) {
+        const checked = await resolveInboxAttribution(tx, ev.inboxEvidence);
+        if (checked.status !== "matched" || checked.outreachId !== o.id) {
+          rejectedAttribution = checked.status === "matched" ? { ...checked, status: "unresolved", outreachId: null, reason: "changed_candidate" } : checked;
+          return checked.status === "ambiguous" ? "ambiguous" : "unresolved";
+        }
+        recipientEmail = checked.identity!.recipientEmail;
+      }
       // Checked again under the lock: a concurrent copy may have just recorded it.
       if (eventId && (await tx.outreachEvent.findUnique({ where: { providerEventId: eventId }, select: { id: true } }))) return "duplicate";
       const current = (await tx.outreach.findUniqueOrThrow({ where: { id: o.id } })).status;
@@ -412,10 +425,10 @@ export async function applyProviderEvent(db: Db, ev: ProviderEvent): Promise<{ r
       const data: Prisma.OutreachUpdateManyMutationInput =
         to === "delivered" ? { deliveredAt: at } : { failedAt: at, failureReason: reason, lastSendError: null };
       await moveOutreachInTx(tx, o.id, to, data, reason, at, eventId);
-      if (to === "bounced") await suppressEmail(tx, o.recipientEmail, "bounced", reason, o.id, at);
+      if (to === "bounced") await suppressEmail(tx, recipientEmail, "bounced", reason, o.id, at);
       return "recorded";
     });
-    return { result, outreachId: o.id };
+    return rejectedAttribution ? { result, outreachId: null, attribution: rejectedAttribution } : { result, outreachId: o.id };
   } catch (err) {
     // The same notification processed twice at once: the unique id lets one win.
     if (isUniqueClash(err, "providerEventId")) return { result: "duplicate", outreachId: o.id };
@@ -503,6 +516,8 @@ export async function classifyReply(db: Db, id: string, outcomeRaw: unknown, now
 
 /** An inbound email, normalised by the inbox integration (or a manual caller). */
 export interface InboundReply {
+  /** Supplied only by Gmail ingestion; no provider network calls under the gate. */
+  inboxEvidence?: InboxEvidence;
   fromEmail: string;
   /** Authorized Gmail account and actual inbound m.id, never the Send As alias. */
   mailboxAccount?: string;
@@ -555,6 +570,13 @@ export async function recordInboundReply(db: Db, reply: InboundReply) {
     if (existing) return { result: "duplicate" as const, outreachId: existing.outreachId };
     // Decided under the lock, so a concurrent copy of this reply, or a bounce, can't slip in between.
     await lockOutreach(tx, o.id);
+    if (reply.inboxEvidence) {
+      const checked = await resolveInboxAttribution(tx, reply.inboxEvidence);
+      if (checked.status !== "matched" || checked.outreachId !== o.id) {
+        const attribution: InboxAttribution = checked.status === "matched" ? { ...checked, status: "unresolved", outreachId: null, reason: "changed_candidate" } : checked;
+        return { result: checked.status === "ambiguous" ? "ambiguous" as const : "unresolved" as const, outreachId: null, attribution };
+      }
+    }
     const status = (await tx.outreach.findUniqueOrThrow({ where: { id: o.id }, select: { status: true } })).status;
     if (status === "replied" && !identity) return { result: "duplicate" as const, outreachId: o.id };
     if (status !== "replied" && outreachTransitionErrors(status, "replied").length) return { result: "ignored" as const, outreachId: o.id };
