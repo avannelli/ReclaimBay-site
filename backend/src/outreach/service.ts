@@ -571,18 +571,23 @@ export async function recordInboundReply(db: Db, reply: InboundReply) {
  * once. Repeating it changes nothing.
  */
 export async function unsubscribeOutreach(db: Db, outreachId: string, via: string, now = new Date()) {
-  const o = await db.outreach.findUnique({ where: { id: outreachId } });
-  if (!o) return { result: "unknown" as const };
   return db.$transaction(async (tx) => {
     await lockSendGate(tx);
-    await lockOutreach(tx, o.id);
-    const already = await tx.outreachEvent.findFirst({ where: { outreachId: o.id, type: "unsubscribed" }, select: { id: true } });
-    await suppressEmail(tx, o.recipientEmail, "unsubscribed", `Unsubscribed ${via}.`, o.id, now);
-    await advanceProspect(tx, o.prospectId, "do_not_contact", `Unsubscribed ${via}.`, now);
-    if (already) return { result: "duplicate" as const };
-    await logOutreachEvent(tx, o.id, "unsubscribed", `Unsubscribed ${via}.`, now);
-    return { result: "recorded" as const };
+    await lockOutreach(tx, outreachId);
+    return unsubscribeOutreachInTx(tx, outreachId, via, now);
   });
+}
+
+/** Caller holds the send gate and message lock; always use current identity. */
+export async function unsubscribeOutreachInTx(tx: Tx, outreachId: string, via: string, now: Date) {
+  const o = await tx.outreach.findUnique({ where: { id: outreachId } });
+  if (!o) return { result: "unknown" as const };
+  const already = await tx.outreachEvent.findFirst({ where: { outreachId: o.id, type: "unsubscribed" }, select: { id: true } });
+  await suppressEmail(tx, o.recipientEmail, "unsubscribed", `Unsubscribed ${via}.`, o.id, now);
+  await advanceProspect(tx, o.prospectId, "do_not_contact", `Unsubscribed ${via}.`, now);
+  if (already) return { result: "duplicate" as const };
+  await logOutreachEvent(tx, o.id, "unsubscribed", `Unsubscribed ${via}.`, now);
+  return { result: "recorded" as const };
 }
 
 /** One-click unsubscribe (the List-Unsubscribe link). Unknown tokens are reported as such. */

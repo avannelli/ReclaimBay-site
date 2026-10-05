@@ -9,13 +9,14 @@
  *   delay (DSN, status 4.x.x)    -> nothing; the message is still on its way
  *   bounce of unknown kind       -> listed for a person, nothing recorded
  *   auto-reply / out of office   -> nothing (not a reply)
- *   "unsubscribe" email          -> unsubscribeOutreach (the List-Unsubscribe mailto)
+ *   "unsubscribe" email          -> strict attribution, then opt-out or durable unassigned review
  *   anything else from them      -> recordInboundReply, unclassified
  *
  * Mail is matched to a message by Gmail thread (Gmail threads replies and
  * bounces with what they answer), then by the X-ReclaimBay-Outreach marker
  * quoted in a bounce, then by sender address. Nothing is guessed: unmatched
- * mail is only reported.
+ * mail is only reported. Permanent emailed opt-outs use a separate, stricter
+ * all-candidate/sender/time decision; ambiguity never invokes suppression.
  *
  * It keeps no cursor: each run looks back a few days, and every write is
  * idempotent (bounces carry an event id; replies keep the authorized account
@@ -26,7 +27,8 @@
 import type { Db } from "../db.js";
 import { OUTREACH_HEADER, headerOf, type GmailClient, type GmailMessage, type GmailPart } from "./gmail.js";
 import { ATTEMPTED_STATUSES, normalizeEmail } from "./lifecycle.js";
-import { applyProviderEvent, recordInboundReply, unsubscribeOutreach } from "./service.js";
+import { applyProviderEvent, recordInboundReply } from "./service.js";
+import { ingestEmailedUnsubscribe } from "./emailedUnsubscribe.js";
 
 export type InboundKind = "bounce" | "delay" | "bounce_unknown" | "auto_reply" | "unsubscribe" | "reply" | "own";
 
@@ -48,7 +50,35 @@ export function messageText(part: GmailPart | undefined): string {
 }
 
 const address = (from: string) => normalizeEmail(/<([^>]+)>/.exec(from)?.[1] ?? from);
+
+function singleUnsubscribeAddress(value: string): string | null {
+  const raw = value.trim();
+  if (/[\x00-\x1f\x7f]/.test(raw)) return null;
+  const prefix = raw.includes("<") ? raw.slice(0, raw.indexOf("<")).trim() : "";
+  if (prefix && !/^"[^"]*"$/.test(prefix) && /[,@;<>]/.test(prefix)) return null;
+  const match = /^(?:[^<>]*<([^<>]+)>|([^<>\s,;]+))$/.exec(raw);
+  const email = normalizeEmail((match?.[1] ?? match?.[2])?.trim() ?? "");
+  if (email.length > 254 || !/^[^@\s,;<>:"\\]+@[^@\s,;<>:"\\]+$/.test(email)) return null;
+  return email;
+}
+
+/** Permanent opt-outs require one well-formed From identity, never a list or duplicate header. */
+export function unsubscribeSender(m: GmailMessage): string | null {
+  const headers = m.payload?.headers?.filter((h) => h.name.toLowerCase() === "from") ?? [];
+  if (headers.length !== 1) return null;
+  const email = singleUnsubscribeAddress(headers[0]!.value);
+  if (!email) return null;
+  const senders = m.payload?.headers?.filter((h) => h.name.toLowerCase() === "sender") ?? [];
+  if (senders.length > 1 || (senders.length === 1 && singleUnsubscribeAddress(senders[0]!.value) !== email)) return null;
+  return email;
+}
 const UUID = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
+
+/** Forwarded opt-outs can quote several messages: never retain only the first marker. */
+export function unsubscribeMarkers(m: GmailMessage): string[] {
+  const markers = messageText(m.payload).matchAll(new RegExp(`${OUTREACH_HEADER}:\\s*(${UUID.source})`, "gi"));
+  return [...new Set([...markers].map((match) => match[1]!.toLowerCase()))];
+}
 
 /** What an inbound message is. Pure: headers and text only. `own` is our address, or addresses (the account and its sender). */
 export function classifyInbound(m: GmailMessage, own: string | readonly string[]): Classified {
@@ -145,12 +175,23 @@ export async function pollGmailInbox(
       report.items.push(item);
       if (c.kind === "own" || c.kind === "auto_reply" || c.kind === "delay") continue;
 
+      if (c.kind === "unsubscribe") {
+        // Gmail reads remain outside the gate; this operation rechecks all DB candidates under it.
+        const thread = await client.getThread(m.threadId);
+        const result = await ingestEmailedUnsubscribe(db, { mailboxAccount: client.account, gmailMessageId: m.id,
+          senderEmail: unsubscribeSender(m), receivedAt, markerOutreachIds: unsubscribeMarkers(m),
+          threadMessageIds: (thread.messages ?? []).map((x) => x.id).filter((x) => x !== m.id) }, opts.apply, at);
+        item.result = result.result;
+        item.outreachId = result.outreachId;
+        continue;
+      }
+
       let o = await matchByThread(db, client, m, c.markerOutreachId);
-      // An emailed unsubscribe or a reply from a new thread: the latest message sent to that address
+      // An ordinary reply from a new thread: the latest message sent to that address
       // at or before this mail arrived. Mail received before we sent anything to them (an earlier,
       // unrelated email, a contact-form message) can't be an answer to it, so it stays unmatched;
       // so does mail whose received time Gmail didn't give. The thread match above is unaffected.
-      if (!o && receivedAt && (c.kind === "unsubscribe" || c.kind === "reply")) {
+      if (!o && receivedAt && c.kind === "reply") {
         o = await db.outreach.findFirst({
           where: { recipientEmail: { equals: c.from, mode: "insensitive" }, status: { in: [...ATTEMPTED_STATUSES] }, sentAt: { not: null, lte: receivedAt } },
           orderBy: { sentAt: "desc" },
@@ -181,8 +222,6 @@ export async function pollGmailInbox(
           at,
         });
         item.result = r.result;
-      } else if (c.kind === "unsubscribe") {
-        item.result = (await unsubscribeOutreach(db, o.id, "by an emailed unsubscribe request", at)).result;
       } else {
         const r = await recordInboundReply(db, { fromEmail: c.from, outreachId: o.id, mailboxAccount: client.account, gmailMessageId: m.id, summary: m.snippet?.slice(0, 500) ?? null, at });
         item.result = r.result;

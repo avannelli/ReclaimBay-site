@@ -17,6 +17,7 @@ import type { FunnelRow } from "../outreach/metrics.js";
 import type { SendingStatus } from "../outreach/dispatch.js";
 import { canConfirmStuckSent } from "../outreach/records.js";
 import { canReconcileSent } from "../outreach/reconcile.js";
+import { REVIEW_REASONS, type listUnsubscribeReviews } from "../outreach/emailedUnsubscribe.js";
 import { NO_CAMPAIGN, PAGE_SIZE, STALE_QUEUE_MS, type ActivityRow, type EligibleRow, type InvitationSummary, type MessageFilters, type MessageRow, type MessageView, type ReplyRow } from "../outreach/operations.js";
 import { PREPARE_LIMIT, type PrepareReport } from "../outreach/prepare.js";
 import type { getOutreachDetail, outreachAttention, prospectOutreach } from "../outreach/service.js";
@@ -399,6 +400,7 @@ export interface ControlPageData {
   waiting: { count: number; oldestQueuedAt: Date | null; stale: boolean };
   /** All messages, for the navigation. */
   totalMessages: number;
+  unsubscribeReviewCount?: number;
   /** Opened invitations, for the navigation. */
   openedInvitations: number;
   /**
@@ -686,6 +688,7 @@ ${
     `${notice(opts.notice)}${errorSummary(opts.errors, fe, "Not done")}
 ${pageHead({ title: "Outreach", lede: "Approved prospects get one personal email each, written from their stored evidence. Nothing is sent unless sending is switched on." })}
 ${outreachNav("overview", { eligible: eligibleN, messages: d.totalMessages, unclassified: a.replyCount, activity: d.openedInvitations })}
+<p><a href="/admin/outreach/unsubscribe-reviews">Emailed unsubscribe reviews (${d.unsubscribeReviewCount ?? 0} open)</a> <span class="small muted">Ambiguous requests remain unsuppressed until explicitly resolved.</span></p>
 ${statusBlock}
 ${tiles}
 ${attentionBlock}
@@ -781,6 +784,24 @@ function messagesTable(rows: MessageRow[]): string {
 </tr>`;
     }),
   );
+}
+
+export function unsubscribeReviewsPage(rows: Awaited<ReturnType<typeof listUnsubscribeReviews>>, page: number, result?: string, errors: string[] = []): string {
+  const decisions: Record<string, string> = { resolved: "Review resolved: the selected recipient is permanently suppressed.", dismissed: "Review dismissed. No suppression was performed.", already_processed: "This decision was already recorded. Nothing changed." };
+  const cards = rows.map((r) => {
+    const candidates = r.candidates.map((c) => `<li><a href="/admin/outreach/${esc(c.outreachId)}">${safeText(c.outreach.subject)}</a> — <a href="/admin/prospects/${esc(c.outreach.prospect.id)}">${esc(c.outreach.prospect.businessName ?? "Prospect")}</a>, recipient ${esc(c.recipientEmail)}${c.outreach.sentAt ? `, sent ${fmtDate(c.outreach.sentAt)}` : ", send not verified"}</li>`).join("");
+    const resolve = r.state === "open" && r.candidates.length ? `<form method="post" action="/admin/outreach/unsubscribe-reviews/${esc(r.id)}" class="stack">
+<input type="hidden" name="action" value="resolve">
+<label>Choose the recipient to suppress <select name="outreachId" required><option value="" selected disabled>Choose a candidate</option>${r.candidates.map((c) => `<option value="${esc(c.outreachId)}">${esc(c.outreach.prospect.businessName ?? "Prospect")} — ${esc(c.recipientEmail)} — ${esc(c.outreachId)}</option>`).join("")}</select></label>
+<label><input type="checkbox" name="confirm" value="1" required> I verified this request belongs to the selected candidate. Permanently suppress its recipient.</label>
+<div><button class="btn-danger" type="submit">Resolve and unsubscribe selected recipient</button></div></form>` : "";
+    const dismiss = r.state === "open" ? `<form method="post" action="/admin/outreach/unsubscribe-reviews/${esc(r.id)}" class="stack"><input type="hidden" name="action" value="dismiss"><label><input type="checkbox" name="confirm" value="1" required> Dismiss this review without suppressing anyone.</label><div><button type="submit" class="btn-secondary">Dismiss review</button></div></form>` : "";
+    return `<article class="card stack" id="review-${esc(r.id)}"><h2>Emailed unsubscribe — ${esc(r.state)}</h2>
+<p>Received ${r.receivedAt ? fmtDate(r.receivedAt) : "time unavailable"}; sender ${esc(r.senderEmail ?? "identity unavailable")}. ${r.resolvedAt ? `Decision recorded ${fmtDate(r.resolvedAt)}.` : "Automatic suppression was intentionally NOT performed."}</p>
+<p>${esc(REVIEW_REASONS[r.reason])}</p><ul>${candidates || "<li>No verified outbound candidates. This review can be dismissed without suppression.</li>"}</ul>
+${r.resolvedOutreachId ? `<p>Explicitly resolved to <a href="/admin/outreach/${esc(r.resolvedOutreachId)}">the selected outbound message</a>.</p>` : ""}${resolve}${dismiss}</article>`;
+  }).join("");
+  return appPage("Emailed unsubscribe reviews · ReclaimBay admin", "outreach", `${pageHead({ title: "Emailed unsubscribe reviews", lede: "Ambiguous requests are kept here without assigning a prospect. Inspect the candidates, then explicitly resolve or dismiss each request." })}<p><a href="/admin/outreach">Back to Outreach</a></p>${notice(result ? decisions[result] : undefined)}${errors.length ? `<div class="card">${errors.map((e) => `<p>${esc(e)}</p>`).join("")}</div>` : ""}<div class="stack">${cards || "<p>No reviews on this page.</p>"}</div><p>${page > 1 ? `<a href="?page=${page - 1}">Previous</a> ` : ""}${rows.length === 100 ? `<a href="?page=${page + 1}">Next</a>` : ""}</p>`);
 }
 
 function repliesTable(rows: ReplyRow[]): string {

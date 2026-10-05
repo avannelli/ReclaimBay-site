@@ -489,13 +489,43 @@ example every 5 minutes. It is a dry run by default; `--apply` records.
   The Send As address is not the mailbox identity. Distinct messages in the
   same thread remain distinct replies, even after an earlier classification.
 - It matches by Gmail thread, then by the marker quoted in a bounce, then by
-  the sender's address. Unmatched mail is only counted.
-- **By address, only mail received after we wrote.** The address match takes
+  the sender's address for ordinary replies and bounces. Unmatched mail is only counted.
+- **Emailed unsubscribes use stricter attribution.** The existing exact
+  `unsubscribe` / `Re: unsubscribe` subject rule is unchanged. One valid From
+  identity, exactly one plausible outbound message, matching recipient, a
+  verified send state/time, and received time at or after sending are required.
+  All thread, quoted-marker and chronological address candidates are considered;
+  a thread alone, a different sender, or a latest-message guess cannot authorize
+  permanent suppression. Normal replies from another address on the same
+  thread keep their existing behavior; there is no verified delegation model
+  for automatic opt-outs.
+- **Ambiguity is durable and unassigned.** `EmailedUnsubscribeReview` keeps
+  the authorized account plus inbound Gmail ID (unique), normalized sender
+  when valid, received time, a fixed reason and explicit candidate identities.
+  It stores no body, subject, sensitive URL or token. It is not an
+  `OutreachReply`, event, prospect note, suppression or cancellation, and does
+  not change funnel counts or prospect state. Repeated/concurrent ingestion
+  creates one review; different Gmail IDs create separate reviews. Once a
+  review exists, further ingestion cannot auto-resolve or reopen it.
+- **Operator resolution.** The Outreach overview links to **Emailed
+  unsubscribe reviews**, with an open count. The paged list shows reasons,
+  sender/time, candidate message links and `open`, `resolved` or `dismissed`
+  state. Choose a stored candidate and explicitly confirm permanent suppression,
+  or explicitly dismiss without suppression. There is no default candidate.
+  Resolution revalidates the candidate's prospect/recipient snapshots and
+  chronological send evidence, then invokes the existing unsubscribe path in
+  the same transaction as the decision. Stale identities are refused. Successful
+  suppression remains permanent and cancels existing unsent outreach as before.
+  Authenticated same-origin actions are rate limited. Inbox attribution and
+  operator decisions take the send gate first; provider reads stay outside it.
+  One-click tokens and invitation revocation are unchanged.
+- **By address, only mail received after we wrote.** Ordinary replies take
   the latest message sent to that address at or before the mail arrived
   (Gmail's received time against our `sentAt`). Mail received before any
   message was sent to them (an earlier email, a contact-form message to
   hello@) is never taken for a reply or an unsubscribe, and neither is mail
-  without a received time. Thread and bounce-marker matches are unchanged.
+  without a received time. Ordinary-reply thread and bounce-marker matches
+  are unchanged; emailed opt-outs use the stricter attribution above.
 - It prints counts only: own mail, auto-replies, delays, unmatched, and
   matched mail by kind and result, with our message id for each match. Never a
   sender's address, a subject, or any content

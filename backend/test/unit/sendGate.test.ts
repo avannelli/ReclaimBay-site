@@ -20,6 +20,7 @@ const read = (path: string) => readFileSync(new URL(path, SRC), "utf8");
 const GATED: Record<string, Record<string, number>> = {
   "outreach/dispatch.ts": { setSendingSwitch: 1, dispatchQueued: 2, confirmStuckSent: 1 },
   "outreach/reconcile.ts": { reconcileSent: 1 },
+  "outreach/emailedUnsubscribe.ts": { ingestEmailedUnsubscribe: 1, resolveUnsubscribeReview: 1 },
   "outreach/service.ts": { discardOutreach: 1, queueOutreach: 1, applyProviderEvent: 1, recordReply: 1, classifyReply: 1, recordInboundReply: 1, unsubscribeOutreach: 1 },
   "prospects.ts": { updateProspect: 1, changeStatus: 1 },
   "invitations/service.ts": { revokeInvitation: 1, revokeInvitationForOutreach: 1 },
@@ -29,6 +30,7 @@ const GATED: Record<string, Record<string, number>> = {
 const UNGATED: Record<string, string[]> = {
   "outreach/dispatch.ts": [],
   "outreach/reconcile.ts": [],
+  "outreach/emailedUnsubscribe.ts": [],
   "outreach/service.ts": ["createOutreachDraft"],
   // Creating a prospect (createProspect, createInternalTestProspect): a New prospect with no messages.
   "prospects.ts": ["insertWithFreshCode"],
@@ -38,7 +40,7 @@ const UNGATED: Record<string, string[]> = {
 /** Helpers that run inside a caller's transaction: they must never take the gate themselves. */
 const HELPERS: Record<string, string[]> = {
   "outreach/records.ts": ["cancelOne", "cancelOpenOutreach", "suppressEmail"],
-  "outreach/service.ts": ["moveOutreachInTx", "advanceProspect", "queueBlockers", "recordSentInTx", "applyReplyOutcome", "recordReplyInTx"],
+  "outreach/service.ts": ["moveOutreachInTx", "advanceProspect", "queueBlockers", "recordSentInTx", "applyReplyOutcome", "recordReplyInTx", "unsubscribeOutreachInTx"],
   "prospects.ts": ["changeStatusInTx", "insertProspect"],
   "invitations/service.ts": ["createInvitationInTx", "revokeInvitationInTx", "attributeSession"],
 };

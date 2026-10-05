@@ -190,6 +190,21 @@ enum SuppressionReason {
   invalid
 }
 
+enum UnsubscribeReviewState {
+  open
+  resolved
+  dismissed
+}
+
+enum UnsubscribeReviewReason {
+  invalid_sender
+  missing_received_time
+  multiple_candidates
+  sender_conflict
+  unverified_send
+  historical_mail
+}
+
 model Prospect {
   id           String  @id @default(uuid()) @db.Uuid
   referralCode String  @unique
@@ -729,6 +744,8 @@ model Outreach {
   events     OutreachEvent[]
   replies    OutreachReply[]
   invitation Invitation?
+  unsubscribeReviewCandidates EmailedUnsubscribeCandidate[]
+  resolvedUnsubscribeReviews EmailedUnsubscribeReview[] @relation("ResolvedUnsubscribe")
 
   @@index([prospectId, createdAt])
   @@index([status, statusChangedAt])
@@ -751,6 +768,40 @@ model OutreachReply {
 
   @@unique([mailboxAccount, gmailMessageId])
   @@index([outreachId, receivedAt])
+}
+
+// Unassigned opt-out ambiguity, never a reply or a suppression. No email body.
+model EmailedUnsubscribeReview {
+  id                String                  @id @default(uuid()) @db.Uuid
+  mailboxAccount    String                  @db.VarChar(254)
+  gmailMessageId    String                  @db.VarChar(200)
+  receivedAt        DateTime?
+  senderEmail       String?                 @db.VarChar(254)
+  reason            UnsubscribeReviewReason
+  state             UnsubscribeReviewState  @default(open)
+  createdAt         DateTime                @default(now())
+  resolvedAt        DateTime?
+  resolvedOutreachId String?                 @db.Uuid
+
+  candidates       EmailedUnsubscribeCandidate[]
+  resolvedOutreach Outreach? @relation("ResolvedUnsubscribe", fields: [resolvedOutreachId], references: [id], onDelete: SetNull)
+
+  @@unique([mailboxAccount, gmailMessageId])
+  @@index([state, createdAt])
+}
+
+// Explicit candidates, with identity snapshots for stale-selection validation.
+model EmailedUnsubscribeCandidate {
+  reviewId       String @db.Uuid
+  outreachId     String @db.Uuid
+  prospectId     String @db.Uuid
+  recipientEmail String @db.VarChar(254)
+
+  review   EmailedUnsubscribeReview @relation(fields: [reviewId], references: [id], onDelete: Cascade)
+  outreach Outreach @relation(fields: [outreachId], references: [id], onDelete: Cascade)
+
+  @@id([reviewId, outreachId])
+  @@index([outreachId])
 }
 
 // Append-only log of what happened to each message: the raw data for

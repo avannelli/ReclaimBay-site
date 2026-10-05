@@ -1,5 +1,5 @@
 import type { FastifyInstance, FastifyReply } from "fastify";
-import { outreachControlPage, outreachDetailPage, outreachMessagesPage, type MessagesPageData } from "../admin/outreachViews.js";
+import { outreachControlPage, outreachDetailPage, outreachMessagesPage, unsubscribeReviewsPage, type MessagesPageData } from "../admin/outreachViews.js";
 import type { Config } from "../config.js";
 import type { Db } from "../db.js";
 import { confirmStuckSent, dailyCapacity, readinessErrors, sendingStatus, sendingSwitch, setSendingSwitch, stuckMessages } from "../outreach/dispatch.js";
@@ -22,6 +22,7 @@ import type { OutreachSender } from "../outreach/sender.js";
 import { classifyReply, createOutreachDraft, discardOutreach, getOutreachDetail, outreachAttention, queueOutreach, recordReply } from "../outreach/service.js";
 import { ProspectError } from "../prospects.js";
 import { reconcileSent } from "../outreach/reconcile.js";
+import { listUnsubscribeReviews, resolveUnsubscribeReview } from "../outreach/emailedUnsubscribe.js";
 
 type Form = Record<string, string>;
 type Values = Record<string, string | undefined>;
@@ -115,7 +116,7 @@ export async function outreachRoutes(app: FastifyInstance, opts: { config: Confi
 
   const renderControl = async (reply: FastifyReply, extra: { notice?: string; errors?: string[] } = {}) => {
     const now = new Date();
-    const [sw, grouped, stuck, eligible, metrics, gmail, capacity, attention, activity, queue, openedInvitations] = await Promise.all([
+    const [sw, grouped, stuck, eligible, metrics, gmail, capacity, attention, activity, queue, openedInvitations, unsubscribeReviewCount] = await Promise.all([
       sendingSwitch(db),
       db.outreach.groupBy({ by: ["status"], _count: { _all: true } }),
       stuckMessages(db, now),
@@ -127,6 +128,7 @@ export async function outreachRoutes(app: FastifyInstance, opts: { config: Confi
       recentActivity(db, now),
       waitingQueue(db),
       db.invitation.count({ where: { firstOpenedAt: { not: null } } }),
+      db.emailedUnsubscribeReview.count({ where: { state: "open" } }),
     ]);
     const counts = Object.fromEntries(grouped.map((g) => [g.status, g._count._all]));
     const readiness = readinessErrors(config, sender);
@@ -153,6 +155,7 @@ export async function outreachRoutes(app: FastifyInstance, opts: { config: Confi
         activity,
         waiting: { ...queue, stale },
         totalMessages,
+        unsubscribeReviewCount,
         openedInvitations,
       },
       extra,
@@ -223,6 +226,25 @@ export async function outreachRoutes(app: FastifyInstance, opts: { config: Confi
   });
 
   // ---------- one message ----------
+
+  app.get<{ Querystring: { page?: string; done?: string } }>("/admin/outreach/unsubscribe-reviews", async (req, reply) => {
+    const page = /^\d{1,4}$/.test(req.query.page ?? "") ? Math.max(1, Number(req.query.page)) : 1;
+    return html(reply, unsubscribeReviewsPage(await listUnsubscribeReviews(db, page), page, req.query.done));
+  });
+  app.post<{ Params: { id: string }; Body: Form }>("/admin/outreach/unsubscribe-reviews/:id", writeLimit, async (req, reply) => {
+    if (!UUID_RE.test(req.params.id)) return notFound(reply);
+    const body = req.body ?? {};
+    if (body.confirm !== "1" || !["resolve", "dismiss"].includes(body.action ?? "") ||
+        (body.action === "resolve" && !UUID_RE.test(body.outreachId ?? ""))) {
+      return html(reply, unsubscribeReviewsPage(await listUnsubscribeReviews(db), 1, undefined, ["Choose an action and explicitly confirm it; resolution requires a candidate."]), 400);
+    }
+    try {
+      const result = await resolveUnsubscribeReview(db, req.params.id, body.action as "resolve" | "dismiss", body.outreachId);
+      return reply.redirect(`/admin/outreach/unsubscribe-reviews?done=${result}`, 303);
+    } catch (err) {
+      return handleError(err, reply, async (errors) => html(reply, unsubscribeReviewsPage(await listUnsubscribeReviews(db), 1, undefined, errors), reply.statusCode));
+    }
+  });
 
   // ---------- operations views (read-only) ----------
 

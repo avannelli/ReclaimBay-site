@@ -90,7 +90,7 @@ export async function assertSeparateSessions(url = TEST_DATABASE_URL) {
 
 export async function truncate(db: Db) {
   await db.$executeRawUnsafe(
-    `TRUNCATE "Invitation", "OutreachControlChange", "EmailSuppression", "OutreachEvent", "Outreach", "ResearchFact", "ResearchSource", "CandidateResearch", "ProviderPlace", "ProviderImport", "CandidateEvidence", "CandidateNote", "CandidateSignal", "DiscoveryCandidate", "DiscoveryRun", "ProspectEvidence", "ProspectNote", "ProspectStatusChange", "ProspectSignal", "ProductEvent", "AnalyticsSession", "Prospect" CASCADE`,
+    `TRUNCATE "EmailedUnsubscribeReview", "Invitation", "OutreachControlChange", "EmailSuppression", "OutreachEvent", "Outreach", "ResearchFact", "ResearchSource", "CandidateResearch", "ProviderPlace", "ProviderImport", "CandidateEvidence", "CandidateNote", "CandidateSignal", "DiscoveryCandidate", "DiscoveryRun", "ProspectEvidence", "ProspectNote", "ProspectStatusChange", "ProspectSignal", "ProductEvent", "AnalyticsSession", "Prospect" CASCADE`,
   );
 }
 

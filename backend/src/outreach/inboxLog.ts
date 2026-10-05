@@ -18,6 +18,7 @@ export function inboxLogLines(r: InboxReport, opts: { apply: boolean; mailbox: s
   return [
     `${opts.apply ? "APPLIED" : "DRY RUN (nothing is recorded; pass --apply)"}: ${plural(r.checked, "message")} read from ${opts.mailbox}'s mailbox.`,
     `  own ${count((i) => i.kind === "own")}, auto-replies ${count((i) => i.kind === "auto_reply")}, delays ${count((i) => i.kind === "delay")}, unmatched ${count((i) => i.result === "unmatched")}, matched ${matched.length}`,
+    ...(count((i) => i.result === "review_open" || i.result === "would review") ? [`  emailed unsubscribe needs review ${count((i) => i.result === "review_open" || i.result === "would review")} (no automatic suppression; see admin outreach)`] : []),
     ...(byOutcome.size ? [`  matched: ${[...byOutcome].map(([k, n]) => `${k} ${n}`).join(", ")}`] : []),
     // Our own message id is enough to find the message in the admin; nothing about the mail itself.
     ...matched.map((i) => `  ${i.kind} ${i.result} -> ${i.outreachId}`),
