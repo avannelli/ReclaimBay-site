@@ -105,7 +105,7 @@ describe("invitations in the admin", { skip: skipReason }, () => {
     assert.match(html, /<dt>Activated<\/dt><dd>2026-10-10 10:20 UTC<\/dd>/);
 
     // The message is shown as reviewed, with its invitation link in place but its token hidden.
-    assert.match(html, /<pre class="msg">[\s\S]*?Get your free report: https:\/\/reclaimbay\.com\/invite#\[invitation link hidden\][\s\S]*?<\/pre>/);
+    assert.match(html, /<pre class="msg">[\s\S]*?See what your shop may be leaving behind →\n\nhttps:\/\/reclaimbay\.com\/invite#\[invitation link hidden\][\s\S]*?<\/pre>/);
     assert.match(html, /The invitation link is hidden here, so opening it from the admin can&#39;t count as the business&#39;s visit\./);
     for (const secret of [token, invitation.tokenHash, invitation.id]) assert.ok(!html.includes(secret), "never the token, its hash, or the invitation's id");
   });
@@ -214,7 +214,7 @@ describe("invitations in the admin", { skip: skipReason }, () => {
       const r = rows.find((x) => x.campaign === campaign)!;
       return { invitationsSent: r.invitationsSent, opened: r.opened, activated: r.activated };
     };
-    assert.deepEqual(pick("outreach-intro-t2"), { invitationsSent: 3, opened: 2, activated: 1 });
+    assert.deepEqual(pick("outreach-intro-t4"), { invitationsSent: 3, opened: 2, activated: 1 });
     assert.deepEqual(pick("spring-test"), { invitationsSent: 1, opened: 0, activated: 0 });
     assert.deepEqual(pick("all"), { invitationsSent: 4, opened: 2, activated: 1 });
 

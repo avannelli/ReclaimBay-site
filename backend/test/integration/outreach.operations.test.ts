@@ -257,7 +257,7 @@ describe("outreach operations views", { skip: skipReason }, () => {
     assert.match(onlyActivated, /Showing 1–1 of 1/);
     assert.ok(onlyActivated.includes("Activated Auto") && !onlyActivated.includes("Opened Only Auto"));
 
-    const byCampaign = await page("/admin/outreach/messages?view=activity&campaign=outreach-intro-t2");
+    const byCampaign = await page("/admin/outreach/messages?view=activity&campaign=outreach-intro-t4");
     assert.match(byCampaign, /Showing 1–4 of 4/, "the campaign frozen on the invitation");
     assert.match(await page("/admin/outreach/messages?view=activity&campaign=pilot-9"), /No invitation has been opened yet\./);
   });
@@ -293,10 +293,10 @@ describe("outreach operations views", { skip: skipReason }, () => {
       assert.ok(html.includes(`href="${href.replace(/&/g, "&#38;")}"`), href);
     }
     // Invitations sent has no link: no list holds exactly the invitations whose message was sent.
-    assert.ok(!html.includes("kind=initial&#38;campaign=outreach-intro-t2"), "Invitations sent");
+    assert.ok(!html.includes("kind=initial&#38;campaign=outreach-intro-t4"), "Invitations sent");
     // Sent invitations only, like the counts (outreach.measurement.test.ts checks the lists match them).
-    assert.ok(html.includes('href="/admin/outreach/messages?view=activity&#38;campaign=outreach-intro-t2&#38;sent=1">1</a>'), "Opened");
-    assert.ok(html.includes('href="/admin/outreach/messages?view=activity&#38;campaign=outreach-intro-t2&#38;activated=1&#38;sent=1">1</a>'), "Activated");
+    assert.ok(html.includes('href="/admin/outreach/messages?view=activity&#38;campaign=outreach-intro-t4&#38;sent=1">1</a>'), "Opened");
+    assert.ok(html.includes('href="/admin/outreach/messages?view=activity&#38;campaign=outreach-intro-t4&#38;activated=1&#38;sent=1">1</a>'), "Activated");
     assert.ok(html.includes('href="/admin/outreach/messages?view=activity&#38;activated=1&#38;sent=1">1</a>'), "the total row has no campaign filter");
   });
 

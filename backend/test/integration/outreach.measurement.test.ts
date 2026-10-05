@@ -25,7 +25,7 @@ import { CFG, OPTS, draftedInvitation, mockSender, queueAndSend, switchOn } from
 
 const SECRET = "integration-test-secret-0123456789";
 const FORM = { "content-type": "application/x-www-form-urlencoded" };
-const INTRO = "outreach-intro-t2";
+const INTRO = "outreach-intro-t4";
 const FOLLOW_UP = "outreach-follow-up-t2";
 const MINUTE = 60_000;
 const later = (minutes: number) => new Date(Date.now() + minutes * MINUTE);
@@ -242,14 +242,14 @@ describe("outreach measurement", { skip: skipReason }, () => {
 
     assert.deepEqual(pick(row(await outreachMetrics(db), INTRO), ["invitationsSent", "opened"]), { invitationsSent: 1, opened: 1 });
     const control = await get("/admin/outreach");
-    assert.ok(control.includes('href="/admin/outreach/messages?view=activity&#38;campaign=outreach-intro-t2&#38;sent=1">1</a>'), "Opened links to sent invitations only");
+    assert.ok(control.includes('href="/admin/outreach/messages?view=activity&#38;campaign=outreach-intro-t4&#38;sent=1">1</a>'), "Opened links to sent invitations only");
 
-    const linked = await get("/admin/outreach/messages?view=activity&campaign=outreach-intro-t2&sent=1");
+    const linked = await get("/admin/outreach/messages?view=activity&campaign=outreach-intro-t4&sent=1");
     assert.match(linked, /Showing 1–1 of 1/, "the list behind Opened holds exactly what it counts");
     assert.ok(linked.includes(s.p.businessName!) && !linked.includes(p.businessName!));
     assert.match(linked, /<select id="f-sent" name="sent"><option value="">Sent or not<\/option><option value="1" selected>Sent only<\/option><\/select>/, "the filter is shown, and kept by Apply");
 
-    const everything = await get("/admin/outreach/messages?view=activity&campaign=outreach-intro-t2");
+    const everything = await get("/admin/outreach/messages?view=activity&campaign=outreach-intro-t4");
     assert.match(everything, /Showing 1–2 of 2/);
     assert.ok(everything.includes(p.businessName!), "the uncertain send's open is still visible by default");
   });

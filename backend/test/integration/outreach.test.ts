@@ -88,17 +88,17 @@ describe("outreach (service)", { skip: skipReason }, () => {
     assert.equal(o.prospectId, p.id);
     assert.equal(o.status, "draft");
     assert.equal(o.kind, "initial");
-    assert.equal(o.template, "intro@t2");
-    assert.equal(o.campaign, "outreach-intro-t2");
+    assert.equal(o.template, "intro@t4");
+    assert.equal(o.campaign, "outreach-intro-t4");
     assert.equal(o.recipientEmail, EMAIL);
     assert.equal(o.recipientSourceUrl, `${WEBSITE}/contact`);
-    assert.equal(o.subject, "Quick question about Smith Auto");
+    assert.equal(o.subject, "A quick question about Smith Auto");
     // Its one link is its own invitation, made with it: the stored hash is the hash of the token in the link.
     const token = /https:\/\/reclaimbay\.com\/invite#([A-Za-z0-9_-]{43})\n/.exec(o.body)?.[1];
     assert.ok(token, "the message links its invitation");
     const invitation = await db.invitation.findUniqueOrThrow({ where: { outreachId: o.id } });
     assert.equal(invitation.tokenHash, hashInvitationToken(token));
-    assert.equal(invitation.campaign, "outreach-intro-t2");
+    assert.equal(invitation.campaign, "outreach-intro-t4");
     assert.ok(!o.body.includes("?ref="), "no referral link alongside it");
     assert.equal(o.openForProspectId, p.id);
     assert.ok(o.generatedAt instanceof Date);
@@ -114,11 +114,11 @@ describe("outreach (service)", { skip: skipReason }, () => {
     const p = await prospect();
     const { outreach: o } = await createOutreachDraft(db, p.id, OPTS);
     const facts = o.evidence as unknown as OutreachFact[];
-    // intro@t2 relies on the business, its address, that it is independent, and its city, in the order it says them.
-    assert.deepEqual(facts.map((f) => f.key), ["business_name", "recipient", "independent_shop", "location"]);
+    // The intro uses the business, its recipient and one supported collision observation.
+    assert.deepEqual(facts.map((f) => f.key), ["business_name", "recipient", "collision_repair_services"]);
     assert.doesNotMatch(o.body, /inspection/i);
     const evidence = await db.prospectEvidence.findMany({ where: { prospectId: p.id } });
-    // General repair is still evidenced and still supports a fact; intro@t2 just doesn't mention services.
+    // Free-text services remain evidence, but cannot supply research's structured service vocabulary.
     assert.ok(evidence.some((e) => e.signalKey === "general_repair_services"), "the prospect's general-repair evidence is kept");
     assert.ok(!facts.some((f) => f.key === "general_repair_services"));
     assert.doesNotMatch(o.body, /brakes|diagnostics|general repair/i, "the message names no services");
@@ -181,7 +181,7 @@ describe("outreach (service)", { skip: skipReason }, () => {
     assert.equal(follow.created, true);
     assert.equal(follow.outreach.kind, "follow_up");
     assert.equal(follow.outreach.followUpOfId, first.id);
-    assert.equal(follow.outreach.subject, "Re: Quick question about Smith Auto");
+    assert.equal(follow.outreach.subject, "Re: A quick question about Smith Auto");
     const dup = await createOutreachDraft(db, p.id, OPTS);
     assert.equal(dup.created, false, "the open follow-up is returned, not a second message");
     assert.equal(dup.outreach.id, follow.outreach.id);
@@ -275,7 +275,7 @@ describe("outreach (service)", { skip: skipReason }, () => {
     await queueOutreach(db, outreach.id, CFG);
     const history = await db.prospectStatusChange.findMany({ where: { prospectId: p.id }, orderBy: { createdAt: "asc" } });
     assert.deepEqual(history.map((h) => h.toStatus), ["new", "qualified", "ready_to_contact"]);
-    assert.match(history.at(-1)!.reason!, /Outreach queued \(intro@t2\)/);
+    assert.match(history.at(-1)!.reason!, /Outreach queued \(intro@t4\)/);
     assert.equal((await db.outreach.findUniqueOrThrow({ where: { id: outreach.id } })).status, "queued");
   });
 
@@ -374,11 +374,11 @@ describe("outreach (admin HTTP)", { skip: skipReason }, () => {
 
     const view = (await get(`/admin/outreach/${o.id}?done=drafted`)).body;
     assert.match(view, /Draft prepared from the stored evidence\. Nothing was sent\./);
-    assert.match(view, /Quick question about Smith Auto/);
-    assert.match(view, /I came across Smith Auto while researching independent shops in Springfield\./);
+    assert.match(view, /A quick question about Smith Auto/);
+    assert.match(view, /I came across Smith Auto and noticed you offer collision repair\./);
     assert.match(view, /Evidence used/);
-    assert.match(view, /Family owned\./);
-    assert.match(view, /<code>intro@t2<\/code>/);
+    assert.match(view, /We offer automotive collision repair\./);
+    assert.match(view, /<code>intro@t4<\/code>/);
     assert.match(view, /Discard/);
     assert.doesNotMatch(view, /Record a reply/, "a draft has no reply to record");
 

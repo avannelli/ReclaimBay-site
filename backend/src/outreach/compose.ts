@@ -18,7 +18,9 @@
  * (follow-up@t1), as it always did.
  */
 
-export const INTRO_TEMPLATE = "intro@t2";
+import { collisionEvidenceErrors, collisionFit } from "../research/collisionFit.js";
+
+export const INTRO_TEMPLATE = "intro@t4";
 /** A follow-up that reuses its first message's invitation link. */
 export const FOLLOW_UP_TEMPLATE = "follow-up@t2";
 /** A follow-up to a first message without an invitation (made before invitations existed): the referral link. */
@@ -121,7 +123,7 @@ export function outreachFacts(input: ComposeInput): OutreachFact[] {
   });
   for (const [key, statement] of Object.entries(SIGNAL_STATEMENTS)) {
     if (!input.signals.some((s) => s.key === key && s.value === "yes")) continue;
-    const ev = input.evidence.find((e) => e.signalKey === key);
+    const ev = input.evidence.find((e) => e.signalKey === key && e.sourceUrl.trim() && e.excerpt.trim());
     if (!ev) continue;
     let text = statement;
     if (key === "general_repair_services") {
@@ -146,13 +148,30 @@ function signOff(input: ComposeInput): string {
   ].join("\n");
 }
 
-/**
- * The first message (intro@t2): short and low-pressure, with one link, the
- * business's invitation. It uses only what the record establishes: the
- * business's name, its city (when known), and that it is an independent
- * shop (when that is evidenced). It claims no amount and no analysis of the
- * business: the report is theirs to run.
- */
+/** Fixed phrases only: stored excerpts establish a service, never supply email copy. */
+function collisionObservation(input: ComposeInput): { observation: string; fact: OutreachFact } | undefined {
+  if (!input.signals.some(s => s.key === "collision_repair_services" && s.value === "yes") ||
+      collisionEvidenceErrors(input, input.evidence).length) return;
+  const services: readonly [RegExp, string][] = [
+    [/\bpaintless\s+dent\s+repair\b/i, "paintless dent repair"],
+    [/\b(?:automotive|vehicle|car)\s+frame\s+repairs?\b/i, "automotive frame repair"],
+    [/\b(?:automotive|vehicle|car)\s+structural\s+repairs?\b/i, "automotive structural repair"],
+    [/\bauto(?:motive)?[- ]?body(?:\s+(?:and|&)\s+paint)?\s+(?:repairs?|services?)\b/i, "auto body repair"],
+    [/\b(?:collision|accident)(?:[- ]damage)?\s+repairs?\b/i, "collision repair"],
+  ];
+  for (const evidence of input.evidence.filter(e => e.signalKey === "collision_repair_services")) {
+    const fit = collisionFit(input.businessName, [{ url: evidence.sourceUrl, role: "services", parsed: { text: evidence.excerpt } }]);
+    if (fit.status !== "primary" && fit.status !== "possible") continue;
+    const service = services.find(([pattern]) => pattern.test(fit.excerpt ?? ""))?.[1];
+    if (!service) continue;
+    return {
+      observation: `you offer ${service}`,
+      fact: { key: "collision_repair_services", statement: `It offers ${service}.`, signalKey: "collision_repair_services", sourceUrl: evidence.sourceUrl, excerpt: evidence.excerpt },
+    };
+  }
+}
+
+/** The first message uses the approved collision-shop opening unless a verified service supports one observation. */
 export function composeIntro(input: ComposeInput): ComposedMessage {
   const facts = new Map(outreachFacts(input).map((f) => [f.key, f]));
   const used: OutreachFact[] = [];
@@ -164,29 +183,35 @@ export function composeIntro(input: ComposeInput): ComposedMessage {
   const name = input.businessName;
   use("business_name");
   use("recipient");
-  const independent = use("independent_shop");
-  const location = input.city ? use("location") : undefined;
+  const verified = collisionObservation(input);
+  if (verified) used.push(verified.fact);
 
   const body = [
     `Hi ${name} team,`,
     "",
-    `I came across ${name} while researching ${independent ? "independent shops" : "auto repair shops"}${location ? ` in ${input.city}` : ""}.`,
+    `I came across ${name} and noticed ${verified?.observation ?? "you handle collision and body repair"}.`,
     "",
-    "We built ReclaimBay to help shops identify revenue that may be getting left behind in declined work.",
+    "One thing we've been looking at is how much repair work can get left behind after an estimate is written — a customer declines it, puts it off, or the work simply never makes it back onto the schedule.",
     "",
-    `I made a free ReclaimBay report available for ${name} so you can run your own information through it and see what turns up.`,
+    "That's what we built ReclaimBay around. It looks at the repair information a shop already has and helps identify past opportunities that may still be worth recovering.",
     "",
-    "No account or commitment required.",
+    "See what your shop may be leaving behind →",
     "",
-    `Get your free report: ${input.link}`,
+    input.link,
     "",
-    signOff(input),
+    "It takes just a few minutes to take a look, and there's nothing to schedule.",
+    "",
+    "Best,",
+    input.sender.name ? `${input.sender.name}\nReclaimBay` : "The ReclaimBay team",
+    ...(input.sender.postalAddress ? ["", input.sender.postalAddress] : []),
+    "",
+    `If you'd rather not receive emails from ReclaimBay, ${OPT_OUT_INSTRUCTION}.`,
   ].join("\n");
 
   return {
     template: INTRO_TEMPLATE,
     campaign: campaignOf(INTRO_TEMPLATE),
-    subject: `Quick question about ${name}`,
+    subject: `A quick question about ${name}`,
     body,
     evidence: used,
   };

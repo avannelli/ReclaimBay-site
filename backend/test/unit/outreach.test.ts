@@ -41,11 +41,13 @@ const input = (over: Partial<ComposeInput> = {}): ComposeInput => ({
   email: "service@smithauto.example.com",
   emailSourceUrl: `${SITE}contact`,
   signals: [
+    { key: "collision_repair_services", value: "yes" },
     { key: "independent_shop", value: "yes" },
     { key: "general_repair_services", value: "yes" },
     { key: "digital_inspections", value: "yes" },
   ],
   evidence: [
+    { signalKey: "collision_repair_services", sourceUrl: `${SITE}services`, excerpt: "We offer automotive collision repair." },
     { signalKey: "independent_shop", sourceUrl: SITE, excerpt: "Family owned since 1998." },
     { signalKey: "general_repair_services", sourceUrl: SITE, excerpt: "Names brakes, engine diagnostics, A/C: …Brake Service Diagnostics A/C Repairs…" },
     { signalKey: "digital_inspections", sourceUrl: `${SITE}inspections`, excerpt: "Our digital inspections include photos." },
@@ -148,16 +150,16 @@ describe("outreach message generation", () => {
     const m = composeIntro(input());
     assert.equal(m.template, INTRO_TEMPLATE);
     assert.equal(m.campaign, campaignOf(INTRO_TEMPLATE));
-    assert.equal(m.campaign, "outreach-intro-t2");
-    assert.equal(m.subject, "Quick question about Smith Auto");
+    assert.equal(m.campaign, "outreach-intro-t4");
+    assert.equal(m.subject, "A quick question about Smith Auto");
     assert.match(m.body, /^Hi Smith Auto team,/);
-    assert.match(m.body, /I came across Smith Auto while researching independent shops in Springfield\./);
-    assert.match(m.body, /We built ReclaimBay to help shops identify revenue that may be getting left behind in declined work\./);
-    assert.match(m.body, /I made a free ReclaimBay report available for Smith Auto so you can run your own information through it and see what turns up\./);
-    assert.match(m.body, /No account or commitment required\./);
-    assert.ok(m.body.includes(`Get your free report: ${INVITE}\n`), "the one call to action is the invitation link");
-    assert.match(m.body, /reply "no thanks" and we won't contact Smith Auto again/);
-    assert.deepEqual(m.evidence.map((f) => f.key), ["business_name", "recipient", "independent_shop", "location"]);
+    assert.match(m.body, /I came across Smith Auto and noticed you offer collision repair\./);
+    assert.match(m.body, /after an estimate is written — a customer declines it, puts it off/);
+    assert.match(m.body, /helps identify past opportunities that may still be worth recovering/);
+    assert.match(m.body, /there's nothing to schedule\./);
+    assert.ok(m.body.includes(`See what your shop may be leaving behind →\n\n${INVITE}\n`), "the one primary call to action is the invitation link");
+    assert.match(m.body, /If you'd rather not receive emails from ReclaimBay, reply "no thanks"\./);
+    assert.deepEqual(m.evidence.map((f) => f.key), ["business_name", "recipient", "collision_repair_services"]);
     const sources = new Set(input().evidence.map((e) => e.sourceUrl));
     for (const f of m.evidence) {
       if (f.signalKey) assert.ok(f.sourceUrl && sources.has(f.sourceUrl) && f.excerpt, `${f.key} carries its evidence`);
@@ -170,12 +172,12 @@ describe("outreach message generation", () => {
     assert.doesNotMatch(m.body, /\$|\d+%|\b(we|I) (found|analy[sz]ed|calculated)\b/i, "no figures and no analysis of the business");
     assert.doesNotMatch(m.body, /today|hurry|limited|expires|book a|calendar|meeting|price|\/mo/i, "no urgency, meeting, or pricing");
     assert.equal(m.body.match(/https?:\/\//g)?.length, 1, "exactly one link");
-    assert.ok(m.body.length < 900, "short");
+    assert.ok(m.body.split(/\s+/).length <= 155, "approximately 120–150 words, including the signature and opt-out");
   });
 
   test("a signal without evidence, a 'no', or an unknown is never mentioned, and nothing is invented without a city", () => {
     const notIndependent = composeIntro(input({ evidence: input().evidence.filter((e) => e.signalKey !== "independent_shop") }));
-    assert.match(notIndependent.body, /while researching auto repair shops in Springfield\./);
+    assert.match(notIndependent.body, /I came across Smith Auto and noticed you offer collision repair/);
     assert.doesNotMatch(notIndependent.body, /independent/);
     assert.ok(!notIndependent.evidence.some((f) => f.key === "independent_shop"));
 
@@ -183,16 +185,17 @@ describe("outreach message generation", () => {
     assert.doesNotMatch(unknown.body, /independent/);
 
     const noCity = composeIntro(input({ city: null, state: null }));
-    assert.match(noCity.body, /I came across Smith Auto while researching independent shops\.\n/);
+    assert.match(noCity.body, /I came across Smith Auto and noticed you offer collision repair\.\n/);
     assert.ok(!noCity.evidence.some((f) => f.key === "location"));
   });
 
-  test("services and inspections are recorded as facts but not used by intro@t2", () => {
+  test("the intro selects one supported observation instead of stuffing in all facts", () => {
     const keys = outreachFacts(input()).map((f) => f.key);
     assert.ok(keys.includes("general_repair_services") && keys.includes("digital_inspections"));
     const m = composeIntro(input());
-    assert.doesNotMatch(m.body, /inspection|brakes|diagnostics|A\/C/i);
-    assert.ok(!m.evidence.some((f) => f.key === "general_repair_services" || f.key === "digital_inspections"));
+    assert.match(m.body, /you offer collision repair/i);
+    assert.doesNotMatch(m.body, /brakes|diagnostics|A\/C|independent shop|digital inspections/i);
+    assert.ok(!m.evidence.some((f) => f.key === "general_repair_services" || f.key === "independent_shop"));
   });
 
   test("excerpts are references, never quoted into the message", () => {
@@ -200,7 +203,7 @@ describe("outreach message generation", () => {
     for (const e of input().evidence) assert.ok(!m.body.includes(e.excerpt), e.signalKey);
   });
 
-  test("website-condition facts are recorded but not used by intro@t2", () => {
+  test("website-condition facts are recorded but not used by the intro", () => {
     const withSite = input({
       signals: [...input().signals, { key: "website_not_https", value: "yes" }, { key: "no_online_booking", value: "yes" }],
       evidence: [...input().evidence, { signalKey: "website_not_https", sourceUrl: SITE, excerpt: "http only" }, { signalKey: "no_online_booking", sourceUrl: SITE, excerpt: "No scheduler." }],
@@ -216,14 +219,14 @@ describe("outreach message generation", () => {
     assert.match(composeIntro(input()).body, /The ReclaimBay team/);
     const signed = composeIntro(input({ sender: { name: "Alex", postalAddress: "1 Main St, Ventura, CA 93001" } })).body;
     assert.match(signed, /Alex\nReclaimBay/);
-    assert.match(signed, /1 Main St, Ventura, CA 93001$/);
+    assert.match(signed, /Best,\nAlex\nReclaimBay\n\n1 Main St, Ventura, CA 93001\n\nIf you'd rather/);
   });
 
   test("a business name is used as plain text: it can't add a line, a link, or markup the message doesn't already have", () => {
     const m = composeIntro(input({ businessName: `<a href="https://evil.example">Smith</a> Auto` }));
-    assert.equal(m.subject, `Quick question about <a href="https://evil.example">Smith</a> Auto`, "kept as text; the message is sent as plain text");
-    assert.ok(m.body.includes(`Get your free report: ${INVITE}\n`), "the link is still the invitation, unchanged");
-    assert.equal(m.body.split("Get your free report:").length, 2, "one call to action");
+    assert.equal(m.subject, `A quick question about <a href="https://evil.example">Smith</a> Auto`, "kept as text; the message is sent as plain text");
+    assert.ok(m.body.includes(`See what your shop may be leaving behind →\n\n${INVITE}\n`), "the link is still the invitation, unchanged");
+    assert.equal(m.body.split("See what your shop may be leaving behind →").length, 2, "one primary call to action");
   });
 
   test("generation is deterministic", () => {

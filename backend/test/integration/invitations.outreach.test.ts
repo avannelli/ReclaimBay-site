@@ -47,14 +47,14 @@ describe("invitations in outreach", { skip: skipReason }, () => {
     const o = await draft(p.id);
     const token = tokenIn(o.body);
     assert.ok(token, "the email links /invite#<token>");
-    assert.match(o.body, /Get your free report: https:\/\/reclaimbay\.com\/invite#[A-Za-z0-9_-]{43}\n/);
+    assert.match(o.body, /See what your shop may be leaving behind →\n\nhttps:\/\/reclaimbay\.com\/invite#[A-Za-z0-9_-]{43}\n/);
     assert.ok(!o.body.includes("?ref="), "no referral link");
 
     const inv = await db.invitation.findUniqueOrThrow({ where: { outreachId: o.id } });
     assert.equal(inv.tokenHash, hashInvitationToken(token), "the database keeps only the hash of the token in the email");
     assert.equal(inv.prospectId, p.id);
     assert.equal(inv.campaign, o.campaign, "the campaign, frozen from the message");
-    assert.equal(inv.campaign, "outreach-intro-t2");
+    assert.equal(inv.campaign, "outreach-intro-t4");
     for (const secret of [inv.tokenHash, inv.id]) assert.ok(!o.body.includes(secret) && !o.subject.includes(secret), "the email carries the token only, never its hash or id");
     assert.ok(!JSON.stringify(inv).includes(token), "the token itself is stored nowhere but the message");
 
@@ -77,6 +77,26 @@ describe("invitations in outreach", { skip: skipReason }, () => {
     assert.equal(await db.invitation.count(), 1);
     const o = results[0]!.outreach;
     assert.equal((await db.invitation.findUniqueOrThrow({ where: { outreachId: o.id } })).tokenHash, hashInvitationToken(tokenIn(o.body)!));
+  });
+
+  test("an existing intro@t3 draft and invitation remain frozen after intro@t4 is introduced", async () => {
+    const p = await prospect();
+    const current = await draft(p.id);
+    const body = `Hi ${p.businessName} team,\n\nThis is the historical intro@t3 message.\n\n${LINK_RE.exec(current.body)![0]}\n\nBest,\n${OPTS.sender.name}\nReclaimBay\n\n${OPTS.sender.postalAddress}\n\nIf you'd rather not receive emails from ReclaimBay, reply "no thanks".`;
+    const old = await db.outreach.update({ where: { id: current.id }, data: { template: "intro@t3", campaign: "outreach-intro-t3", subject: `Quick question about ${p.businessName}`, body } });
+    const invitation = await db.invitation.update({ where: { outreachId: old.id }, data: { campaign: "outreach-intro-t3" } });
+
+    const again = await createOutreachDraft(db, p.id, OPTS);
+    assert.equal(again.created, false);
+    assert.deepEqual(again.outreach, old, "preparing again does not rewrite any stored message fields");
+    assert.deepEqual(await db.invitation.findUniqueOrThrow({ where: { outreachId: old.id } }), invitation);
+
+    const sender = mockSender();
+    assert.equal((await queueAndSend(db, old.id, sender)).sent.length, 1);
+    assert.equal(sender.calls[0]!.text, body, "the historical body is sent exactly as stored");
+    assert.equal(sender.calls[0]!.subject, old.subject);
+    assert.equal(sender.calls[0]!.to, old.recipientEmail);
+    assert.equal(await db.invitation.count(), 1, "no replacement invitation or token");
   });
 
   test("automatic preparation gives every draft its invitation; a preview makes none", async () => {
@@ -183,8 +203,8 @@ describe("invitations in outreach", { skip: skipReason }, () => {
   test("a business name with markup stays text in the email; the link is the invitation, whatever the name says", async () => {
     const p = await prospect({ businessName: `<a href="https://evil.example/?r=1">Evil</a> & Sons` });
     const o = await draft(p.id);
-    assert.equal(o.subject, `Quick question about <a href="https://evil.example/?r=1">Evil</a> & Sons`);
-    const cta = /Get your free report: (\S+)\n/.exec(o.body)![1]!;
+    assert.equal(o.subject, `A quick question about <a href="https://evil.example/?r=1">Evil</a> & Sons`);
+    const cta = /See what your shop may be leaving behind →\n\n(\S+)\n/.exec(o.body)![1]!;
     assert.match(cta, /^https:\/\/reclaimbay\.com\/invite#[A-Za-z0-9_-]{43}$/, "the call to action is always the invitation, never anything from the name");
     const sender = mockSender();
     await queueAndSend(db, o.id, sender);
