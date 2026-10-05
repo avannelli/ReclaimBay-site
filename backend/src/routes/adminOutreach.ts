@@ -21,6 +21,7 @@ import { PREPARE_LIMIT, PREPARE_OUTCOMES, prepareEligibleOutreach, prepareSelect
 import type { OutreachSender } from "../outreach/sender.js";
 import { classifyReply, createOutreachDraft, discardOutreach, getOutreachDetail, outreachAttention, queueOutreach, recordReply } from "../outreach/service.js";
 import { ProspectError } from "../prospects.js";
+import { reconcileSent } from "../outreach/reconcile.js";
 
 type Form = Record<string, string>;
 type Values = Record<string, string | undefined>;
@@ -37,6 +38,12 @@ const NOTICES: Record<string, string> = {
   classified: "Reply classified.",
   confirmed: "Recorded as sent.",
   already_sent: "This message already has a recorded send outcome. Nothing changed.",
+  reconciled: "Provider send verified — reconciled. No email was sent by this action.",
+  already_recorded: "Already reconciled: the provider message ID is recorded. Nothing changed.",
+  not_found: "No matching provider evidence found — still unresolved. Nothing was sent or changed.",
+  ambiguous: "Multiple possible provider messages — manual review required. Nothing was changed.",
+  unavailable: "Provider verification is unavailable — still unresolved. Nothing was sent or changed.",
+  ineligible: "Cannot reconcile this state: it must be a claimed message or a recorded send missing its provider ID. Cancelled and failed messages are not reopened.",
   switched_on: "Sending switched on.",
   switched_off: "Sending switched off. No further message will be sent.",
   invitation_revoked: "Invitation revoked. Its link no longer works; everything it recorded is kept.",
@@ -103,7 +110,7 @@ export async function outreachRoutes(app: FastifyInstance, opts: { config: Confi
   const renderDetail = async (reply: FastifyReply, id: string, extra: { notice?: string; errors?: string[]; values?: Values } = {}) => {
     const [detail, invitation] = await Promise.all([getOutreachDetail(db, id, config), invitationForOutreach(db, id)]);
     if (!detail) return notFound(reply);
-    return html(reply, outreachDetailPage({ detail, invitation, ...extra }), reply.statusCode);
+    return html(reply, outreachDetailPage({ detail, invitation, canReconcile: sender.name === "gmail" && !!sender.lookupSent, ...extra }), reply.statusCode);
   };
 
   const renderControl = async (reply: FastifyReply, extra: { notice?: string; errors?: string[] } = {}) => {
@@ -306,6 +313,16 @@ export async function outreachRoutes(app: FastifyInstance, opts: { config: Confi
   });
   action("reply", "reply", (id, body) => recordReply(db, id, { outcome: body.outcome, summary: body.summary, requireOutcome: true }), ["outcome", "summary"]);
   action("classify", "classified", (id, body) => classifyReply(db, id, body.outcome, new Date(), body.replyId), ["outcome", "replyId"]);
+  app.post<{ Params: { id: string } }>("/admin/outreach/:id/reconcile-sent", writeLimit, async (req, reply) => {
+    const { id } = req.params;
+    if (!UUID_RE.test(id)) return notFound(reply);
+    try {
+      const result = await reconcileSent(db, id, sender);
+      return reply.redirect(`/admin/outreach/${id}?done=${result}`, 303);
+    } catch (err) {
+      return handleError(err, reply, (errors) => renderDetail(reply, id, { errors }));
+    }
+  });
   app.post<{ Params: { id: string } }>("/admin/outreach/:id/confirm-sent", writeLimit, async (req, reply) => {
     const { id } = req.params;
     if (!UUID_RE.test(id)) return notFound(reply);

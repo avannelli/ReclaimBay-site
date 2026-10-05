@@ -326,6 +326,45 @@ What a message carries: From (the sender), Reply-To (the sender), the
 recipient, the subject and text exactly as reviewed, and the
 `List-Unsubscribe` / `List-Unsubscribe-Post` one-click headers (RFC 8058).
 
+### Recovering an existing Gmail send
+
+A crash after Gmail accepts, or a failure committing its result, can leave a
+claimed message without its Gmail ID. **Verify with Gmail** on the message's
+admin page reconciles that existing send; it never sends, retries, queues, or
+changes the sending switch. It works with sending OFF. It also repairs a
+manual confirmation that has no provider ID.
+
+The authorized account and Send As identity are reverified. The lookup reads
+Sent, using the exact `X-ReclaimBay-Outreach` message UUID, and completes a
+bounded search (at most ten pages of 100). Exactly one marker candidate must
+also have the Sent label, matching sender, sole recipient, exact subject and
+plain-text body, and a valid Gmail `internalDate` in the claim/search window
+(ten minutes of clock tolerance). Line-ending normalization is the only body
+normalization; missing or changed evidence is not accepted. Two marker copies
+are ambiguous even if their bodies differ. No match, ambiguity, incomplete
+search, or provider failure leaves the message unresolved, never requeues it,
+and does not authorize another send.
+
+Provider reads happen outside transactions. Recording takes the send gate,
+then the message row lock, and rechecks the claim and message identity. The
+Gmail ID and actual provider time are recorded atomically with the successful
+send transition. Concurrent reconciliation is idempotent. A manual confirmation
+that wins meanwhile has its missing ID/time repaired without a second send
+event. A later dispatcher response cannot overwrite verified evidence or
+suppress the recipient on a contradictory rejection.
+
+Cancelled and failed messages are not reopened. An invitation revoked after
+the claim stays revoked: recording an already accepted historical send does
+not activate its link, just as with the dispatcher's late successful result.
+Revocation before a claim still prevents sending. Age alone still never allows
+manual **It was sent** confirmation (D.10.6.4); provider verification is a
+separate evidence-based operation, not an exception to that restriction.
+
+Restoring the Gmail ID allows thread matching; restoring the provider time
+also allows address matching of replies or emailed unsubscribes received
+before recovery. The existing rolling Inbox window is unchanged: recovery is
+not a historical-mail backfill. No delivery receipt is inferred from Sent.
+
 ## Provider events
 
 `applyProviderEvent` takes a normalised event: `sent`, `delivered`,

@@ -16,6 +16,7 @@ import { invitationStatus } from "../invitations/status.js";
 import type { FunnelRow } from "../outreach/metrics.js";
 import type { SendingStatus } from "../outreach/dispatch.js";
 import { canConfirmStuckSent } from "../outreach/records.js";
+import { canReconcileSent } from "../outreach/reconcile.js";
 import { NO_CAMPAIGN, PAGE_SIZE, STALE_QUEUE_MS, type ActivityRow, type EligibleRow, type InvitationSummary, type MessageFilters, type MessageRow, type MessageView, type ReplyRow } from "../outreach/operations.js";
 import { PREPARE_LIMIT, type PrepareReport } from "../outreach/prepare.js";
 import type { getOutreachDetail, outreachAttention, prospectOutreach } from "../outreach/service.js";
@@ -252,7 +253,7 @@ function discardForm(o: Detail, values: Values, errors: string[]): string {
   </form></details></div>`;
 }
 
-export function outreachDetailPage(opts: { detail: Detail; invitation?: InvitationView | null; notice?: string; errors?: string[]; values?: Values }): string {
+export function outreachDetailPage(opts: { detail: Detail; invitation?: InvitationView | null; canReconcile?: boolean; notice?: string; errors?: string[]; values?: Values }): string {
   const { detail: o, values = {} } = opts;
   const id = esc(o.id);
   const fe = fieldErrors(opts.errors);
@@ -263,6 +264,13 @@ export function outreachDetailPage(opts: { detail: Detail; invitation?: Invitati
   const confirmable = canConfirmStuckSent(o);
 
   const actions = [
+    opts.canReconcile && !o.providerMessageId && canReconcileSent(o)
+      ? `<form method="post" action="/admin/outreach/${id}/reconcile-sent" class="card stack">
+  <div class="card-h" style="margin:0">Verify the existing Gmail send</div>
+  <p class="small" style="margin:0">Search the authorized mailbox for this exact message. Only one verified sent copy can restore its Gmail ID and actual send time. This never sends or retries an email; no match or ambiguous evidence leaves it unresolved.</p>
+  <div><button type="submit">Verify with Gmail</button></div>
+</form>`
+      : "",
     o.status === "draft"
       ? o.queueErrors.length
         ? `<div class="card"><div class="card-h" style="margin:0">Not ready to queue</div><ul class="small" style="margin:6px 0 0">${o.queueErrors.map((e) => `<li>${esc(e)}</li>`).join("")}</ul></div>`

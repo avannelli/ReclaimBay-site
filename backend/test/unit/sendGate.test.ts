@@ -19,6 +19,7 @@ const read = (path: string) => readFileSync(new URL(path, SRC), "utf8");
 /** Every top-level function that takes the gate, and how many gated transactions it runs. */
 const GATED: Record<string, Record<string, number>> = {
   "outreach/dispatch.ts": { setSendingSwitch: 1, dispatchQueued: 2, confirmStuckSent: 1 },
+  "outreach/reconcile.ts": { reconcileSent: 1 },
   "outreach/service.ts": { discardOutreach: 1, queueOutreach: 1, applyProviderEvent: 1, recordReply: 1, classifyReply: 1, recordInboundReply: 1, unsubscribeOutreach: 1 },
   "prospects.ts": { updateProspect: 1, changeStatus: 1 },
   "invitations/service.ts": { revokeInvitation: 1, revokeInvitationForOutreach: 1 },
@@ -27,6 +28,7 @@ const GATED: Record<string, Record<string, number>> = {
 /** Transactions in those modules that can't make or stop a send, so take no gate. */
 const UNGATED: Record<string, string[]> = {
   "outreach/dispatch.ts": [],
+  "outreach/reconcile.ts": [],
   "outreach/service.ts": ["createOutreachDraft"],
   // Creating a prospect (createProspect, createInternalTestProspect): a New prospect with no messages.
   "prospects.ts": ["insertWithFreshCode"],
@@ -72,7 +74,7 @@ const transactions = (src: string) => [...src.matchAll(/\$transaction\(/g)].map(
 /** The callback header, then only comments, then the gate. */
 const GATE_FIRST = /^\$transaction\(async \(tx\)(?::\s*Promise<\w+>)?\s*=>\s*\{\s*(?:\/\/[^\n]*\n\s*)*await lockSendGate\(tx\);/;
 /** Anything that reaches the network, or a function that does. */
-const NETWORK = /\bfetch\(|fetchImpl|sender\.send\(|sender\.check\(|\.check\(\)|client\.|getThread|listMessages|findSentAttempt|pollGmailInbox|gmailStatus|verifyIdentity|recheck\(/;
+const NETWORK = /\bfetch\(|fetchImpl|sender\.send\(|sender\.check\(|sender\.lookupSent\(|\.check\(\)|client\.|getThread|listMessages|findSentAttempt|pollGmailInbox|gmailStatus|verifyIdentity|recheck\(/;
 
 describe("the send gate", () => {
   test("exactly the listed top-level transactions take it, each as its first statement", () => {

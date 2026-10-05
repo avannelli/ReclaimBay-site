@@ -261,6 +261,14 @@ export async function dispatchQueued(db: Db, opts: DispatchOptions): Promise<Dis
       await lockSendGate(tx);
       // A provider event about this message may be recorded at this very moment: one after the other.
       await lockOutreach(tx, id);
+      const recorded = await tx.outreach.findUniqueOrThrow({ where: { id } });
+      // Read-only reconciliation (or a provider event) may have verified this
+      // send while its original call was pending. Its evidence wins over a
+      // late response, including rejection, uncertainty, or unavailability.
+      if (recorded.sentAt && recorded.providerMessageId && ATTEMPTED_STATUSES.includes(recorded.status)) {
+        report.sent.push({ outreachId: id, providerMessageId: recorded.providerMessageId });
+        return;
+      }
       if (result.status === "accepted") {
         await recordSentInTx(tx, id, sender.name, result.providerMessageId, at);
         report.sent.push({ outreachId: id, providerMessageId: result.providerMessageId });

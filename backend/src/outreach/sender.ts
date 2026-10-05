@@ -50,6 +50,21 @@ export type SendResult =
   /** Definitely not sent, and the provider can't send now: the message stays queued and the batch stops. */
   | { status: "unavailable"; reason: string };
 
+/** Read-only verification of one claimed message, never authorization to resend. */
+export interface SentMessageQuery {
+  outreachId: string;
+  fromEmail: string;
+  to: string;
+  subject: string;
+  text: string;
+  startedAt: Date;
+  checkedAt: Date;
+}
+
+export type SentMessageLookup =
+  | { status: "found"; providerMessageId: string; sentAt: Date }
+  | { status: "not_found" | "ambiguous" | "unavailable" };
+
 export interface OutreachSender {
   /** Recorded as Outreach.provider. */
   readonly name: string;
@@ -64,6 +79,7 @@ export interface OutreachSender {
   readonly problem?: string;
   /** A live check that the provider can send now (credentials, account): null when it can, else why not. */
   check?(): Promise<string | null>;
+  lookupSent?(query: SentMessageQuery): Promise<SentMessageLookup>;
   send(message: OutgoingMessage): Promise<SendResult>;
 }
 

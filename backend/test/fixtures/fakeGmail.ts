@@ -52,7 +52,10 @@ const bodyText = (body: unknown) => (body instanceof URLSearchParams ? body.toSt
 
 export class FakeGoogle {
   readonly calls: FakeCall[] = [];
-  readonly sent: { id: string; threadId: string; raw: string; marker: string | null }[] = [];
+  readonly sent: { id: string; threadId: string; raw: string; marker: string | null; internalDate?: string }[] = [];
+  /** Full provider responses for malformed/evidence-mismatch regression cases. */
+  readonly messageOverrides = new Map<string, GmailMessage>();
+  now = () => new Date();
   readonly inbox: GmailMessage[] = [];
   readonly revoked: string[] = [];
   /** Answers for the next send calls, in order; default: success. */
@@ -135,7 +138,7 @@ export class FakeGoogle {
       if (answer && answer !== "network" && answer.status >= 400) return reply(answer);
       // A "network" answer models a send that went through but whose response was lost.
       const id = `gm-${++this.seq}`;
-      this.sent.push({ id, threadId: `th-${id}`, raw, marker });
+      this.sent.push({ id, threadId: `th-${id}`, raw, marker, internalDate: String(this.now().getTime()) });
       if (answer === "network") throw new TypeError("socket hang up");
       if (answer) return reply(answer);
       return reply({ status: 200, body: { id, threadId: `th-${id}` } });
@@ -149,8 +152,17 @@ export class FakeGoogle {
     }
     const msg = /^\/messages\/([^?]+)\?/.exec(path)?.[1];
     if (msg) {
+      const override = this.messageOverrides.get(msg);
+      if (override) return reply({ status: 200, body: override });
       const sent = this.sent.find((s) => s.id === msg);
-      if (sent) return reply({ status: 200, body: { id: sent.id, threadId: sent.threadId, payload: { headers: sent.marker ? [{ name: "X-ReclaimBay-Outreach", value: sent.marker }] : [] } } });
+      if (sent) {
+        const decoded = Buffer.from(sent.raw, "base64url").toString("utf8");
+        const split = decoded.indexOf("\r\n\r\n");
+        const headers = split >= 0 ? decoded.slice(0, split).split("\r\n").map((line) => ({ name: line.slice(0, line.indexOf(":")), value: line.slice(line.indexOf(":") + 1).trim() })) : [];
+        if (!headers.some((h) => h.name === "X-ReclaimBay-Outreach") && sent.marker) headers.push({ name: "X-ReclaimBay-Outreach", value: sent.marker });
+        const data = split >= 0 ? Buffer.from(decoded.slice(split + 4), "base64").toString("base64url") : "";
+        return reply({ status: 200, body: { id: sent.id, threadId: sent.threadId, internalDate: sent.internalDate, labelIds: ["SENT"], payload: { mimeType: "text/plain", headers, body: { data } } } });
+      }
       const m = this.inbox.find((x) => x.id === msg);
       return m ? reply({ status: 200, body: m }) : reply({ status: 404, body: { error: { message: "Not Found" } } });
     }

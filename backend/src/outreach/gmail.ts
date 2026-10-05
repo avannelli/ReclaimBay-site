@@ -22,7 +22,7 @@
  *   - no delivery receipts, no complaint events: never reported.
  */
 import { GMAIL_SCOPES, GmailError, gmailProfileEmail, verifySendAs, type GmailCredentials } from "./gmailAuth.js";
-import type { OutgoingMessage, OutreachSender, SendResult } from "./sender.js";
+import type { OutgoingMessage, OutreachSender, SendResult, SentMessageQuery, SentMessageLookup } from "./sender.js";
 
 export { GMAIL_SCOPES, GmailError };
 export const OUTREACH_HEADER = "X-ReclaimBay-Outreach";
@@ -195,6 +195,66 @@ export async function findSentAttempt(client: GmailClient, outreachId: string, s
   throw new GmailError("server", "Too many sent messages to verify an earlier attempt.");
 }
 
+/** Exactly one mailbox address; lists and additional recipients cannot match. */
+function singleAddress(value: string | null): string | null {
+  if (!value) return null;
+  const prefix = value.includes("<") ? value.slice(0, value.indexOf("<")).trim() : "";
+  if (prefix && !/^"[^"]*"$/.test(prefix) && /[,@;<>]/.test(prefix)) return null;
+  const address = /^(?:[^<>]*<([^<>]+)>|([^<>\s,;]+))$/.exec(value.trim());
+  return (address?.[1] ?? address?.[2])?.trim().toLowerCase() ?? null;
+}
+
+/**
+ * Strong, read-only recovery evidence. Scan every page before accepting one
+ * marker: a second copy is ambiguous even if its content differs. Incomplete
+ * searches fail closed. No body, token, or provider diagnostic leaves here.
+ */
+export async function lookupSentMessage(client: GmailClient, query: SentMessageQuery): Promise<SentMessageLookup> {
+  const slack = 10 * 60 * 1000;
+  if (client.sender !== query.fromEmail.toLowerCase()) return { status: "unavailable" };
+  await client.recheck();
+  const candidates = new Set<string>();
+  let pageToken: string | undefined;
+  for (let page = 0; page < 10; page++) {
+    const list = await client.listMessages({ labelIds: "SENT", q: `after:${Math.floor((query.startedAt.getTime() - slack) / 1000)}`, maxResults: "100", ...(pageToken ? { pageToken } : {}) });
+    for (const { id } of list.messages ?? []) {
+      const m = await client.getMessage(id, "metadata", [OUTREACH_HEADER]);
+      if (m.id === id && m.payload?.headers?.some((h) => h.name.toLowerCase() === OUTREACH_HEADER.toLowerCase() && h.value.trim() === query.outreachId)) candidates.add(id);
+      if (candidates.size > 1) return { status: "ambiguous" };
+    }
+    pageToken = list.nextPageToken;
+    if (!pageToken) break;
+  }
+  if (pageToken) return { status: "unavailable" };
+  const [id] = candidates;
+  if (!id) return { status: "not_found" };
+  const m = await client.getMessage(id, "full");
+  const uniqueHeaders = [OUTREACH_HEADER, "From", "To", "Subject"].every((name) =>
+    m.payload?.headers?.filter((h) => h.name.toLowerCase() === name.toLowerCase()).length === 1);
+  const at = m.internalDate && /^\d+$/.test(m.internalDate) ? new Date(Number(m.internalDate)) : null;
+  const subject = headerOf(m, "Subject");
+  const normalizedSubject = noBreaks(query.subject);
+  const normalizeLines = (text: string) => text.replace(/\r\n/g, "\n");
+  let body: string | null = null;
+  try {
+    const data = m.payload?.body?.data;
+    if (m.payload?.mimeType === "text/plain" && !m.payload.parts?.length && typeof data === "string" && /^[A-Za-z0-9_-]*={0,2}$/.test(data)) {
+      body = new TextDecoder("utf-8", { fatal: true }).decode(Buffer.from(data, "base64url"));
+    }
+  } catch { /* Malformed provider content is not evidence. */ }
+  if (!uniqueHeaders || m.id !== id || id.length > 200 || !/^[A-Za-z0-9_-]+$/.test(id) || !m.labelIds?.includes("SENT") ||
+      headerOf(m, OUTREACH_HEADER)?.trim() !== query.outreachId ||
+      singleAddress(headerOf(m, "From")) !== query.fromEmail.toLowerCase() ||
+      singleAddress(headerOf(m, "To")) !== query.to.toLowerCase() ||
+      headerOf(m, "Cc") || headerOf(m, "Bcc") ||
+      (subject !== normalizedSubject && subject !== encodeWord(normalizedSubject)) ||
+      body === null || normalizeLines(body) !== normalizeLines(query.text) ||
+      !at || !Number.isFinite(at.getTime()) || at.getTime() < query.startedAt.getTime() - slack || at.getTime() > query.checkedAt.getTime() + slack) {
+    return { status: "not_found" };
+  }
+  return { status: "found", providerMessageId: id, sentAt: at };
+}
+
 /** Gmail's errors in the dispatcher's terms. */
 function resultOf(err: unknown, sending: boolean): SendResult {
   if (!(err instanceof GmailError)) return { status: "uncertain", reason: `Unexpected error: ${(err as Error).message}`.slice(0, 400) };
@@ -220,6 +280,7 @@ export function gmailSender(client: GmailClient): OutreachSender {
     enabled: true,
     // Safe retries: a retry verifies Sent first (findSentAttempt).
     supportsIdempotency: true,
+    lookupSent: (query) => lookupSentMessage(client, query),
     async check() {
       try {
         await client.recheck();
