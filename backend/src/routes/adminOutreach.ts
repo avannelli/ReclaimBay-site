@@ -230,7 +230,7 @@ export async function outreachRoutes(app: FastifyInstance, opts: { config: Confi
     const [campaigns, grouped, unclassified, activity] = await Promise.all([
       messageCampaigns(db),
       db.outreach.groupBy({ by: ["status"], _count: { _all: true } }),
-      db.outreach.count({ where: { status: "replied", replyOutcome: null } }),
+      db.outreachReply.count({ where: { outcome: null, outreach: { status: "replied" } } }),
       db.invitation.count({ where: { firstOpenedAt: { not: null } } }),
     ]);
     const statusCounts = Object.fromEntries(grouped.map((g) => [g.status, g._count._all]));
@@ -304,7 +304,7 @@ export async function outreachRoutes(app: FastifyInstance, opts: { config: Confi
     }
   });
   action("reply", "reply", (id, body) => recordReply(db, id, { outcome: body.outcome, summary: body.summary, requireOutcome: true }), ["outcome", "summary"]);
-  action("classify", "classified", (id, body) => classifyReply(db, id, body.outcome), ["outcome"]);
+  action("classify", "classified", (id, body) => classifyReply(db, id, body.outcome, new Date(), body.replyId), ["outcome", "replyId"]);
   action("confirm-sent", "confirmed", (id) => confirmStuckSent(db, id, sender.name));
 
   /**

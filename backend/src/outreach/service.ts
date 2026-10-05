@@ -450,32 +450,65 @@ export async function recordReply(db: Db, id: string, raw: { outcome?: unknown; 
   });
 }
 
-async function recordReplyInTx(tx: Tx, id: string, outcome: ReplyOutcome | null, summary: string | null, now: Date) {
-  const result = await moveOutreachInTx(tx, id, "replied", { repliedAt: now, replyOutcome: outcome, replySummary: summary }, outcome ? REPLY_OUTCOME_LABELS[outcome] : "Not yet classified", now);
+type ReplyIdentity = { mailboxAccount: string; gmailMessageId: string };
+const FIRST_REPLY_EVENT = "First reply ";
+
+async function recordReplyInTx(tx: Tx, id: string, outcome: ReplyOutcome | null, summary: string | null, now: Date, identity?: ReplyIdentity) {
+  const o = await tx.outreach.findUnique({ where: { id } });
+  if (!o) throw notFound();
+  // Manual recording has no provider identity: retain its existing once-only
+  // behavior. Gmail callers deduplicate by identity before reaching here.
+  if (o.status === "replied" && !identity) return { changed: false, outreach: o, prospect: null, reply: null };
+  const reply = await tx.outreachReply.create({ data: { outreachId: id, ...identity, receivedAt: now, summary, outcome, classifiedAt: outcome ? now : null } });
+  if (o.status === "replied") {
+    await logOutreachEvent(tx, id, "replied", `Additional reply ${reply.id}: Not yet classified`, now);
+    return { changed: false, outreach: o, prospect: null, reply };
+  }
+  // This audit marker identifies the original snapshot even when several
+  // replies have identical timestamps/summaries. It contains no email text
+  // or provider identity. Legacy snapshots have one identity-less backfill.
+  const result = await moveOutreachInTx(tx, id, "replied", { repliedAt: now, replyOutcome: outcome, replySummary: summary }, `${FIRST_REPLY_EVENT}${reply.id}: ${outcome ? REPLY_OUTCOME_LABELS[outcome] : "Not yet classified"}`, now);
   const prospect = result.changed ? await applyReplyOutcome(tx, result.outreach, outcome, now) : null;
-  return { ...result, prospect };
+  return { ...result, prospect, reply };
 }
 
-/** Classifies a reply recorded without an outcome. Once only. */
-export async function classifyReply(db: Db, id: string, outcomeRaw: unknown, now = new Date()) {
+/** Classifies one individual reply, once only, under the existing send gate. */
+export async function classifyReply(db: Db, id: string, outcomeRaw: unknown, now = new Date(), replyId?: string) {
   const outcome = typeof outcomeRaw === "string" && isReplyOutcome(outcomeRaw) ? outcomeRaw : null;
   if (!outcome) throw new ProspectError(["Choose how the business replied."]);
+  if (replyId !== undefined && (typeof replyId !== "string" || !UUID_RE.test(replyId))) throw new ProspectError(["Choose an individual reply to classify."]);
   return db.$transaction(async (tx) => {
     await lockSendGate(tx);
+    await lockOutreach(tx, id);
     const o = await tx.outreach.findUnique({ where: { id } });
     if (!o) throw notFound();
     if (o.status !== "replied") throw new ProspectError(["Only a reply can be classified."]);
-    if (o.replyOutcome) throw new ProspectError([`This reply is already classified as ${REPLY_OUTCOME_LABELS[o.replyOutcome]}.`]);
-    const { count } = await tx.outreach.updateMany({ where: { id, replyOutcome: null }, data: { replyOutcome: outcome } });
+    // Old single-reply callers remain compatible, but never guess which
+    // message an operator meant when more than one reply exists.
+    const rows = await tx.outreachReply.findMany({ where: { outreachId: id, ...(replyId ? { id: replyId } : {}) }, take: 2 });
+    if (rows.length !== 1) throw new ProspectError(["Choose an individual reply to classify."]);
+    const reply = rows[0]!;
+    if (reply.outcome) throw new ProspectError([`This reply is already classified as ${REPLY_OUTCOME_LABELS[reply.outcome]}.`]);
+    const { count } = await tx.outreachReply.updateMany({ where: { id: reply.id, outcome: null }, data: { outcome, classifiedAt: now } });
     if (count !== 1) throw new ProspectError(["The reply changed meanwhile. Reload and try again."], "conflict");
-    await logOutreachEvent(tx, id, "replied", `Classified: ${REPLY_OUTCOME_LABELS[outcome]}`, now);
+    const first = await tx.outreachEvent.findFirst({ where: { outreachId: id, type: "replied", detail: { startsWith: FIRST_REPLY_EVENT } }, select: { detail: true } });
+    const isOriginal = first ? first.detail!.startsWith(`${FIRST_REPLY_EVENT}${reply.id}: `) : reply.mailboxAccount === null && reply.gmailMessageId === null;
+    // Keep the original outbound-level outcome/funnel classification. A
+    // later reply still applies its safety outcome, without rewriting it.
+    if (isOriginal && o.replyOutcome === null) await tx.outreach.updateMany({ where: { id, replyOutcome: null }, data: { replyOutcome: outcome } });
+    await logOutreachEvent(tx, id, "replied", `Classified reply ${reply.id}: ${REPLY_OUTCOME_LABELS[outcome]}`, now);
     return { prospect: await applyReplyOutcome(tx, o, outcome, now) };
   });
 }
 
-/** An inbound email, normalised. A future inbox integration translates into this. */
+/** An inbound email, normalised by the inbox integration (or a manual caller). */
 export interface InboundReply {
   fromEmail: string;
+  /** Authorized Gmail account and actual inbound m.id, never the Send As alias. */
+  mailboxAccount?: string;
+  gmailMessageId?: string;
+  /** An already matched message; preserves the inbox reader's historical-mail checks. */
+  outreachId?: string;
   /** The provider's id of the message being answered (In-Reply-To), when known. */
   inReplyToProviderMessageId?: string | null;
   summary?: string | null;
@@ -485,32 +518,50 @@ export interface InboundReply {
 /**
  * Matches an inbound email to the message it answers (by provider message
  * id, else the latest sent message to that address) and records it as an
- * unclassified reply. Unmatched mail is reported, never guessed at.
+ * unclassified reply. Gmail supplies the inbound message identity; only
+ * identity-less manual callers retain the old message-level deduplication.
+ * Unmatched mail is reported, never guessed at.
  */
 export async function recordInboundReply(db: Db, reply: InboundReply) {
+  const hasIdentity = reply.mailboxAccount !== undefined || reply.gmailMessageId !== undefined;
+  let identity: ReplyIdentity | undefined;
+  if (hasIdentity) {
+    const account = typeof reply.mailboxAccount === "string" ? normalizeEmail(reply.mailboxAccount) : "";
+    const messageId = reply.gmailMessageId;
+    if (!account || account.length > 254 || !/^[^@\s]+@[^@\s]+$/.test(account) || typeof messageId !== "string" || !messageId || messageId.length > 200 || /[\s\x00-\x1f\x7f]/.test(messageId)) {
+      throw new ProspectError(["Invalid inbound message identity."]);
+    }
+    identity = { mailboxAccount: account, gmailMessageId: messageId };
+    const existing = await db.outreachReply.findUnique({ where: { mailboxAccount_gmailMessageId: identity }, select: { outreachId: true } });
+    if (existing) return { result: "duplicate" as const, outreachId: existing.outreachId };
+  }
   const from = normalizeEmail(reply.fromEmail);
-  const byId = reply.inReplyToProviderMessageId
+  const byId = reply.outreachId
+    ? await db.outreach.findUnique({ where: { id: reply.outreachId } })
+    : reply.inReplyToProviderMessageId
     ? await db.outreach.findUnique({ where: { providerMessageId: reply.inReplyToProviderMessageId.slice(0, 200) } })
     : null;
   const o =
     byId ??
-    (await db.outreach.findFirst({
+    (!reply.outreachId ? await db.outreach.findFirst({
       where: { recipientEmail: { equals: from, mode: "insensitive" }, status: { in: [...ATTEMPTED_STATUSES] } },
       orderBy: { sentAt: "desc" },
-    }));
+    }) : null);
   if (!o) return { result: "unmatched" as const, outreachId: null };
   const summary = cleanText(reply.summary ?? undefined, FIELD_LIMITS.note, "Reply summary");
   const result = await db.$transaction(async (tx) => {
     await lockSendGate(tx);
+    const existing = identity ? await tx.outreachReply.findUnique({ where: { mailboxAccount_gmailMessageId: identity }, select: { outreachId: true } }) : null;
+    if (existing) return { result: "duplicate" as const, outreachId: existing.outreachId };
     // Decided under the lock, so a concurrent copy of this reply, or a bounce, can't slip in between.
     await lockOutreach(tx, o.id);
     const status = (await tx.outreach.findUniqueOrThrow({ where: { id: o.id }, select: { status: true } })).status;
-    if (status === "replied") return "duplicate" as const;
-    if (outreachTransitionErrors(status, "replied").length) return "ignored" as const;
-    await recordReplyInTx(tx, o.id, null, summary, reply.at ?? new Date());
-    return "recorded" as const;
+    if (status === "replied" && !identity) return { result: "duplicate" as const, outreachId: o.id };
+    if (status !== "replied" && outreachTransitionErrors(status, "replied").length) return { result: "ignored" as const, outreachId: o.id };
+    await recordReplyInTx(tx, o.id, null, summary, reply.at ?? new Date(), identity);
+    return { result: "recorded" as const, outreachId: o.id };
   });
-  return { result, outreachId: o.id };
+  return result;
 }
 
 /**
@@ -554,15 +605,15 @@ const WEEK_MS = 7 * 24 * 60 * 60 * 1000;
  */
 export async function outreachAttention(db: Db, now = new Date(), take = 20) {
   const failedSince = { status: "failed" as const, failedAt: { gte: new Date(now.getTime() - WEEK_MS) } };
-  const toClassify = { status: "replied" as const, replyOutcome: null };
+  const toClassify = { outcome: null, outreach: { status: "replied" as const } };
   const [replies, replyCount, failures, failureCount, last] = await Promise.all([
-    db.outreach.findMany({ where: toClassify, orderBy: { repliedAt: "asc" }, take, select: { id: true, subject: true, recipientEmail: true, repliedAt: true } }),
-    db.outreach.count({ where: toClassify }),
+    db.outreachReply.findMany({ where: toClassify, orderBy: [{ receivedAt: "asc" }, { id: "asc" }], take, select: { id: true, receivedAt: true, outreach: { select: { id: true, subject: true, recipientEmail: true } } } }),
+    db.outreachReply.count({ where: toClassify }),
     db.outreach.findMany({ where: failedSince, orderBy: { failedAt: "desc" }, take, select: { id: true, subject: true, recipientEmail: true, failedAt: true, failureReason: true } }),
     db.outreach.count({ where: failedSince }),
     db.outreach.aggregate({ _max: { sentAt: true } }),
   ]);
-  return { replies, replyCount, failures, failureCount, lastSentAt: last._max.sentAt };
+  return { replies: replies.map((r) => ({ ...r.outreach, replyId: r.id, repliedAt: r.receivedAt })), replyCount, failures, failureCount, lastSentAt: last._max.sentAt };
 }
 
 /** The prospect's messages, newest first, and whether a first message can be drafted. */
@@ -580,6 +631,7 @@ export async function getOutreachDetail(db: Db, id: string, cfg?: ComplianceConf
     include: {
       prospect: { include: { signals: true } },
       events: { orderBy: { createdAt: "asc" } },
+      replies: { orderBy: [{ receivedAt: "asc" }, { createdAt: "asc" }, { id: "asc" }], select: { id: true, receivedAt: true, summary: true, outcome: true, classifiedAt: true } },
       followUpOf: { select: { id: true, subject: true, status: true } },
       followUps: { select: { id: true, subject: true, status: true }, orderBy: { createdAt: "asc" } },
     },

@@ -727,10 +727,30 @@ model Outreach {
   followUpOf Outreach?       @relation("FollowUp", fields: [followUpOfId], references: [id], onDelete: Restrict)
   followUps  Outreach[]      @relation("FollowUp")
   events     OutreachEvent[]
+  replies    OutreachReply[]
   invitation Invitation?
 
   @@index([prospectId, createdAt])
   @@index([status, statusChangedAt])
+}
+
+// Individual inbound messages. Gmail identity belongs to the authorized
+// account, not its Send As address. Null identity is legacy/manual only.
+model OutreachReply {
+  id             String        @id @default(uuid()) @db.Uuid
+  outreachId     String        @db.Uuid
+  mailboxAccount String?       @db.VarChar(254)
+  gmailMessageId String?       @db.VarChar(200)
+  receivedAt     DateTime
+  summary        String?       @db.VarChar(2000)
+  outcome        ReplyOutcome?
+  classifiedAt   DateTime?
+  createdAt      DateTime      @default(now())
+
+  outreach Outreach @relation(fields: [outreachId], references: [id], onDelete: Cascade)
+
+  @@unique([mailboxAccount, gmailMessageId])
+  @@index([outreachId, receivedAt])
 }
 
 // Append-only log of what happened to each message: the raw data for

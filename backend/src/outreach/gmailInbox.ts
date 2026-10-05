@@ -18,8 +18,8 @@
  * mail is only reported.
  *
  * It keeps no cursor: each run looks back a few days, and every write is
- * idempotent (a bounce carries Gmail's message id as its event id; a second
- * reply to a replied message is a duplicate), so re-reading is harmless.
+ * idempotent (bounces carry an event id; replies keep the authorized account
+ * and actual inbound Gmail message id), so re-reading is harmless.
  * Gmail push (Pub/Sub watch) could trigger a run sooner; it isn't needed at
  * this volume.
  */
@@ -137,9 +137,10 @@ export async function pollGmailInbox(
       report.checked++;
       const m = await client.getMessage(id, "full");
       const c = classifyInbound(m, own);
-      const at = m.internalDate ? new Date(Number(m.internalDate)) : (opts.now?.() ?? new Date());
       // When Gmail received it (internalDate, epoch ms). Null when Gmail didn't say.
-      const receivedAt = m.internalDate && Number.isFinite(Number(m.internalDate)) ? new Date(Number(m.internalDate)) : null;
+      const candidateAt = m.internalDate ? new Date(Number(m.internalDate)) : null;
+      const receivedAt = candidateAt && Number.isFinite(candidateAt.getTime()) ? candidateAt : null;
+      const at = receivedAt ?? (opts.now?.() ?? new Date());
       const item: InboxItem = { gmailId: id, kind: c.kind, from: c.from, subject: (headerOf(m, "Subject") ?? "").slice(0, 200), outreachId: null, result: "ignored" };
       report.items.push(item);
       if (c.kind === "own" || c.kind === "auto_reply" || c.kind === "delay") continue;
@@ -183,8 +184,9 @@ export async function pollGmailInbox(
       } else if (c.kind === "unsubscribe") {
         item.result = (await unsubscribeOutreach(db, o.id, "by an emailed unsubscribe request", at)).result;
       } else {
-        const r = await recordInboundReply(db, { fromEmail: c.from, inReplyToProviderMessageId: o.providerMessageId, summary: m.snippet?.slice(0, 500) ?? null, at });
+        const r = await recordInboundReply(db, { fromEmail: c.from, outreachId: o.id, mailboxAccount: client.account, gmailMessageId: m.id, summary: m.snippet?.slice(0, 500) ?? null, at });
         item.result = r.result;
+        item.outreachId = r.outreachId;
       }
     }
     pageToken = list.nextPageToken;

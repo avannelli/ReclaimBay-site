@@ -436,8 +436,10 @@ header first if one did.
 **Reading the mailbox.** Run `npm run outreach:inbox` on a schedule, for
 example every 5 minutes. It is a dry run by default; `--apply` records.
 - It reads the last 7 days. It needs no cursor: every write is idempotent,
-  because a bounce carries Gmail's message id as its event id and a second
-  reply to a replied message is a duplicate.
+  because a bounce carries Gmail's message id as its event id and each reply
+  is deduplicated by the authorized mailbox account plus inbound Gmail ID.
+  The Send As address is not the mailbox identity. Distinct messages in the
+  same thread remain distinct replies, even after an earlier classification.
 - It matches by Gmail thread, then by the marker quoted in a bounce, then by
   the sender's address. Unmatched mail is only counted.
 - **By address, only mail received after we wrote.** The address match takes
@@ -493,11 +495,30 @@ domain-wide delegation entry removed.
 
 - `recordInboundReply` matches an inbound email to the message it answers:
   by the provider id in In-Reply-To, otherwise the latest sent message to
-  that address. It records the reply unclassified (the prospect becomes
-  Engaged) and never guesses at unmatched mail.
-- `classifyReply` sets the outcome once: interested, not interested, other,
+  that address. Gmail passes its already resolved match, preserving the
+  historical-mail check. The first reply makes the prospect Engaged; later
+  replies get their own unclassified `OutreachReply` without reopening or
+  rewriting the prospect or outbound message.
+- `classifyReply` sets one individual reply's outcome and classification time
+  once: interested, not interested, other,
   or asked not to be contacted. Classification is a person's job for now;
-  there is no automatic classification.
+  there is no automatic classification. Each reply is independently listed
+  in Replies and in the message's chronological history. Forms identify the
+  individual reply; an ambiguous message-only classification is rejected.
+  Every classification uses the existing prospect/suppression helpers under
+  the send gate. A later opt-out permanently suppresses the address and
+  cancels open unsent messages, even if the first reply was Interested.
+- `Outreach.repliedAt`, `replySummary`, and `replyOutcome` keep the original
+  message-level snapshot; only its original reply's classification can fill
+  an unset outcome. Later replies never replace it or add funnel conversions.
+  The first-reply audit event identifies that snapshot without relying on
+  timestamps, which can be identical. The additive migration copies known
+  legacy snapshots without changing them, fabricating Gmail identities, or
+  inventing historical classification times. Manual/legacy replies alone
+  have null Gmail identity; Gmail identities must be supplied together.
+  An old snapshot cannot be automatically linked to a Gmail ID that was
+  never stored. Re-seen mail gets an identified record alongside that
+  snapshot, then deduplicates by its actual mailbox/message identity.
 - **One-click unsubscribe:** `GET /u/:token` shows a button (mail scanners
   follow links), and `POST /u/:token` unsubscribes, from the button or a mail
   client's one-click request. It suppresses the address, makes the prospect
@@ -596,7 +617,7 @@ records anything, and nothing new is tracked.
 | View | Shows |
 | ---- | ----- |
 | **Messages** | Every message, newest change first, filtered by status, kind, and campaign: its business and recipient, template and campaign, status with its reason (cancelled, refused, bounced, outcome unknown), queued and sent times, its invitation (first open, opens, activation), and its reply |
-| **Replies** | Replied messages, unclassified first, with each one's classification and reply summary |
+| **Replies** | Individual inbound replies, unclassified first, with each one's classification and reply summary; multiple replies may answer one outbound message |
 | **Invitation activity** | Opened invitations, newest activity first (an open, or activation), optionally activated only, and optionally only those whose message was sent (the funnel's Opened and Activated link there, so the list is exactly what they count). By default it also shows an open on a message whose send outcome is unknown, which suggests it went out |
 | **Eligible now** | Who a first message could be prepared for right now: the same dry run the Outreach page counts, so the one eligibility decision; no draft or invitation is made |
 

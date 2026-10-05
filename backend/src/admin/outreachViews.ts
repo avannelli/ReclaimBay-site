@@ -15,7 +15,7 @@ import { hideInvitationTokens } from "../invitations/tokens.js";
 import { invitationStatus } from "../invitations/status.js";
 import type { FunnelRow } from "../outreach/metrics.js";
 import type { SendingStatus } from "../outreach/dispatch.js";
-import { NO_CAMPAIGN, PAGE_SIZE, STALE_QUEUE_MS, type ActivityRow, type EligibleRow, type InvitationSummary, type MessageFilters, type MessageRow, type MessageView } from "../outreach/operations.js";
+import { NO_CAMPAIGN, PAGE_SIZE, STALE_QUEUE_MS, type ActivityRow, type EligibleRow, type InvitationSummary, type MessageFilters, type MessageRow, type MessageView, type ReplyRow } from "../outreach/operations.js";
 import { PREPARE_LIMIT, type PrepareReport } from "../outreach/prepare.js";
 import type { getOutreachDetail, outreachAttention, prospectOutreach } from "../outreach/service.js";
 import { FIELD_LIMITS, scoringInputFromRecord } from "../prospects.js";
@@ -285,13 +285,6 @@ export function outreachDetailPage(opts: { detail: Detail; invitation?: Invitati
 </form>
 <form method="post" action="/admin/outreach/${id}/follow-up" class="inline-form"><button class="btn-secondary" type="submit">Prepare follow-up draft</button></form>`
       : "",
-    o.status === "replied" && !o.replyOutcome
-      ? `<form method="post" action="/admin/outreach/${id}/classify" class="card stack">
-  <div class="card-h" style="margin:0">Classify this reply</div>
-  <div class="field"><label for="f-outcome">How did they reply?</label><select id="f-outcome" name="outcome">${replyOptions(values.outcome)}</select></div>
-  <div><button type="submit">Classify</button></div>
-</form>`
-      : "",
   ].filter(Boolean);
 
   const factList = facts.length ? facts.map(factRow).join("") : `<div class="card">${emptyState("No facts recorded.")}</div>`;
@@ -337,6 +330,16 @@ ${section(
 )}
 
 ${invitationSection(o, opts.invitation, values, opts.errors ?? [])}
+
+${o.replies.length ? section("replies", "Replies", `<p class="small muted">Each inbound message is reviewed separately. The original reply snapshot supplies the message-level funnel; later replies do not replace it.</p><div class="stack">${o.replies.map((r) => `<div class="card" id="reply-${esc(r.id)}">
+<h3 class="card-h">Reply received ${fmtDate(r.receivedAt)}</h3>
+<p class="small">${r.summary ? safeText(r.summary) : "No summary recorded"}</p>
+${r.outcome ? `<p><b>${esc(REPLY_OUTCOME_LABELS[r.outcome])}</b>${r.classifiedAt ? ` <span class="small muted">Classified ${fmtDate(r.classifiedAt)}</span>` : ""}</p>` : `<form method="post" action="/admin/outreach/${id}/classify" class="stack">
+<input type="hidden" name="replyId" value="${esc(r.id)}">
+<div class="card-h" style="margin:0">Classify this reply</div>
+<div class="field"><label for="outcome-${esc(r.id)}">How did they reply?</label><select id="outcome-${esc(r.id)}" name="outcome">${replyOptions(values.replyId === r.id ? values.outcome : undefined)}</select></div>
+<div><button type="submit">Classify</button></div></form>`}
+</div>`).join("")}</div>`) : ""}
 
 ${section("facts", "Evidence used", `<p class="small muted" style="margin:-4px 0 10px">Every personal detail in the message comes from one of these stored facts.</p>${factList}`)}
 
@@ -689,7 +692,7 @@ export type MessagesPageData = {
   nav: { eligible: number | null; messages: number; unclassified: number; activity: number };
 } & (
   | { view: "messages"; total: number; rows: MessageRow[]; statusCounts: Partial<Record<OutreachStatus, number>> }
-  | { view: "replies"; total: number; unclassified: number; rows: MessageRow[] }
+  | { view: "replies"; total: number; unclassified: number; rows: ReplyRow[] }
   | { view: "activity"; total: number; rows: ActivityRow[] }
   /** `notice`: the result of a preparation, counts only (routes/adminOutreach.ts preparedNotice). */
   | { view: "eligible"; total: number; capped: boolean; rows: EligibleRow[]; notice?: string }
@@ -769,18 +772,18 @@ function messagesTable(rows: MessageRow[]): string {
   );
 }
 
-function repliesTable(rows: MessageRow[]): string {
+function repliesTable(rows: ReplyRow[]): string {
   return table(
     "Replies",
     ["Business", "Campaign", "Message", "Replied", "Classification", "Reply summary"],
     rows.map(
-      (m) => `<tr${m.replyOutcome ? "" : ' class="attn"'}>
-  <td>${businessCell(m.prospect, m.recipientEmail)}</td>
-  <td data-label="Campaign">${campaignCell(m.campaign)}</td>
-  <td data-label="Message"><a href="/admin/outreach/${esc(m.id)}">${esc(m.subject)}</a><div class="sub">${esc(OUTREACH_KIND_LABELS[m.kind])}</div></td>
-  <td class="small" data-label="Replied">${fmtDate(m.repliedAt)}</td>
-  <td data-label="Classification">${replyLabel(m)}</td>
-  <td class="small" data-label="Reply summary">${m.replySummary ? safeText(m.replySummary) : '<span class="muted">No summary recorded</span>'}</td>
+      (m) => `<tr${m.outcome ? "" : ' class="attn"'}>
+  <td>${businessCell(m.outreach.prospect, m.outreach.recipientEmail)}</td>
+  <td data-label="Campaign">${campaignCell(m.outreach.campaign)}</td>
+  <td data-label="Message"><a href="/admin/outreach/${esc(m.outreachId)}">${esc(m.outreach.subject)}</a><div class="sub">${esc(OUTREACH_KIND_LABELS[m.outreach.kind])}</div></td>
+  <td class="small" data-label="Replied"><a href="/admin/outreach/${esc(m.outreachId)}#reply-${esc(m.id)}">${fmtDate(m.receivedAt)}</a></td>
+  <td data-label="Classification">${m.outcome ? esc(REPLY_OUTCOME_LABELS[m.outcome]) : "<b>Not yet classified</b>"}</td>
+  <td class="small" data-label="Reply summary">${m.summary ? safeText(m.summary) : '<span class="muted">No summary recorded</span>'}</td>
 </tr>`,
     ),
   );

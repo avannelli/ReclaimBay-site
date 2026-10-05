@@ -112,6 +112,12 @@ export interface InvitationSummary {
 }
 export type MessageRow = Omit<MessageRecord, "invitation"> & { invitation: InvitationSummary | null };
 
+const REPLY_SELECT = {
+  id: true, outreachId: true, receivedAt: true, summary: true, outcome: true, classifiedAt: true,
+  outreach: { select: { subject: true, kind: true, campaign: true, recipientEmail: true, prospect: { select: { id: true, businessName: true, internalTest: true } } } },
+} satisfies Prisma.OutreachReplySelect;
+export type ReplyRow = Prisma.OutreachReplyGetPayload<{ select: typeof REPLY_SELECT }>;
+
 /** Attaches activation (one query for the whole page) and drops the invitation ids. */
 async function withActivation(db: Db, rows: MessageRecord[]): Promise<MessageRow[]> {
   const activations = await invitationActivations(db, rows.flatMap((r) => (r.invitation ? [r.invitation.id] : [])));
@@ -131,20 +137,20 @@ export async function listMessages(db: Db, f: MessageFilters) {
   return { total, rows: await withActivation(db, rows) };
 }
 
-/** Replied messages: every unclassified reply first, then the classified ones; newest reply first within each. */
+/** Individual replies, unclassified first. Provider/mailbox identities never leave this read. */
 export async function listReplies(db: Db, f: MessageFilters) {
-  const where: Prisma.OutreachWhereInput = { status: "replied", ...(f.kind ? { kind: f.kind } : {}), ...campaignWhere(f.campaign) };
+  const where: Prisma.OutreachReplyWhereInput = { outreach: { status: "replied", ...(f.kind ? { kind: f.kind } : {}), ...campaignWhere(f.campaign) } };
   const [total, unclassified, rows] = await Promise.all([
-    db.outreach.count({ where }),
-    db.outreach.count({ where: { ...where, replyOutcome: null } }),
-    db.outreach.findMany({
+    db.outreachReply.count({ where }),
+    db.outreachReply.count({ where: { ...where, outcome: null } }),
+    db.outreachReply.findMany({
       where,
-      orderBy: [{ replyOutcome: { sort: "asc", nulls: "first" } }, { repliedAt: "desc" }, { id: "asc" }],
+      orderBy: [{ outcome: { sort: "asc", nulls: "first" } }, { receivedAt: "desc" }, { id: "asc" }],
       ...pageOf(f.page),
-      select: MESSAGE_SELECT,
+      select: REPLY_SELECT,
     }),
   ]);
-  return { total, unclassified, rows: await withActivation(db, rows) };
+  return { total, unclassified, rows };
 }
 
 /**
