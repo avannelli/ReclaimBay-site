@@ -15,6 +15,7 @@ import { hideInvitationTokens } from "../invitations/tokens.js";
 import { invitationStatus } from "../invitations/status.js";
 import type { FunnelRow } from "../outreach/metrics.js";
 import type { SendingStatus } from "../outreach/dispatch.js";
+import { canConfirmStuckSent } from "../outreach/records.js";
 import { NO_CAMPAIGN, PAGE_SIZE, STALE_QUEUE_MS, type ActivityRow, type EligibleRow, type InvitationSummary, type MessageFilters, type MessageRow, type MessageView, type ReplyRow } from "../outreach/operations.js";
 import { PREPARE_LIMIT, type PrepareReport } from "../outreach/prepare.js";
 import type { getOutreachDetail, outreachAttention, prospectOutreach } from "../outreach/service.js";
@@ -220,7 +221,9 @@ function messageState(o: Detail): string {
     o.status === "draft"
       ? ["warn", "✎", `${label} — NOT SENT`, `Review the message, the evidence it uses, and its invitation below. Queue it when it's right, or discard it. ${SENDING_NOTE}`]
       : o.status === "queued" && o.sendStartedAt
-        ? ["neg", "⚠", `${label} — SEND OUTCOME UNKNOWN`, `A send started ${fmtDate(o.sendStartedAt)} and its outcome is unknown: check the provider, then record it below.`]
+        ? canConfirmStuckSent(o)
+          ? ["neg", "⚠", `${label} — SEND OUTCOME UNKNOWN`, `A send started ${fmtDate(o.sendStartedAt)} and its outcome is unknown: check the provider, then record it below.`]
+          : ["warn", "⚠", `${label} — PROVIDER OUTCOME PENDING`, "The provider's send result has not been recorded yet. The send may still be running; manual sent confirmation is unavailable until an uncertain outcome is recorded."]
         : o.status === "queued"
           ? ["warn", "→", `${label} — NOT SENT BY THIS ACTION`, `It waits for the dispatcher. ${SENDING_NOTE} Discard it to stop it.`]
           : o.status === "bounced" || o.status === "failed"
@@ -257,7 +260,7 @@ export function outreachDetailPage(opts: { detail: Detail; invitation?: Invitati
   const name = o.prospect.businessName ?? "Prospect";
   const open = o.status === "draft" || o.status === "queued";
   const awaiting = AWAITING_REPLY.includes(o.status);
-  const stuck = o.status === "queued" && o.sendStartedAt !== null;
+  const confirmable = canConfirmStuckSent(o);
 
   const actions = [
     o.status === "draft"
@@ -268,10 +271,10 @@ export function outreachDetailPage(opts: { detail: Detail; invitation?: Invitati
   <div><button type="submit">Queue</button> <span class="small muted">Queueing sends nothing: the dispatcher sends queued messages only while sending is switched on. A first message moves the prospect to Ready to contact. Everything is checked again first.</span></div>
 </form>`
       : "",
-    stuck
+    confirmable
       ? `<form method="post" action="/admin/outreach/${id}/confirm-sent" class="card stack">
   <div class="card-h" style="margin:0">Send started ${fmtDate(o.sendStartedAt)}, outcome unknown</div>
-  <p class="small" style="margin:0">Check the provider. If it was sent, record it here; if it wasn't, discard this message. It is never retried automatically unless the provider can deduplicate it.${o.lastSendError ? ` Last error: ${esc(hideInvitationTokens(o.lastSendError))}` : ""}</p>
+  <p class="small" style="margin:0">The dispatcher recorded an uncertain outcome. Check the provider. If it was sent, record it here; if it wasn't, discard this message. It is never retried automatically.${o.lastSendError ? ` Last error: ${esc(hideInvitationTokens(o.lastSendError))}` : ""}</p>
   <div><button type="submit">It was sent</button></div>
 </form>`
       : "",
@@ -564,7 +567,7 @@ ${tile(c.remaining === 0 ? "warn" : "info", "✉", `${c.used} / ${c.limit}`, "Se
       "⚠",
       "Send outcome unknown",
       d.stuck.length,
-      "The provider may or may not have sent these. Check it, then record It was sent or discard the message.",
+      "The provider may or may not have sent these. Check it. Sent confirmation is available only after the dispatcher records an uncertain outcome; an old claim alone cannot be confirmed. Interrupted messages can be discarded after checking the provider.",
       d.stuck.slice(0, 20).map((m) => msg(m.id, m.subject, `to ${esc(m.recipientEmail)} · started ${fmtDate(m.sendStartedAt)}${m.lastSendError ? ` · ${safeText(m.lastSendError)}` : ""}`)),
     ),
     attentionGroup(

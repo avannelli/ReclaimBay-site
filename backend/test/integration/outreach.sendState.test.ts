@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { after, afterEach, before, beforeEach, describe, test } from "node:test";
 import type { Db } from "../../src/db.js";
-import { dispatchQueued } from "../../src/outreach/dispatch.js";
+import { confirmStuckSent, dailyCapacity, dispatchQueued } from "../../src/outreach/dispatch.js";
+import { revokeInvitationForOutreach } from "../../src/invitations/service.js";
 import { STUCK_AFTER_MS } from "../../src/outreach/records.js";
 import type { SendResult } from "../../src/outreach/sender.js";
 import { applyProviderEvent, createOutreachDraft, discardOutreach, queueOutreach, recordReply } from "../../src/outreach/service.js";
@@ -56,7 +57,7 @@ describe("send state while a send is in flight", { skip: skipReason }, () => {
    * Starts the dispatcher on the queued message and returns once the provider
    * has it: the claim is committed and the send is "in flight" until answer().
    */
-  const sendInFlight = async () => {
+  const sendInFlight = async (now?: () => Date) => {
     let answer!: (r: SendResult) => void;
     const answered = new Promise<SendResult>((r) => (answer = r));
     let reached!: () => void;
@@ -66,7 +67,7 @@ describe("send state while a send is in flight", { skip: skipReason }, () => {
       return answered;
     });
     await switchOn(db, sender);
-    const run = dispatchQueued(db, { config: CFG, sender });
+    const run = dispatchQueued(db, { config: CFG, sender, now });
     await atProvider;
     return { answer, run, sender };
   };
@@ -81,6 +82,132 @@ describe("send state while a send is in flight", { skip: skipReason }, () => {
     assert.equal(o.cancelledAt, null);
     assert.ok(!(await eventsOf(id)).includes("cancelled"), "never recorded as cancelled");
   };
+
+  const pendingConfirmation = (id: string) => assert.rejects(
+    confirmStuckSent(db, id, "manual"),
+    (err: unknown) => err instanceof ProspectError && err.kind === "conflict" && /result has not been recorded/.test(err.messages.join(" ")),
+  );
+
+  for (const aged of [false, true]) {
+    for (const outcome of ["accepted", "rejected", "unavailable", "uncertain"] as const) {
+      test(`manual confirmation during ${aged ? "an old" : "a fresh"} active claim cannot overwrite provider ${outcome}`, async () => {
+        const p = await prospect();
+        const started = new Date(Date.now() - (aged ? STUCK_AFTER_MS + 60_000 : 0));
+        const o = (await createOutreachDraft(db, p.id, { ...OPTS, now: new Date(started.getTime() - 2_000) })).outreach;
+        await queueOutreach(db, o.id, CFG, new Date(started.getTime() - 1_000));
+        let clockCalls = 0;
+        const inFlight = await sendInFlight(() => ++clockCalls === 1 ? started : new Date());
+        const claimed = await message(o.id);
+        try {
+          await pendingConfirmation(o.id);
+          assert.deepEqual(await message(o.id), claimed, "a refused confirmation writes nothing");
+          assert.deepEqual(await eventsOf(o.id), ["drafted", "queued"]);
+          assert.deepEqual(await dailyCapacity(db, { outreachDailyLimit: 1 }, new Date()), { used: 1, limit: 1, remaining: 0 });
+          const competing = await dispatchQueued(db, { config: CFG, sender: inFlight.sender });
+          assert.deepEqual(competing.sent, []);
+          assert.equal(inFlight.sender.calls.length, 1, "another dispatcher cannot send a claimed message");
+        } finally {
+          inFlight.answer(outcome === "accepted" ? accepted(o.id) : { status: outcome, reason: `Provider ${outcome}.` });
+          await inFlight.run;
+        }
+        const resolved = await message(o.id);
+        if (outcome === "accepted") {
+          await assertSent(o.id);
+          assert.equal((await confirmStuckSent(db, o.id, "manual")).changed, false);
+          assert.deepEqual(await message(o.id), resolved, "manual confirmation preserves provider identity, timestamps and state");
+          assert.deepEqual(await eventsOf(o.id), ["drafted", "queued", "sent"]);
+          assert.equal(await prospectStatus(p.id), "contacted");
+        } else if (outcome === "rejected") {
+          await assert.rejects(confirmStuckSent(db, o.id, "manual"), /Only a message/);
+          assert.deepEqual(await message(o.id), resolved);
+          assert.equal(resolved.status, "failed");
+          assert.equal(resolved.sentAt, null);
+          assert.equal(resolved.failureReason, "Provider rejected.");
+          assert.deepEqual(await eventsOf(o.id), ["drafted", "queued", "failed"]);
+          assert.equal(await prospectStatus(p.id), "ready_to_contact");
+        } else if (outcome === "unavailable") {
+          await assert.rejects(confirmStuckSent(db, o.id, "manual"), /Only a message/);
+          assert.deepEqual(await message(o.id), resolved);
+          assert.equal(resolved.status, "queued");
+          assert.equal(resolved.sendStartedAt, null);
+          assert.equal(resolved.sendAttempts, 0);
+          assert.deepEqual(await dailyCapacity(db, { outreachDailyLimit: 1 }, new Date()), { used: 0, limit: 1, remaining: 1 });
+          assert.deepEqual(await eventsOf(o.id), ["drafted", "queued"]);
+        } else {
+          assert.equal(resolved.status, "queued");
+          assert.equal(resolved.lastSendError, "Provider uncertain.");
+          assert.equal((await confirmStuckSent(db, o.id, "manual")).changed, true);
+          assert.equal((await confirmStuckSent(db, o.id, "manual")).changed, false);
+          assert.deepEqual(await eventsOf(o.id), ["drafted", "queued", "sent"]);
+          assert.equal((await message(o.id)).sendAttempts, 1);
+          assert.deepEqual(await dailyCapacity(db, { outreachDailyLimit: 1 }, new Date()), { used: 1, limit: 1, remaining: 0 });
+        }
+        assert.equal(inFlight.sender.calls.length, 1);
+      });
+    }
+  }
+
+  test("manual confirmation and competing dispatchers on a completed uncertain send produce one sent event and no additional provider calls", async () => {
+    const o = await draft((await prospect()).id);
+    const sender = mockSender(() => ({ status: "uncertain", reason: "Timed out." }));
+    await queueAndSend(db, o.id, sender);
+    const results = await Promise.all([
+      confirmStuckSent(db, o.id, "manual"),
+      dispatchQueued(db, { config: CFG, sender }),
+      confirmStuckSent(db, o.id, "manual"),
+      dispatchQueued(db, { config: CFG, sender }),
+    ]);
+    assert.equal(results[0].changed || results[2].changed, true);
+    assert.notEqual(results[0].changed, results[2].changed);
+    assert.deepEqual(await eventsOf(o.id), ["drafted", "queued", "sent"]);
+    assert.equal(sender.calls.length, 1);
+    assert.equal((await message(o.id)).sendAttempts, 1);
+  });
+
+  test("drafts, unclaimed queues and cancelled messages cannot be manually marked sent, including revoked invitations", async () => {
+    const o = await draft((await prospect()).id);
+    await assert.rejects(confirmStuckSent(db, o.id, "manual"), /Only a message/);
+    await queueOutreach(db, o.id, CFG);
+    await assert.rejects(confirmStuckSent(db, o.id, "manual"), /Only a message/);
+    await revokeInvitationForOutreach(db, o.id, "Wrong shop.");
+    const sender = mockSender();
+    await switchOn(db, sender);
+    const report = await dispatchQueued(db, { config: CFG, sender });
+    assert.equal(report.cancelled.length, 1);
+    const cancelled = await message(o.id);
+    await assert.rejects(confirmStuckSent(db, o.id, "manual"), /Only a message/);
+    assert.deepEqual(await message(o.id), cancelled);
+    assert.equal(cancelled.status, "cancelled");
+    assert.equal(cancelled.sentAt, null);
+    assert.equal(sender.calls.length, 0);
+    assert.deepEqual(await eventsOf(o.id), ["drafted", "queued", "cancelled"]);
+  });
+
+  test("an uncertain send discarded by a person cannot be manually resurrected", async () => {
+    const o = await draft((await prospect()).id);
+    await queueAndSend(db, o.id, mockSender(() => ({ status: "uncertain", reason: "Timed out." })));
+    await discardOutreach(db, o.id, "Checked the provider.");
+    const cancelled = await message(o.id);
+    await assert.rejects(confirmStuckSent(db, o.id, "manual"), /Only a message/);
+    assert.deepEqual(await message(o.id), cancelled);
+    assert.deepEqual(await eventsOf(o.id), ["drafted", "queued", "cancelled"]);
+  });
+
+  test("manual confirmation preserves delivered, bounced and replied outcomes and cannot hide a later provider failure", async () => {
+    for (const outcome of ["delivered", "bounced", "replied", "failed"] as const) {
+      const o = await draft((await prospect()).id);
+      await queueAndSend(db, o.id);
+      if (outcome === "replied") await recordReply(db, o.id, { summary: "Thanks." });
+      else await applyProviderEvent(db, { type: outcome, provider: "mock", outreachId: o.id, providerMessageId: `msg-${o.id}`, reason: "Provider outcome." });
+      const resolved = await message(o.id);
+      const events = await eventsOf(o.id);
+      if (outcome === "failed") await assert.rejects(confirmStuckSent(db, o.id, "manual"), /Only a message/);
+      else assert.equal((await confirmStuckSent(db, o.id, "manual")).changed, false);
+      assert.equal(resolved.status, outcome);
+      assert.deepEqual(await message(o.id), resolved);
+      assert.deepEqual(await eventsOf(o.id), events);
+    }
+  });
 
   test("Do not contact during a first message's send: the send is recorded, the business stays Do not contact, the address is suppressed", async () => {
     const p = await prospect();

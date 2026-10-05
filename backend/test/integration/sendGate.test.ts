@@ -5,6 +5,7 @@ import type { Db } from "../../src/db.js";
 import { revokeInvitation, revokeInvitationForOutreach } from "../../src/invitations/service.js";
 import { confirmStuckSent, dispatchQueued, setSendingSwitch } from "../../src/outreach/dispatch.js";
 import { SEND_GATE } from "../../src/outreach/records.js";
+import type { SendResult } from "../../src/outreach/sender.js";
 import {
   applyProviderEvent,
   classifyReply,
@@ -181,6 +182,107 @@ describe("the send gate (real PostgreSQL)", { skip: skipReason }, () => {
     assert.equal(report.sent.length, 3);
     assert.deepEqual(seen, [0, 0, 0], "the claim's transaction had committed before each send");
   });
+
+  test("confirmation queued before the dispatch claim is refused; dispatch alone records the send", async () => {
+    const o = await draft((await prospect()).id);
+    await queueOutreach(db, o.id, CFG);
+    const sender = mockSender();
+    await switchOn(db, sender);
+    const gate = await holdGate();
+    // Attach the rejection handler before releasing the gate. Observe the
+    // actual PostgreSQL waiters to order both operations without a sleep.
+    const confirmation = confirmStuckSent(db, o.id, "manual").then(
+      () => { throw new Error("an unclaimed message was confirmed"); },
+      (err: unknown) => {
+        assert.ok(err instanceof ProspectError);
+        assert.match(err.messages.join(" "), /Only a message/);
+      },
+    );
+    let dispatch: ReturnType<typeof dispatchQueued> | undefined;
+    try {
+      await untilWaiting(1);
+      dispatch = dispatchQueued(db, { config: CFG, sender });
+      await untilWaiting(2);
+    } finally {
+      gate.release();
+      await gate.done;
+    }
+    await confirmation;
+    assert.ok(dispatch);
+    const report = await dispatch;
+    assert.deepEqual(report.sent.map((s) => s.outreachId), [o.id]);
+    const stored = await db.outreach.findUniqueOrThrow({ where: { id: o.id } });
+    assert.equal(stored.status, "sent");
+    assert.equal(stored.provider, "mock");
+    assert.equal(stored.providerMessageId, `msg-${o.id}`);
+    assert.equal(stored.sendAttempts, 1);
+    assert.deepEqual(await eventsOf(o.id), ["drafted", "queued", "sent"].sort());
+    assert.equal(sender.calls.length, 1);
+  });
+
+  for (const confirmationFirst of [true, false]) {
+    for (const outcome of ["accepted", "rejected", "uncertain"] as const) {
+      test(`${confirmationFirst ? "confirmation" : "provider result"} takes the gate first with provider ${outcome}: one authoritative outcome`, async () => {
+        const o = await draft((await prospect()).id);
+        await queueOutreach(db, o.id, CFG);
+        let answer!: (result: SendResult) => void;
+        const answered = new Promise<SendResult>((r) => { answer = r; });
+        let reached!: () => void;
+        const atProvider = new Promise<void>((r) => { reached = r; });
+        const sender = mockSender(async () => { reached(); return answered; });
+        await switchOn(db, sender);
+        const dispatch = dispatchQueued(db, { config: CFG, sender });
+        await atProvider;
+        const gate = await holdGate();
+        const result: SendResult = outcome === "accepted"
+          ? { status: "accepted", providerMessageId: `msg-${o.id}` }
+          : { status: outcome, reason: `Provider ${outcome}.` };
+        const confirm = () => confirmStuckSent(db, o.id, "manual").then(
+          (value) => ({ value, error: null }),
+          (error: unknown) => ({ value: null, error }),
+        );
+        let confirmation: ReturnType<typeof confirm> | undefined;
+        try {
+          if (confirmationFirst) {
+            confirmation = confirm();
+            await untilWaiting(1);
+            answer(result);
+          } else {
+            answer(result);
+            await untilWaiting(1);
+            confirmation = confirm();
+          }
+          await untilWaiting(2);
+        } finally {
+          answer(result);
+          gate.release();
+          await gate.done;
+        }
+        await dispatch;
+        assert.ok(confirmation);
+        const manual = await confirmation;
+        if (confirmationFirst) {
+          assert.ok(manual.error instanceof ProspectError);
+          assert.equal(manual.error.kind, "conflict");
+        } else if (outcome === "rejected") {
+          assert.ok(manual.error instanceof ProspectError);
+          assert.equal(manual.error.kind, "invalid");
+        } else {
+          assert.equal(manual.error, null);
+          assert.equal(manual.value?.changed, outcome === "uncertain");
+        }
+        const stored = await db.outreach.findUniqueOrThrow({ where: { id: o.id } });
+        const expected = outcome === "rejected" ? "failed" : outcome === "uncertain" && confirmationFirst ? "queued" : "sent";
+        assert.equal(stored.status, expected);
+        assert.equal(stored.sendAttempts, 1);
+        assert.equal(stored.providerMessageId, outcome === "accepted" ? `msg-${o.id}` : null);
+        assert.equal(stored.provider, outcome === "uncertain" ? confirmationFirst ? null : "manual" : "mock");
+        assert.equal(await db.outreachEvent.count({ where: { outreachId: o.id, type: "sent" } }), expected === "sent" ? 1 : 0);
+        assert.equal(await db.outreachEvent.count({ where: { outreachId: o.id, type: "failed" } }), outcome === "rejected" ? 1 : 0);
+        assert.equal(sender.calls.length, 1);
+      });
+    }
+  }
 
   // ---------- operations that used to lock rows in opposite orders ----------
 

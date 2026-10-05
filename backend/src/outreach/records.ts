@@ -65,6 +65,14 @@ export const sendInProgress = (o: { status: OutreachStatus; sendStartedAt: Date 
   o.status === "queued" && o.sendStartedAt !== null && o.lastSendError === null && now.getTime() - o.sendStartedAt.getTime() <= STUCK_AFTER_MS;
 
 /**
+ * Manual sent confirmation requires the dispatcher's recorded uncertain
+ * outcome. Claim age alone cannot prove that the provider call has ended:
+ * even an apparently interrupted send may still return a definite failure.
+ */
+export const canConfirmStuckSent = (o: { status: OutreachStatus; sendStartedAt: Date | null; lastSendError: string | null }) =>
+  o.status === "queued" && o.sendStartedAt !== null && o.lastSendError !== null;
+
+/**
  * Cancels one open message, compare-and-set, with its event. Never one whose
  * send has started: it may have gone out, so the dispatcher's result (or a
  * person, once it is stuck) decides it, never an automatic stop.

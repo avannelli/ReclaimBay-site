@@ -25,7 +25,8 @@ import { ProspectError } from "../prospects.js";
 import { listUnsubscribeHeaders, senderIdentityErrors, unsubscribeUrl } from "./compliance.js";
 import { messageEligibilityErrors } from "./eligibility.js";
 import { moveOutreachInTx, recordSentInTx } from "./service.js";
-import { lockOutreach, lockSendGate, sendInProgress, suppressEmail } from "./records.js";
+import { canConfirmStuckSent, lockOutreach, lockSendGate, sendInProgress, suppressEmail } from "./records.js";
+import { ATTEMPTED_STATUSES } from "./lifecycle.js";
 import type { OutgoingMessage, OutreachSender, SendResult } from "./sender.js";
 import type { Prisma } from "../generated/prisma/client.js";
 
@@ -307,14 +308,24 @@ export async function stuckMessages(db: Db, now = new Date()) {
 
 /**
  * A person checked the provider and found a stuck message was sent: record
- * it (as the dispatcher would have). Only for claimed, unresolved messages.
+ * it (as the dispatcher would have). Only after the dispatcher has recorded
+ * an uncertain outcome, never while its provider result is still pending.
+ * A repeated confirmation preserves an already recorded send and its history.
  */
 export async function confirmStuckSent(db: Db, id: string, provider: string, now = new Date()) {
   return db.$transaction(async (tx) => {
     await lockSendGate(tx);
+    await lockOutreach(tx, id);
     const o = await tx.outreach.findUnique({ where: { id } });
     if (!o) throw new ProspectError(["Outreach not found."], "not_found");
+    if (ATTEMPTED_STATUSES.includes(o.status)) return { changed: false, prospect: null };
     if (o.status !== "queued" || !o.sendStartedAt) throw new ProspectError(["Only a message whose send was started and never confirmed can be marked as sent."]);
+    if (!canConfirmStuckSent(o)) {
+      throw new ProspectError(
+        ["The provider's send result has not been recorded yet. This message cannot be confirmed as sent, even if the claim is old. Wait for the provider outcome."],
+        "conflict",
+      );
+    }
     return recordSentInTx(tx, id, provider, null, now);
   });
 }

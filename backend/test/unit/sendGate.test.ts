@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync, readdirSync } from "node:fs";
 import { describe, test } from "node:test";
-import { STUCK_AFTER_MS, sendInProgress } from "../../src/outreach/records.js";
+import { canConfirmStuckSent, STUCK_AFTER_MS, sendInProgress } from "../../src/outreach/records.js";
 
 /*
  * Stage 5D Phase A: the send gate's topology (outreach/records.ts
@@ -136,6 +136,20 @@ describe("the send gate", () => {
 });
 
 describe("a send in progress (Stage 5D Phase C)", () => {
+  test("manual sent confirmation requires a recorded uncertain outcome, never just an old claim", () => {
+    const started = new Date("2026-01-01T00:00:00Z");
+    const cases: [string, Parameters<typeof canConfirmStuckSent>[0], boolean][] = [
+      ["old claim with no result", { status: "queued", sendStartedAt: started, lastSendError: null }, false],
+      ["uncertain outcome", { status: "queued", sendStartedAt: started, lastSendError: "Timed out." }, true],
+      ["unclaimed queue", { status: "queued", sendStartedAt: null, lastSendError: "Old error." }, false],
+      ["draft", { status: "draft", sendStartedAt: null, lastSendError: null }, false],
+      ["failed", { status: "failed", sendStartedAt: started, lastSendError: "Rejected." }, false],
+      ["cancelled", { status: "cancelled", sendStartedAt: started, lastSendError: "Timed out." }, false],
+      ["sent", { status: "sent", sendStartedAt: started, lastSendError: null }, false],
+    ];
+    for (const [name, o, expected] of cases) assert.equal(canConfirmStuckSent(o), expected, name);
+  });
+
   test("claimed, no outcome yet, and not old enough to count as interrupted", () => {
     const now = new Date("2026-10-05T12:00:00Z");
     const ago = (ms: number) => new Date(now.getTime() - ms);

@@ -36,6 +36,7 @@ const NOTICES: Record<string, string> = {
   reply: "Reply recorded.",
   classified: "Reply classified.",
   confirmed: "Recorded as sent.",
+  already_sent: "This message already has a recorded send outcome. Nothing changed.",
   switched_on: "Sending switched on.",
   switched_off: "Sending switched off. No further message will be sent.",
   invitation_revoked: "Invitation revoked. Its link no longer works; everything it recorded is kept.",
@@ -305,7 +306,16 @@ export async function outreachRoutes(app: FastifyInstance, opts: { config: Confi
   });
   action("reply", "reply", (id, body) => recordReply(db, id, { outcome: body.outcome, summary: body.summary, requireOutcome: true }), ["outcome", "summary"]);
   action("classify", "classified", (id, body) => classifyReply(db, id, body.outcome, new Date(), body.replyId), ["outcome", "replyId"]);
-  action("confirm-sent", "confirmed", (id) => confirmStuckSent(db, id, sender.name));
+  app.post<{ Params: { id: string } }>("/admin/outreach/:id/confirm-sent", writeLimit, async (req, reply) => {
+    const { id } = req.params;
+    if (!UUID_RE.test(id)) return notFound(reply);
+    try {
+      const result = await confirmStuckSent(db, id, sender.name);
+      return reply.redirect(`/admin/outreach/${id}?done=${result.changed ? "confirmed" : "already_sent"}`, 303);
+    } catch (err) {
+      return handleError(err, reply, (errors) => renderDetail(reply, id, { errors }));
+    }
+  });
 
   /**
    * Revokes the message's invitation: needs a reason and an explicit

@@ -677,9 +677,66 @@ describe("outreach sending (HTTP)", { skip: skipReason }, () => {
     await queueAndSend(db, outreach.id, mockSender(() => ({ status: "uncertain", reason: "timeout" }), false));
     const view = (await get(`/admin/outreach/${outreach.id}`)).body;
     assert.match(view, /outcome unknown/);
+    assert.match(view, new RegExp(`/admin/outreach/${outreach.id}/confirm-sent`));
     assert.equal((await post(`/admin/outreach/${outreach.id}/confirm-sent`)).statusCode, 303);
     assert.equal((await db.outreach.findUniqueOrThrow({ where: { id: outreach.id } })).status, "sent");
+    const repeat = await post(`/admin/outreach/${outreach.id}/confirm-sent`);
+    assert.equal(repeat.statusCode, 303);
+    assert.equal(repeat.headers.location, `/admin/outreach/${outreach.id}?done=already_sent`);
+    assert.match((await get(String(repeat.headers.location))).body, /already has a recorded send outcome\. Nothing changed/);
+    assert.equal(await db.outreachEvent.count({ where: { outreachId: outreach.id, type: "sent" } }), 1);
     assert.equal((await post(`/admin/outreach/${outreach.id}/send`)).statusCode, 404);
     assert.equal((await post("/admin/outreach/dispatch")).statusCode, 404);
+  });
+
+  test("the admin hides confirmation for a pending claim and refuses a direct POST, even after ten minutes", async () => {
+    const p = await createProspect(db, readyForm({ email: "service@smithauto.example.com", emailSourceUrl: `${WEBSITE}/contact` }));
+    const { outreach } = await createOutreachDraft(db, p.id, OPTS);
+    await queueOutreach(db, outreach.id, CFG);
+    let answer!: () => void;
+    let reached!: () => void;
+    const atProvider = new Promise<void>((r) => { reached = r; });
+    const release = new Promise<void>((r) => { answer = r; });
+    const sender = mockSender(async (m) => {
+      reached();
+      await release;
+      return { status: "accepted", providerMessageId: `msg-${m.outreachId}` };
+    });
+    await switchOn(db, sender);
+    let clockCalls = 0;
+    const run = dispatchQueued(db, { config: CFG, sender, now: () => new Date(Date.now() - (++clockCalls === 1 ? 11 * 60_000 : 0)) });
+    await atProvider;
+    const claimed = await db.outreach.findUniqueOrThrow({ where: { id: outreach.id } });
+    try {
+      const page = (await get(`/admin/outreach/${outreach.id}`)).body;
+      assert.match(page, /PROVIDER OUTCOME PENDING/);
+      assert.doesNotMatch(page, /action="[^\"]*\/confirm-sent"/);
+      const refused = await post(`/admin/outreach/${outreach.id}/confirm-sent`);
+      assert.equal(refused.statusCode, 409);
+      assert.match(refused.body, /result has not been recorded yet/);
+      assert.deepEqual(await db.outreach.findUniqueOrThrow({ where: { id: outreach.id } }), claimed);
+      assert.equal(await db.outreachEvent.count({ where: { outreachId: outreach.id, type: "sent" } }), 0);
+    } finally {
+      answer();
+      await run;
+    }
+    const sent = await db.outreach.findUniqueOrThrow({ where: { id: outreach.id } });
+    const repeat = await post(`/admin/outreach/${outreach.id}/confirm-sent`);
+    assert.equal(repeat.statusCode, 303);
+    assert.equal(repeat.headers.location, `/admin/outreach/${outreach.id}?done=already_sent`);
+    assert.deepEqual(await db.outreach.findUniqueOrThrow({ where: { id: outreach.id } }), sent);
+    assert.equal(sender.calls.length, 1);
+  });
+
+  test("a provider rejection remains failed when an admin attempts confirmation", async () => {
+    const p = await createProspect(db, readyForm({ email: "service@smithauto.example.com", emailSourceUrl: `${WEBSITE}/contact` }));
+    const { outreach } = await createOutreachDraft(db, p.id, OPTS);
+    await queueAndSend(db, outreach.id, mockSender(() => ({ status: "rejected", reason: "Provider refused." })));
+    const failed = await db.outreach.findUniqueOrThrow({ where: { id: outreach.id } });
+    const refused = await post(`/admin/outreach/${outreach.id}/confirm-sent`);
+    assert.equal(refused.statusCode, 400);
+    assert.doesNotMatch(refused.body, /action="[^\"]*\/confirm-sent"/);
+    assert.deepEqual(await db.outreach.findUniqueOrThrow({ where: { id: outreach.id } }), failed);
+    assert.equal(await db.outreachEvent.count({ where: { outreachId: outreach.id, type: "sent" } }), 0);
   });
 });

@@ -305,8 +305,17 @@ Two rules keep it that way, and a unit test enforces both:
   throws), and sends interrupted mid-way (no outcome after 10 minutes):
   - the message stays queued, and is never retried;
   - it is listed under **Send outcome unknown** for a person straight away.
-    They check the provider (for Gmail, the Sent folder), then record
-    **It was sent** or discard the message.
+    After a recorded uncertain outcome, they check the provider (for Gmail,
+    the Sent folder), then record **It was sent** or discard the message.
+    Manual sent confirmation takes the send gate and message lock and is
+    allowed only after the dispatcher records an uncertain outcome
+    (`lastSendError`). An old claim without an outcome cannot be confirmed:
+    ten minutes passing does not prove the provider call has stopped. Wait
+    for a provider result; discarding an interrupted claim remains available,
+    and a later successful dispatcher result corrects it to sent as described
+    above.
+    Repeating confirmation of a sent, delivered, bounced, or replied message
+    changes nothing; failed and cancelled messages cannot be confirmed.
 - **Rejections.** A definite rejection marks the message `failed`. An invalid
   recipient is also suppressed.
 - **Provider unavailable** (authentication, configuration, quota): certainly
