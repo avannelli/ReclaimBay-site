@@ -33,7 +33,7 @@ export function fixtureWeb(routes: Record<string, Fixture | Fixture[]>) {
 export const page = (title: string, body: string, head = "") =>
   `<!doctype html><html><head><title>${title}</title>${head}</head><body><nav><a href="/contact-us">Contact Us</a> <a href="/services">Our Services</a> <a href="/about">About</a></nav>${body}</body></html>`;
 
-/** A clear independent general-repair shop at https://saviersauto.example.com. */
+/** A clear independent hybrid collision/mechanical shop at https://saviersauto.example.com. */
 export function independentShop(host = "saviersauto.example.com", phone = "(805) 555-0101") {
   const digits = phone.replace(/\D/g, "");
   const origin = `https://${host}`;
@@ -49,7 +49,7 @@ export function independentShop(host = "saviersauto.example.com", phone = "(805)
     [`${origin}/services`]: {
       body: page(
         "Services",
-        "<h1>Our Services</h1><ul><li>Brake repair</li><li>Check engine diagnostics</li><li>Oil changes and scheduled maintenance</li><li>A/C repair</li></ul><p>Every visit includes a digital vehicle inspection with photos.</p>",
+        "<h1>Our Services</h1><ul><li>We provide collision repair.</li><li>Brake repair</li><li>Check engine diagnostics</li><li>Oil changes and scheduled maintenance</li><li>A/C repair</li></ul><p>Every visit includes a digital vehicle inspection with photos.</p>",
       ),
     },
     [`${origin}/contact-us`]: { body: page("Contact", `<h1>Contact</h1><p><a href="mailto:service@${host}">service@${host}</a></p>`) },

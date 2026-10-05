@@ -1,3 +1,4 @@
+import { addFixtureCollisionEvidence } from "./helpers.js";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { after, before, beforeEach, describe, test } from "node:test";
@@ -49,6 +50,7 @@ describe("invitations in the admin", { skip: skipReason }, () => {
     const n = ++seq;
     const site = `https://adm${n}.example.com`;
     const p = await createProspect(db, readyForm({ businessName: name ?? `Admin ${n} Auto`, website: site, phoneSourceUrl: `${site}/contact`, email: `service@adm${n}.example.com`, emailSourceUrl: `${site}/contact` }));
+    await addFixtureCollisionEvidence(db, p);
     await addEvidence(db, p.id, { signalKey: "independent_shop", sourceUrl: `${site}/about`, excerpt: "Family owned." });
     return p;
   };

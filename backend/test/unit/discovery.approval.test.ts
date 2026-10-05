@@ -28,6 +28,7 @@ const facts = (over: Partial<CandidateFacts> = {}): CandidateFacts => ({
   signals: [
     { key: "independent_shop", value: "yes" },
     { key: "general_repair_services", value: "yes" },
+    { key: "collision_repair_services", value: "yes" },
   ],
   ...over,
 });
@@ -44,30 +45,30 @@ describe("scoring reuse", () => {
     assert.equal(scoreCandidate(facts()).qualification, "meets_criteria");
     assert.equal(scoreCandidate(facts({ signals: [{ key: "independent_shop", value: "yes" }] })).qualification, "unverified");
     assert.equal(scoreCandidate(facts({ signals: [] })).qualification, "unverified");
-    const dq = scoreCandidate(facts({ signals: [{ key: "independent_shop", value: "no" }, { key: "general_repair_services", value: "yes" }] }));
+    const dq = scoreCandidate(facts({ signals: [{ key: "collision_repair_services", value: "no" }, { key: "general_repair_services", value: "yes" }] }));
     assert.equal(dq.qualification, "disqualified");
-    assert.deepEqual(dq.disqualifiedBy, ["independent_shop"]);
+    assert.deepEqual(dq.disqualifiedBy, ["collision_repair_services"]);
   });
 
   test("score and qualification stay independent for candidates too", () => {
     const dq = scoreCandidate(
       facts({
         signals: [
-          { key: "independent_shop", value: "no" },
+          { key: "collision_repair_services", value: "no" },
           { key: "general_repair_services", value: "yes" },
           { key: "multiple_bays_or_staff", value: "yes" },
         ],
       }),
     );
     assert.equal(dq.qualification, "disqualified");
-    assert.equal(dq.score, 20 + 15 + 10 + 5);
+    assert.equal(dq.score, 10 + 15 + 10 + 5);
     assert.equal(dq.band, "medium", "band reflects the score alone");
   });
 
   test("discovery confidence can't become qualification: a bare discovered record is Unverified", () => {
     const r = scoreCandidate(facts({ signals: [], phone: null, phoneSourceUrl: null }));
     assert.equal(r.qualification, "unverified");
-    assert.deepEqual(r.unverifiedCriteria, ["independent_shop", "general_repair_services"]);
+    assert.deepEqual(r.unverifiedCriteria, ["collision_repair_services"]);
   });
 
   test("there is no second scoring implementation in the discovery code", async () => {

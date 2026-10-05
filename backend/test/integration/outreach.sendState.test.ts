@@ -1,3 +1,4 @@
+import { addFixtureCollisionEvidence } from "./helpers.js";
 import assert from "node:assert/strict";
 import { after, afterEach, before, beforeEach, describe, test } from "node:test";
 import type { Db } from "../../src/db.js";
@@ -45,6 +46,7 @@ describe("send state while a send is in flight", { skip: skipReason }, () => {
       db,
       readyForm({ businessName: `In Flight ${n} Auto`, website: site, phoneSourceUrl: `${site}/contact`, email: `service@inflight${n}.example.com`, emailSourceUrl: `${site}/contact` }),
     );
+    await addFixtureCollisionEvidence(db, p);
     await addEvidence(db, p.id, { signalKey: "independent_shop", sourceUrl: `${site}/about`, excerpt: "Family owned." });
     return p;
   };

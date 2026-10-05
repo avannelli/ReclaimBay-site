@@ -1,3 +1,4 @@
+import { addFixtureCollisionEvidence } from "./helpers.js";
 import assert from "node:assert/strict";
 import { after, afterEach, before, beforeEach, describe, test } from "node:test";
 import type { FastifyInstance } from "fastify";
@@ -45,6 +46,7 @@ describe("ambiguous emailed unsubscribe (real PostgreSQL, fake Gmail)", { skip: 
     const n = ++seq;
     const site = `https://unsubscribe${n}.example.com`;
     const p = await createProspect(db, readyForm({ website: site, businessName: `Unsubscribe ${n} Auto`, phoneSourceUrl: `${site}/contact`, emailSourceUrl: `${site}/contact`, email: email ?? `owner@unsubscribe${n}.example.com` }));
+    await addFixtureCollisionEvidence(db, p);
     await addEvidence(db, p.id, { signalKey: "independent_shop", sourceUrl: `${site}/about`, excerpt: "Family owned." });
     const draft = (await createOutreachDraft(db, p.id, OPTS)).outreach;
     const o = await db.outreach.update({ where: { id: draft.id }, data: { status: "sent", sentAt: new Date(AT.getTime() - 60_000), openForProspectId: null, provider: "gmail", providerMessageId: `out-${draft.id}` } });

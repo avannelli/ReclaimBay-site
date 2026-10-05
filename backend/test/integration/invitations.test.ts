@@ -1,3 +1,4 @@
+import { addFixtureCollisionEvidence } from "./helpers.js";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { after, before, beforeEach, describe, test } from "node:test";
@@ -38,6 +39,7 @@ describe("invitations", { skip: skipReason }, () => {
       db,
       readyForm({ businessName: `Invite ${n} Auto`, website: site, phoneSourceUrl: `${site}/contact`, email: `service@inv${n}.example.com`, emailSourceUrl: `${site}/contact`, ...over }),
     );
+    await addFixtureCollisionEvidence(db, p);
     await addEvidence(db, p.id, { signalKey: "independent_shop", sourceUrl: `${site}/about`, excerpt: "Family owned." });
     return p;
   };
@@ -98,7 +100,7 @@ describe("invitations", { skip: skipReason }, () => {
     const unq = await prospect();
     const m = await bare(unq.id);
     const current = await db.prospect.findUniqueOrThrow({ where: { id: unq.id }, include: { signals: true } });
-    await updateProspect(db, unq.id, { ...formValuesOf(current), signal_independent_shop: "unknown" });
+    await updateProspect(db, unq.id, { ...formValuesOf(current), signal_collision_repair_services: "unknown" });
     await assert.rejects(invite(m.id), /Outreach requires Qualification "Meets criteria"; this prospect is Unverified/);
 
     // A suppressed address, recorded while the draft was open.
@@ -238,6 +240,7 @@ describe("invitation open endpoint (HTTP)", { skip: skipReason }, () => {
     const n = ++seq;
     const site = `https://http${n}.example.com`;
     const p = await createProspect(db, readyForm({ businessName: `Http ${n} Auto`, website: site, phoneSourceUrl: `${site}/contact`, email: `service@http${n}.example.com`, emailSourceUrl: `${site}/contact` }));
+    await addFixtureCollisionEvidence(db, p);
     await addEvidence(db, p.id, { signalKey: "independent_shop", sourceUrl: `${site}/about`, excerpt: "Family owned." });
     return p;
   };

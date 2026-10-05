@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { addFixtureCollisionEvidence } from "./helpers.js";
 import { after, before, beforeEach, describe, test } from "node:test";
 import type { Db } from "../../src/db.js";
 import * as service from "../../src/prospects.js";
@@ -47,6 +48,7 @@ describe("prospect service", { skip: skipReason }, () => {
       assert.equal(stored.status, "new");
       // unknown is not stored; derived yes is not stored either
       assert.deepEqual(stored.signals.map((s) => `${s.key}=${s.value}`).sort(), [
+        "collision_repair_services=yes",
         "digital_inspections=yes",
         "general_repair_services=yes",
         "independent_shop=yes",
@@ -54,7 +56,7 @@ describe("prospect service", { skip: skipReason }, () => {
       ]);
       const expected = scoreProspect(scoringInputFromRecord(stored));
       assert.equal(stored.score, expected.score);
-      assert.equal(stored.score, 25 + 20 + 10 + 10 + 5); // + public contact + has website
+      assert.equal(stored.score, 15 + 10 + 20 + 10 + 10 + 5); // + public contact + has website
       assert.equal(stored.scoreVersion, SCORING_VERSION);
       assert.ok(stored.scoredAt);
       const history = await db.prospectStatusChange.findMany({ where: { prospectId: p.id } });
@@ -121,15 +123,16 @@ describe("prospect service", { skip: skipReason }, () => {
 
     test("can't remove the requirements of the current status", async () => {
       const p = await createProspect(db, readyForm());
+      await addFixtureCollisionEvidence(db, p);
       await changeStatus(db, p.id, "qualified", null);
       await changeStatus(db, p.id, "ready_to_contact", null);
       await rejects(
         updateProspect(db, p.id, readyForm({ phone: "", phoneSourceUrl: "" })),
         /public business phone or email.*Move the prospect out of Ready to contact/,
       );
-      await rejects(updateProspect(db, p.id, readyForm({ signal_independent_shop: "no" })), /this prospect is Disqualified/);
+      await rejects(updateProspect(db, p.id, readyForm({ signal_collision_repair_services: "no" })), /this prospect is Disqualified/);
       await rejects(
-        updateProspect(db, p.id, readyForm({ signal_general_repair_services: "unknown" })),
+        updateProspect(db, p.id, readyForm({ signal_general_repair_services: "unknown", signal_collision_repair_services: "unknown" })),
         /this prospect is Unverified/,
       );
       const stored = await load(p.id);
@@ -144,6 +147,7 @@ describe("prospect service", { skip: skipReason }, () => {
   describe("status", () => {
     test("walks the main path and records every change", async () => {
       const p = await createProspect(db, readyForm());
+      await addFixtureCollisionEvidence(db, p);
       for (const s of ["qualified", "ready_to_contact", "contacted", "engaged", "customer"]) {
         await changeStatus(db, p.id, s, null);
       }
@@ -159,22 +163,24 @@ describe("prospect service", { skip: skipReason }, () => {
 
     test("enforces gates", async () => {
       const noContact = await createProspect(db, readyForm({ phone: "", phoneSourceUrl: "" }));
+      await addFixtureCollisionEvidence(db, noContact);
       await rejects(changeStatus(db, noContact.id, "ready_to_contact", null), /Can't move from New/);
       await changeStatus(db, noContact.id, "qualified", null);
       await rejects(changeStatus(db, noContact.id, "ready_to_contact", null), /public business phone or email/);
 
-      const chain = await createProspect(db, readyForm({ signal_independent_shop: "no" }));
+      const chain = await createProspect(db, readyForm({ signal_collision_repair_services: "no" }));
       await rejects(changeStatus(db, chain.id, "qualified", null), /this prospect is Disqualified/);
 
       // Unverified (a required criterion unknown) is blocked however high the score.
       const unverified = await createProspect(
         db,
-        readyForm({ businessName: "Unverified Auto", signal_general_repair_services: "unknown", signal_multiple_bays_or_staff: "yes" }),
+        readyForm({ businessName: "Unverified Auto", signal_collision_repair_services: "unknown", signal_multiple_bays_or_staff: "yes" }),
       );
       assert.equal(unverified.score, 65, "High-band score");
       await rejects(changeStatus(db, unverified.id, "qualified", null), /this prospect is Unverified/);
       // Confirming the criterion unlocks it.
       await updateProspect(db, unverified.id, readyForm({ businessName: "Unverified Auto", signal_multiple_bays_or_staff: "yes" }));
+      await addFixtureCollisionEvidence(db, unverified);
       await changeStatus(db, unverified.id, "qualified", null);
       await changeStatus(db, unverified.id, "ready_to_contact", null);
 
@@ -200,6 +206,7 @@ describe("prospect service", { skip: skipReason }, () => {
       // conflict) or one after the other ("Already Qualified"), only one
       // may apply.
       const p = await createProspect(db, readyForm());
+      await addFixtureCollisionEvidence(db, p);
       const results = await Promise.allSettled([
         changeStatus(db, p.id, "qualified", null),
         changeStatus(db, p.id, "qualified", null),
@@ -263,11 +270,12 @@ describe("prospect service", { skip: skipReason }, () => {
   describe("list", () => {
     test("filters by search, status, qualification, band, and geography; sorts by score", async () => {
       const high = await createProspect(db, readyForm({ signal_multiple_bays_or_staff: "yes" })); // 85
-      const medium = await createProspect(db, { businessName: "Ace Automotive", city: "Riverton", state: "WY", signal_independent_shop: "yes", signal_multiple_bays_or_staff: "yes" }); // 40
+      await addFixtureCollisionEvidence(db, high);
+      const medium = await createProspect(db, { businessName: "Ace Automotive", city: "Riverton", state: "WY", signal_independent_shop: "yes", signal_general_repair_services: "yes", signal_multiple_bays_or_staff: "yes" }); // 40
       const low = await createProspect(db, { businessName: "Valley Motors", city: "Fresno", state: "CA" }); // 0
       // Disqualified, yet scores 60: qualification and band are independent.
-      const dq = await createProspect(db, readyForm({ businessName: "Midas Downtown", signal_independent_shop: "no", signal_multiple_bays_or_staff: "yes" }));
-      assert.equal(dq.score, 60);
+      const dq = await createProspect(db, readyForm({ businessName: "Midas Downtown", signal_collision_repair_services: "no", signal_multiple_bays_or_staff: "yes" }));
+      assert.equal(dq.score, 65);
       await changeStatus(db, high.id, "qualified", null);
 
       const ids = async (f: service.ProspectFilters) => (await listProspects(db, f)).rows.map((r) => r.prospect.id);

@@ -1,3 +1,4 @@
+import { addFixtureCollisionEvidence } from "./helpers.js";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { after, before, beforeEach, describe, test } from "node:test";
@@ -34,6 +35,7 @@ describe("invitations in outreach", { skip: skipReason }, () => {
       db,
       readyForm({ businessName: `Wire ${n} Auto`, website: site, phoneSourceUrl: `${site}/contact`, email: `service@wire${n}.example.com`, emailSourceUrl: `${site}/contact`, ...over }),
     );
+    await addFixtureCollisionEvidence(db, p);
     await addEvidence(db, p.id, { signalKey: "independent_shop", sourceUrl: `${site}/about`, excerpt: "Family owned." });
     return p;
   };
@@ -158,7 +160,7 @@ describe("invitations in outreach", { skip: skipReason }, () => {
   });
 
   test("an invitation is never made where outreach isn't allowed, and drafting with one changes no rule", async () => {
-    const unverified = await prospect({ signal_independent_shop: "unknown" });
+    const unverified = await prospect({ signal_collision_repair_services: "unknown" });
     await assert.rejects(createOutreachDraft(db, unverified.id, OPTS), /Unverified/);
     const dnc = await prospect();
     await changeStatus(db, dnc.id, "do_not_contact", "Asked.");
@@ -173,7 +175,7 @@ describe("invitations in outreach", { skip: skipReason }, () => {
     const p = await prospect();
     const o = await draft(p.id);
     const current = await db.prospect.findUniqueOrThrow({ where: { id: p.id }, include: { signals: true } });
-    await updateProspect(db, p.id, { ...formValuesOf(current), signal_independent_shop: "unknown" });
+    await updateProspect(db, p.id, { ...formValuesOf(current), signal_collision_repair_services: "unknown" });
     await assert.rejects(queueOutreach(db, o.id, CFG), /Outreach requires Qualification "Meets criteria"; this prospect is Unverified/);
     assert.equal((await db.outreach.findUniqueOrThrow({ where: { id: o.id } })).status, "draft");
   });

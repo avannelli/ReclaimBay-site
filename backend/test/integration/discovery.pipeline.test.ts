@@ -202,7 +202,7 @@ describe("discovery pipeline: release -> staging -> background run -> candidates
       assert.equal(c.latitude, 34.1975);
       assert.equal(c.longitude, -119.1771);
       assert.equal(c.providerRelease, RELEASE);
-      assert.equal(c.providerCategory, "transmission_repair");
+      assert.equal(c.providerCategory, "auto_body_shop");
       assert.equal(c.categoryTier, "core");
       assert.equal(c.providerConfidence, 0.92);
       assert.equal(c.providerStatus, "open");
@@ -283,10 +283,11 @@ describe("discovery pipeline: release -> staging -> background run -> candidates
 
   describe("provider phone vs. contact rules", () => {
     const findings = (over: Partial<ResearchFindings> = {}): ResearchFindings => ({
-      signals: { independent_shop: "yes", general_repair_services: "yes" },
+      signals: { independent_shop: "yes", general_repair_services: "yes", collision_repair_services: "yes" },
       evidence: [
         { signalKey: "independent_shop", sourceUrl: "https://mesabrake.example.com/about", excerpt: "Family owned since 1988." },
         { signalKey: "general_repair_services", sourceUrl: "https://mesabrake.example.com/services", excerpt: "Brakes, suspension, A/C." },
+        { signalKey: "collision_repair_services", sourceUrl: "https://mesabrake.example.com/services", excerpt: "We offer collision repair." },
       ],
       ...over,
     });
@@ -403,7 +404,7 @@ describe("discovery pipeline (admin HTTP)", { skip: skipReason }, () => {
     assert.match(page, /Unverified/);
     assert.doesNotMatch(page, /Verified business contact/);
     assert.match(page, /Release/);
-    assert.match(page, /transmission_repair/);
+    assert.match(page, /auto_body_shop/);
     assert.match(page, /Core repair category/);
     assert.match(page, /Other location of the same business or chain/);
 

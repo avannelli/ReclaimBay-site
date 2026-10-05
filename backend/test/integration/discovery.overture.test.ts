@@ -48,7 +48,7 @@ const gers = (n: number) => `08f2a1b2-0000-4000-8000-${String(n).padStart(12, "0
 const ov = (n: number, over: Partial<OvertureRow> = {}): OvertureRow => ({
   id: gers(n),
   name: "Saviers Road Auto Repair",
-  taxonomy: { primary: "automotive_repair", hierarchy: [...AUTO, "automotive_repair"], alternates: null },
+  taxonomy: { primary: "auto_body_shop", hierarchy: [...AUTO, "auto_body_shop"], alternates: null },
   confidence: 0.92,
   operating_status: "open",
   websites: ["http://www.saviersauto.example.com/"],
@@ -71,7 +71,7 @@ const ROWS: OvertureRow[] = [
   // A different shop sharing A's phone, far away: flagged for review.
   ov(4, {
     name: "Mesa Brake Pros",
-    taxonomy: { primary: "brake_service_and_repair", hierarchy: [...AUTO, "automotive_repair", "brake_service_and_repair"] },
+    taxonomy: { primary: "auto_body_shop", hierarchy: [...AUTO, "auto_body_shop"] },
     websites: ["https://mesabrake.example.com"],
     addresses: [{ freeform: "12 Mesa Rd", locality: "Moorpark", postcode: "93021", region: "CA", country: "US" }],
     lon: -118.882,
@@ -253,7 +253,7 @@ describe("Overture provider through the staging pipeline", { skip: skipReason },
       assert.equal(c.state, "CA");
       assert.equal(c.latitude, 34.2856);
       assert.equal(c.longitude, -118.882);
-      assert.equal(c.providerCategory, "brake_service_and_repair");
+      assert.equal(c.providerCategory, "auto_body_shop");
       assert.equal(c.categoryTier, "core");
       assert.equal(c.providerStatus, "open");
       assert.equal(c.providerConfidence, 0.92);
@@ -280,10 +280,11 @@ describe("Overture provider through the staging pipeline", { skip: skipReason },
         db,
         c.id,
         {
-          signals: { independent_shop: "yes", general_repair_services: "yes" },
+          signals: { independent_shop: "yes", general_repair_services: "yes", collision_repair_services: "yes" },
           evidence: [
             { signalKey: "independent_shop", sourceUrl: "http://www.saviersauto.example.com/about", excerpt: "Family owned since 1988." },
             { signalKey: "general_repair_services", sourceUrl: "http://www.saviersauto.example.com/services", excerpt: "Brakes, suspension, A/C." },
+        { signalKey: "collision_repair_services", sourceUrl: "http://www.saviersauto.example.com/services", excerpt: "We offer collision repair." },
           ],
         },
         "fixture-research",

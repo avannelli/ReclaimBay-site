@@ -1,3 +1,4 @@
+import { addFixtureCollisionEvidence } from "./helpers.js";
 import assert from "node:assert/strict";
 import { after, afterEach, before, beforeEach, describe, test } from "node:test";
 import type { FastifyInstance } from "fastify";
@@ -63,6 +64,7 @@ describe("outreach sending (service)", { skip: skipReason }, () => {
       db,
       readyForm({ businessName: `Shop ${n} Auto`, website: site, phoneSourceUrl: `${site}/contact`, email: `service@shop${n}.example.com`, emailSourceUrl: `${site}/contact`, ...over }),
     );
+    await addFixtureCollisionEvidence(db, p);
     await addEvidence(db, p.id, { signalKey: "independent_shop", sourceUrl: `${site}/about`, excerpt: "Family owned." });
     return p;
   };
@@ -338,7 +340,7 @@ describe("outreach sending (service)", { skip: skipReason }, () => {
     const unconfirm = async (id: string) => {
       const current = await db.prospect.findUniqueOrThrow({ where: { id }, include: { signals: true } });
       for (const s of current.status === "ready_to_contact" ? ["qualified", "new"] : current.status === "qualified" ? ["new"] : []) await changeStatus(db, id, s, null);
-      await updateProspect(db, id, { ...formValuesOf(current), signal_independent_shop: "unknown" });
+      await updateProspect(db, id, { ...formValuesOf(current), signal_collision_repair_services: "unknown" });
       assert.equal((await db.prospect.findUniqueOrThrow({ where: { id } })).status, "new");
     };
     const reason = /Outreach requires Qualification "Meets criteria"; this prospect is Unverified/;
@@ -507,7 +509,7 @@ describe("outreach sending (service)", { skip: skipReason }, () => {
   test("automatic preparation drafts every eligible prospect once, and skips the rest with reasons", async () => {
     const good1 = await prospect();
     const good2 = await prospect();
-    const unverified = await prospect({ signal_independent_shop: "unknown" });
+    const unverified = await prospect({ signal_collision_repair_services: "unknown" });
     const noEmail = await createProspect(db, readyForm({ businessName: "Phone Only Auto" }));
     const dnc = await prospect();
     await changeStatus(db, dnc.id, "do_not_contact", "Asked.");
@@ -583,6 +585,7 @@ describe("outreach sending (HTTP)", { skip: skipReason }, () => {
 
   const sentMessage = async () => {
     const p = await createProspect(db, readyForm({ email: "service@smithauto.example.com", emailSourceUrl: `${WEBSITE}/contact` }));
+    await addFixtureCollisionEvidence(db, p);
     const { outreach } = await createOutreachDraft(db, p.id, OPTS);
     await queueAndSend(db, outreach.id);
     return { p, o: (await db.outreach.findUniqueOrThrow({ where: { id: outreach.id } }))! };
@@ -629,6 +632,7 @@ describe("outreach sending (HTTP)", { skip: skipReason }, () => {
     await recordInboundReply(db, { fromEmail: o.recipientEmail, inReplyToProviderMessageId: o.providerMessageId });
     const site = "https://sons.example.com";
     const p2 = await createProspect(db, readyForm({ businessName: "Smith & <Sons> Auto", website: site, phoneSourceUrl: `${site}/contact`, email: "shop@sons.example.com", emailSourceUrl: `${site}/contact` }));
+    await addFixtureCollisionEvidence(db, p2);
     const { outreach: refused } = await createOutreachDraft(db, p2.id, OPTS);
     await queueAndSend(db, refused.id, mockSender(() => ({ status: "rejected", reason: "552 <message> too large" })));
     await db.outreachControlChange.create({ data: { sendingEnabled: false, reason: "Switched off.", createdAt: new Date(Date.now() + 1_000) } });
@@ -662,6 +666,7 @@ describe("outreach sending (HTTP)", { skip: skipReason }, () => {
 
   test("the admin prepares drafts for the eligible prospects chosen, and repeating drafts nothing new", async () => {
     const p = await createProspect(db, readyForm({ email: "service@smithauto.example.com", emailSourceUrl: `${WEBSITE}/contact` }));
+    await addFixtureCollisionEvidence(db, p);
     assert.match((await get("/admin/outreach")).body, /<b>1 prospect is eligible<\/b> for a first message now/);
     const res = await post("/admin/outreach/prepare", { [`p:${p.id}`]: "1" });
     assert.equal(res.statusCode, 303);
@@ -673,6 +678,7 @@ describe("outreach sending (HTTP)", { skip: skipReason }, () => {
 
   test("a stuck send can be confirmed from the admin, and no admin route sends", async () => {
     const p = await createProspect(db, readyForm({ email: "service@smithauto.example.com", emailSourceUrl: `${WEBSITE}/contact` }));
+    await addFixtureCollisionEvidence(db, p);
     const { outreach } = await createOutreachDraft(db, p.id, OPTS);
     await queueAndSend(db, outreach.id, mockSender(() => ({ status: "uncertain", reason: "timeout" }), false));
     const view = (await get(`/admin/outreach/${outreach.id}`)).body;
@@ -691,6 +697,7 @@ describe("outreach sending (HTTP)", { skip: skipReason }, () => {
 
   test("the admin hides confirmation for a pending claim and refuses a direct POST, even after ten minutes", async () => {
     const p = await createProspect(db, readyForm({ email: "service@smithauto.example.com", emailSourceUrl: `${WEBSITE}/contact` }));
+    await addFixtureCollisionEvidence(db, p);
     const { outreach } = await createOutreachDraft(db, p.id, OPTS);
     await queueOutreach(db, outreach.id, CFG);
     let answer!: () => void;
@@ -730,6 +737,7 @@ describe("outreach sending (HTTP)", { skip: skipReason }, () => {
 
   test("a provider rejection remains failed when an admin attempts confirmation", async () => {
     const p = await createProspect(db, readyForm({ email: "service@smithauto.example.com", emailSourceUrl: `${WEBSITE}/contact` }));
+    await addFixtureCollisionEvidence(db, p);
     const { outreach } = await createOutreachDraft(db, p.id, OPTS);
     await queueAndSend(db, outreach.id, mockSender(() => ({ status: "rejected", reason: "Provider refused." })));
     const failed = await db.outreach.findUniqueOrThrow({ where: { id: outreach.id } });

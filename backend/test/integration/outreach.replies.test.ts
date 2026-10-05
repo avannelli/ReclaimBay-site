@@ -1,3 +1,4 @@
+import { addFixtureCollisionEvidence } from "./helpers.js";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
@@ -52,6 +53,7 @@ describe("individual outreach replies (PostgreSQL and fake Gmail)", { skip: skip
     const n = ++seq;
     const site = `https://reply${n}.example.com`;
     const p = await createProspect(db, readyForm({ website: site, phoneSourceUrl: `${site}/contact`, businessName: `Reply ${n} Auto`, email: email ?? `owner@reply${n}.example.com`, emailSourceUrl: `${site}/contact` }));
+    await addFixtureCollisionEvidence(db, p);
     await addEvidence(db, p.id, { signalKey: "independent_shop", sourceUrl: `${site}/about`, excerpt: "Family owned." });
     return { p, o: (await createOutreachDraft(db, p.id, OPTS)).outreach };
   }

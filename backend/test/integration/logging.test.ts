@@ -1,3 +1,4 @@
+import { addFixtureCollisionEvidence } from "./helpers.js";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { after, before, beforeEach, describe, test } from "node:test";
@@ -32,6 +33,7 @@ describe("invitation/unsubscribe logging with real PostgreSQL", { skip: skipReas
   async function fixture() {
     const site = "https://logging-shop.example";
     const prospect = await createProspect(db, readyForm({ website: site, phoneSourceUrl: `${site}/contact`, email: "service@logging-shop.example", emailSourceUrl: `${site}/contact` }));
+    await addFixtureCollisionEvidence(db, prospect);
     await addEvidence(db, prospect.id, { signalKey: "independent_shop", sourceUrl: `${site}/about`, excerpt: "Family owned." });
     const outreach = (await createOutreachDraft(db, prospect.id, OPTS)).outreach;
     const invitation = await draftedInvitation(db, outreach);

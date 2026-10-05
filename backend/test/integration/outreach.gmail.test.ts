@@ -1,3 +1,4 @@
+import { addFixtureCollisionEvidence } from "./helpers.js";
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { after, afterEach, before, beforeEach, describe, test } from "node:test";
@@ -50,6 +51,7 @@ describe("outreach through Gmail", { skip: skipReason }, () => {
     const i = ++n;
     const site = `https://g${i}.example.com`;
     const p = await createProspect(db, readyForm({ businessName: `G${i} Auto`, website: site, phoneSourceUrl: `${site}/c`, email: `owner@g${i}.example.com`, emailSourceUrl: `${site}/c` }));
+    await addFixtureCollisionEvidence(db, p);
     await addEvidence(db, p.id, { signalKey: "independent_shop", sourceUrl: `${site}/about`, excerpt: "Family owned." });
     const { outreach } = await createOutreachDraft(db, p.id, OPTS);
     await queueOutreach(db, outreach.id, CFG);
@@ -563,6 +565,7 @@ describe("authorizing the Gmail mailbox (HTTP)", { skip: skipReason }, () => {
     // A queued message, with sending switched on.
     const site = "https://revoked.example.com";
     const p = await createProspect(db, readyForm({ businessName: "Revoked Auto", website: site, phoneSourceUrl: `${site}/c`, email: "owner@revoked.example.com", emailSourceUrl: `${site}/c` }));
+    await addFixtureCollisionEvidence(db, p);
     await addEvidence(db, p.id, { signalKey: "independent_shop", sourceUrl: `${site}/about`, excerpt: "Family owned." });
     const { outreach } = await createOutreachDraft(db, p.id, { siteUrl: "https://reclaimbay.com", sender: config.outreachSender });
     await queueOutreach(db, outreach.id, config);

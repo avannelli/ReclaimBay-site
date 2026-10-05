@@ -51,7 +51,7 @@ describe("discovery work queue", { skip: skipReason }, () => {
 
   let phones = 0;
   /** A hand-added candidate, researched through the service with the given answers and evidence. */
-  async function researched(name: string, answers: { independent: string; repair: string }, opts: { website?: string; researched?: boolean } = {}) {
+  async function researched(name: string, answers: { fit: string; repair: string }, opts: { website?: string; researched?: boolean } = {}) {
     const website = opts.website ?? `https://${name.toLowerCase().replace(/[^a-z]/g, "")}.example.com`;
     const c = await addManualCandidate(db, { businessName: name, website, city: "Ventura", state: "CA" });
     // A phone of its own, so no two seeded businesses look like duplicates.
@@ -59,12 +59,13 @@ describe("discovery work queue", { skip: skipReason }, () => {
     await updateCandidate(db, c.id, readyForm({
       ...(website ? phone : { phone: "", phoneSourceUrl: "" }),
       businessName: name, website, city: "Ventura", state: "CA",
-      signal_independent_shop: answers.independent, signal_general_repair_services: answers.repair,
+      signal_independent_shop: "yes", signal_collision_repair_services: answers.fit, signal_general_repair_services: answers.repair,
       signal_digital_inspections: "unknown", signal_no_online_booking: "unknown",
     }));
+    if (name !== "Able Auto Glass") await db.discoveryCandidate.update({where:{id:c.id},data:{categoryVerdict:"in_target",categorySource:"manual",categoryReason:"Fixture collision/body classification."}});
     if (opts.researched === false) return c.id;
     await changeCandidateStatus(db, c.id, "researching", null);
-    for (const [key, value] of [["independent_shop", answers.independent], ["general_repair_services", answers.repair]] as const) {
+    for (const [key, value] of [["independent_shop", "yes"], ["collision_repair_services", answers.fit], ["general_repair_services", answers.repair]] as const) {
       if (value !== "unknown") await addCandidateEvidence(db, c.id, { signalKey: key, sourceUrl: `${website}/about`, excerpt: `Public page about ${key}.` });
     }
     await changeCandidateStatus(db, c.id, "researched", null);
@@ -75,14 +76,14 @@ describe("discovery work queue", { skip: skipReason }, () => {
   async function seedEveryState() {
     await runDiscovery(db, discoveryProviders(loadConfig(ENV), db), { provider: "fixture", region: "Ventura County, CA", city: "", businessType: "Independent automotive repair" });
     const dup = await db.discoveryCandidate.findFirstOrThrow({ where: { externalId: "fx-2002" } });
-    const notResearched = { id: await researched("Smith Auto Repair", { independent: "unknown", repair: "unknown" }, { researched: false }) };
-    const ready = await researched("Bender Auto Repair", { independent: "yes", repair: "yes" });
-    const verify = await researched("Conejo Auto Repair", { independent: "unknown", repair: "yes" });
-    const noFit = await researched("Quick Auto Repair", { independent: "no", repair: "yes" });
-    const wrongCategory = await researched("Able Auto Glass", { independent: "yes", repair: "yes" });
-    const approved = await researched("Approved Auto Repair", { independent: "yes", repair: "yes" });
+    const notResearched = { id: await researched("Smith Auto Repair", { fit: "unknown", repair: "unknown" }, { researched: false }) };
+    const ready = await researched("Bender Auto Repair", { fit: "yes", repair: "yes" });
+    const verify = await researched("Conejo Auto Repair", { fit: "unknown", repair: "yes" });
+    const noFit = await researched("Quick Auto Repair", { fit: "no", repair: "yes" });
+    const wrongCategory = await researched("Able Auto Glass", { fit: "yes", repair: "yes" });
+    const approved = await researched("Approved Auto Repair", { fit: "yes", repair: "yes" });
     await approveCandidate(db, approved);
-    const rejected = await researched("Rejected Auto Repair", { independent: "yes", repair: "yes" });
+    const rejected = await researched("Rejected Auto Repair", { fit: "yes", repair: "yes" });
     await changeCandidateStatus(db, rejected, "rejected", "A dealership.");
     return { dup: dup.id, notResearched: notResearched.id, ready, verify, noFit, wrongCategory, approved, rejected };
   }
@@ -103,7 +104,7 @@ describe("discovery work queue", { skip: skipReason }, () => {
     assert.deepEqual([step(ids.noFit).lane, step(ids.noFit).action], ["decision", "disregard"], "a criterion observed as No: disregard");
     assert.deepEqual([step(ids.wrongCategory).lane, step(ids.wrongCategory).kind], ["decision", "outside_target"]);
     assert.deepEqual([step(ids.ready).lane, step(ids.ready).action], ["ready", "approve"], "qualified and researched: approve");
-    assert.deepEqual([step(ids.verify).lane, step(ids.verify).action, step(ids.verify).criterion], ["verify", "verify", "independent_shop"]);
+    assert.deepEqual([step(ids.verify).lane, step(ids.verify).action, step(ids.verify).criterion], ["verify", "verify", "collision_repair_services"]);
     assert.deepEqual([step(ids.notResearched).lane, step(ids.notResearched).action], ["research", "run_research"], "never researched: run research");
     assert.deepEqual([step(ids.approved).lane, step(ids.approved).kind], ["handled", "approved"]);
     assert.deepEqual([step(ids.rejected).lane, step(ids.rejected).kind], ["handled", "disregarded"]);
@@ -125,9 +126,9 @@ describe("discovery work queue", { skip: skipReason }, () => {
     // Each row's primary action.
     assert.match(rowOf(page, ids.dup)!, /href="\/admin\/discovery\/candidates\/[0-9a-f-]+#dup-h">Review duplicate/);
     assert.match(rowOf(page, ids.ready)!, /<form method="post" action="\/admin\/discovery\/candidates\/[0-9a-f-]+\/approve" class="inline-form"><input type="hidden" name="from" value="queue"><button type="submit" class="btn-go">✓ Approve as prospect/);
-    assert.match(rowOf(page, ids.verify)!, /href="\/admin\/discovery\/candidates\/[0-9a-f-]+\/edit#sig-independent_shop">Verify qualification/);
+    assert.match(rowOf(page, ids.verify)!, /href="\/admin\/discovery\/candidates\/[0-9a-f-]+\/edit#sig-collision_repair_services">Verify qualification/);
     assert.match(rowOf(page, ids.noFit)!, /href="\/admin\/discovery\/candidates\/[0-9a-f-]+\?act=disregard#dec-h">Disregard…/);
-    assert.match(rowOf(page, ids.noFit)!, /Independent shop is No\./, "says why");
+    assert.match(rowOf(page, ids.noFit)!, /Verified collision\/body repair is No\./, "says why");
     assert.match(rowOf(page, ids.notResearched)!, /action="\/admin\/discovery\/candidates\/[0-9a-f-]+\/research"[\s\S]*?▶ Run research/);
     assert.match(rowOf(page, ids.notResearched)!, /\? <\/span>|Not checked yet/, "unknown before research is quiet, not a warning");
     for (const id of [ids.ready, ids.verify, ids.dup]) assert.match(rowOf(page, id)!, /Opportunity \d+\/100 <span class="muted">\(ranking only\)<\/span>/);
@@ -195,7 +196,7 @@ describe("discovery work queue", { skip: skipReason }, () => {
     assert.ok(rowOf((await get("/admin/discovery?view=completed")).body, ids.ready));
 
     // From the candidate page, approval still opens the new prospect, as before.
-    const other = await researched("Second Auto Repair", { independent: "yes", repair: "yes" });
+    const other = await researched("Second Auto Repair", { fit: "yes", repair: "yes" });
     assert.match(String((await post(`/admin/discovery/candidates/${other}/approve`, {})).headers.location), /^\/admin\/prospects\/[0-9a-f-]+\?done=created$/);
   });
 
@@ -208,13 +209,13 @@ describe("discovery work queue", { skip: skipReason }, () => {
   });
 
   test("Run research from the queue returns to the queue; a candidate that can't be researched is refused there", async () => {
-    const noSite = await researched("No Site Auto Repair", { independent: "unknown", repair: "unknown" }, { website: "", researched: false });
+    const noSite = await researched("No Site Auto Repair", { fit: "unknown", repair: "unknown" }, { website: "", researched: false });
     const res = await post(`/admin/discovery/candidates/${noSite}/research`, { from: "queue", view: "research" });
     assert.equal(res.statusCode, 303);
     assert.equal(String(res.headers.location), `/admin/discovery?done=research_one&c=${noSite}&view=research`);
     assert.match((await get(String(res.headers.location))).body, /Research queued for No Site Auto Repair\./);
 
-    const closed = await researched("Closed Auto Repair", { independent: "yes", repair: "yes" });
+    const closed = await researched("Closed Auto Repair", { fit: "yes", repair: "yes" });
     await changeCandidateStatus(db, closed, "rejected", "Not a fit.");
     const refused = await post(`/admin/discovery/candidates/${closed}/research`, { from: "queue" });
     assert.equal(refused.statusCode, 409);
@@ -226,7 +227,7 @@ describe("discovery work queue", { skip: skipReason }, () => {
     const ids = await seedEveryState();
     const page = (await get(`/admin/discovery/candidates/${ids.noFit}?act=disregard`)).body;
     assert.match(page, /<details class="rv-disregard" open>/);
-    assert.match(page, /name="reason" value="Does not qualify: Independent shop is No\."/);
+    assert.match(page, /name="reason" value="Does not qualify: Verified collision\/body repair is No\."/);
     assert.doesNotMatch((await get(`/admin/discovery/candidates/${ids.noFit}`)).body, /<details class="rv-disregard" open>/, "closed unless asked for");
   });
 

@@ -13,6 +13,7 @@ import { addressMatchKey, namesMatchStrongly, namesSimilar, normalizeName, phone
 import type { SignalKey, StoredSignalValue } from "../scoring.js";
 import { CATEGORY_RULES } from "../discovery/categories.js";
 import { CATEGORY_VERDICT_LABELS, checkWebsite, type CategoryResult } from "../discovery/categoryCheck.js";
+import { collisionFit } from "./collisionFit.js";
 import type { ParsedPage } from "./html.js";
 
 export type FactState = "verified" | "unverified" | "uncertain" | "not_found";
@@ -347,6 +348,7 @@ const DEALER_ACTIVITY = new RegExp(
     `(?:we are|is) (?:a|an|the|your) (?:[a-z-]+ ){0,3}?(?:dealership|(?:${MAKE_WORDS}|${VEHICLE_WORDS}) dealer)`,
     "(?:[a-z-]+ )?dealership (?:in|serving|located in)",
     "new (?:and|&) used (?:cars|vehicles|trucks)",
+    "we (?:sell|lease) (?:new|used|pre-owned) (?:cars|vehicles|trucks)",
   ].join("|"),
   "gi",
 );
@@ -672,6 +674,14 @@ export function analyze(subject: Subject, pages: Page[], secureHttps: boolean | 
   const make = MAKES.find((m) => new RegExp(`\\b${m}\\b`, "i").test(labels) || siteHost.includes(m.replace("-", "")));
   const dealerText = dealerActivity(pages);
   const independent = independenceStatement(pages);
+  const fit = ownership === "verified" ? collisionFit(subject.businessName, pages) : { status: "unknown" as const, sourceUrl: null, excerpt: null };
+  const possibleBusiness = Boolean(dealerText) || /\bdealership\b/i.test(subject.businessName) || (/\b(?:dent|paint|restoration|structural|frame)\b/i.test(subject.businessName) && !/\bcollision\b|\bauto ?body\b|\bbody shop\b/i.test(subject.businessName));
+  const possibleFit = fit.status === "possible" || (fit.status === "primary" && possibleBusiness);
+  if (fit.status === "conflict") warnings.push("Collision/body evidence is contradictory; verify product fit manually.");
+  if (possibleFit) warnings.push("Dealership or specialty collision/body services require human verification before qualification.");
+  if (fit.status !== "unknown") facts.push({ field: "collision_repair_services", value: fit.status === "negative" ? "no" : "yes", state: fit.status === "conflict" || possibleFit ? "uncertain" : "verified", sourceUrl: fit.sourceUrl ?? undefined, excerpt: fit.excerpt ?? undefined });
+  if (fit.status === "primary" && !possibleFit) signals.push({ key: "collision_repair_services", value: "yes", sourceUrl: fit.sourceUrl!, excerpt: fit.excerpt! });
+  else if (fit.status === "negative") signals.push({ key: "collision_repair_services", value: "no", sourceUrl: fit.sourceUrl!, excerpt: fit.excerpt! });
 
   // ----- signals (only from the business's own, verified website) -----
   if (ownership === "verified") {
@@ -793,12 +803,13 @@ export function analyze(subject: Subject, pages: Page[], secureHttps: boolean | 
   // ----- category check (separate from qualification; never on someone else's website) -----
   let category: CategoryResult | null = null;
   if (ownership === "verified") {
-    const confirmed = general.length >= 2 ? { url: general[0]!.page.url, what: `general repair services (${general.map((h) => h.label).join(", ")})` } : null;
+    const confirmed = fit.status === "primary" && !possibleFit ? { url: fit.sourceUrl!, what: "automotive collision/body repair services" } : null;
     category = checkWebsite(
       CATEGORY_RULES,
       pages.map((p) => ({ url: p.url, text: p.parsed.text })),
       confirmed,
     );
+    if (!confirmed && (!category || category.verdict !== "wrong_category")) category = { verdict: "unclear", source: "website", reason: fit.status === "conflict" ? "Collision/body evidence is contradictory; inspect the source pages." : possibleFit ? "Possible dealership/specialty target; a person must verify collision/body fit." : "No verified collision/body service offering was established; verify product fit.", sourceUrl: fit.sourceUrl ?? home.url, rules: CATEGORY_RULES.id };
     if (category) {
       facts.push({
         field: "business_category",

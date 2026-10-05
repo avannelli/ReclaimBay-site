@@ -88,13 +88,14 @@ describe("automated research (service)", { skip: skipReason }, () => {
     assert.deepEqual(signals, {
       independent_shop: "yes/research",
       general_repair_services: "yes/research",
+      collision_repair_services: "yes/research",
       digital_inspections: "yes/research",
       no_online_booking: "yes/research",
       website_not_https: "no/research",
       website_no_recent_date: "no/research",
       multiple_bays_or_staff: "yes/research",
     });
-    assert.equal(after.evidence.length, 7, "one evidence item per signal");
+    assert.equal(after.evidence.length, 8, "one evidence item per signal");
     assert.ok(after.evidence.every((e) => e.origin === "research" && e.researchId === run.id && e.sourceUrl.startsWith("https://saviersauto.example.com/")));
     assert.ok(after.notes.some((n) => new RegExp(`Automated research \\(${RESEARCH_VERSION}\\): website verified`).test(n.body)));
 
@@ -389,6 +390,7 @@ describe("automated research in the admin (HTTP)", { skip: skipReason }, () => {
       business({ externalId: `ext-${i}`, businessName: `Batch Garage ${String.fromCharCode(65 + i)}`, website: null, phone: null, streetAddress: `${i + 1} Batch St`, latitude: 34 + i / 100, longitude: -119 }),
     );
     await ingestBusinesses(db, { runId: null, provider: "overture", query: null }, list);
+    await db.discoveryCandidate.updateMany({ where: { externalId: { in: list.map(b => b.externalId!) } }, data: { categoryVerdict: "in_target", categorySource: "manual", categoryReason: "Fixture categories verified; service evidence remains unverified." } });
     const res = await post("/admin/discovery/research", { tier: "core" });
     assert.equal(res.statusCode, 303);
     assert.match(String(res.headers.location), /done=research_batch/);

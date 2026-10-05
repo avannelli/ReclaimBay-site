@@ -73,8 +73,8 @@ describe("category check (service)", { skip: skipReason }, () => {
     const { b, counters, c } = await ingest({ businessName: "Able Auto Glass", website: "https://ventura-autoglass.example.com/" });
     assert.equal(counters.created, 1);
     assert.ok(c, "stored for auditability");
-    assert.deepEqual([c!.categoryVerdict, c!.categorySource, c!.categoryRules, c!.status], ["wrong_category", "name", "automotive@c1", "discovered"]);
-    assert.match(c!.categoryReason!, /auto glass/);
+    assert.deepEqual([c!.categoryVerdict, c!.categorySource, c!.categoryRules, c!.status], ["wrong_category", "name", "collision@c2", "discovered"]);
+    assert.match(c!.categoryReason!, /glass/);
     const again = await ingestBusinesses(db, { runId: null, provider: "overture", query: null }, [b]);
     assert.deepEqual([again.created, again.duplicates], [0, 1], "the duplicate index is unchanged");
     assert.equal(await db.discoveryCandidate.count(), 1);
@@ -82,7 +82,7 @@ describe("category check (service)", { skip: skipReason }, () => {
 
   test("every new candidate is checked: provider, name, and hand-added", async () => {
     const plain = (await ingest({ businessName: "Bill Hahn's Automotive" })).c!;
-    assert.deepEqual([plain.categoryVerdict, plain.categorySource], ["in_target", "provider"]);
+    assert.deepEqual([plain.categoryVerdict, plain.categorySource], ["unclear", "provider"]);
     const mixed = (await ingest({ businessName: "German Tech Auto Repair and Sales", website: "https://germantech.example.com/" })).c!;
     assert.equal(mixed.categoryVerdict, "unclear");
     const manual = await addManualCandidate(db, { businessName: "Sun City Glass Tinting", city: "Ventura", state: "CA" });
@@ -92,7 +92,7 @@ describe("category check (service)", { skip: skipReason }, () => {
   test("renaming re-runs the name check, but never over a person's decision", async () => {
     const c = (await ingest({ businessName: "Able Auto Glass", website: "https://ableglass.example.com/" })).c!;
     await updateCandidate(db, c.id, { businessName: "Able Auto Repair", city: "Oxnard", state: "CA" });
-    assert.equal((await db.discoveryCandidate.findUniqueOrThrow({ where: { id: c.id } })).categoryVerdict, "in_target");
+    assert.equal((await db.discoveryCandidate.findUniqueOrThrow({ where: { id: c.id } })).categoryVerdict, "unclear");
     await setCandidateCategory(db, c.id, "wrong_category", "Checked by phone: glass only.");
     await updateCandidate(db, c.id, { businessName: "Able Auto Service", city: "Oxnard", state: "CA" });
     const after = await db.discoveryCandidate.findUniqueOrThrow({ where: { id: c.id } });
@@ -113,18 +113,18 @@ describe("category check (service)", { skip: skipReason }, () => {
 
   test("research records the website's verdict, with its source, and can't overwrite a person's decision", async () => {
     const c = (await ingest({ ...POPS })).c!;
-    assert.equal(c.categoryVerdict, "in_target", "the name alone looks fine");
+    assert.equal(c.categoryVerdict, "unclear", "names require service evidence");
     const [q] = (await enqueueResearch(db, [c.id], "admin")).queued;
     const run = (await processResearch(db, q!.researchId, { makeFetcher: popsWeb().makeFetcher, today: TODAY }))!;
-    assert.equal(run.version, "r11");
+    assert.equal(run.version, "r12");
     const after = await db.discoveryCandidate.findUniqueOrThrow({ where: { id: c.id } });
     assert.deepEqual([after.categoryVerdict, after.categorySource, after.categorySourceUrl], ["wrong_category", "website", POPS_SITE]);
-    assert.match(after.categoryReason!, /^Website describes shoe repair, boot repair, vacuum repair, lamp repair and sharpening; no automotive services or vocabulary/);
+    assert.match(after.categoryReason!, /^Website describes shoe repair, boot repair, vacuum repair, lamp repair and sharpening; no collision\/body services or vocabulary/);
     const fact = await db.researchFact.findFirst({ where: { researchId: run.id, field: "business_category" } });
     assert.equal(fact?.value, "Wrong category");
     // The website's sourced verdict, with no person involved yet: rejected automatically (rejection@r1).
     assert.equal(after.status, "rejected");
-    assert.match(after.decisionReason!, /^Automatically rejected \(rejection@r1\): Outside the target category: Website describes shoe repair/);
+    assert.match(after.decisionReason!, /^Automatically rejected \(rejection@r2\): Outside the target category: Website describes shoe repair/);
 
     // A person decides otherwise, and reopens it; research keeps the person's decision and says so.
     await setCandidateCategory(db, c.id, "in_target", "Owner confirmed they also repair cars.");
@@ -138,7 +138,7 @@ describe("category check (service)", { skip: skipReason }, () => {
   });
 
   test("the list: a category filter, and wrong category is never ranked, qualified, or banded", async () => {
-    const wrong = (await ingest({ businessName: "Caliber Collision", website: "https://caliber.example.com/" })).c!;
+    const wrong = (await ingest({ businessName: "Able Auto Glass", website: "https://ableglass.example.com/" })).c!;
     const fine = (await ingest({ businessName: "Bill Hahn's Automotive", website: "https://billhahn.example.com/" })).c!;
     const only = await listCandidates(db, { category: "wrong_category" });
     assert.deepEqual(only.rows.map((r) => r.candidate.id), [wrong.id]);
@@ -170,8 +170,8 @@ describe("category check (service)", { skip: skipReason }, () => {
     const applied = await backfillCategoryCheck(db, { apply: true });
     assert.equal(applied.changes.length, 2);
     assert.equal((await db.discoveryCandidate.findUniqueOrThrow({ where: { id: glass.id } })).categoryVerdict, "wrong_category");
-    assert.equal((await db.discoveryCandidate.findUniqueOrThrow({ where: { id: plain.id } })).categoryVerdict, "in_target");
-    assert.deepEqual(applied.verdicts, { in_target: 3, wrong_category: 1, unclear: 0 });
+    assert.equal((await db.discoveryCandidate.findUniqueOrThrow({ where: { id: plain.id } } )).categoryVerdict, "unclear");
+    assert.deepEqual(applied.verdicts, { in_target: 2, wrong_category: 1, unclear: 1 });
 
     const again = await backfillCategoryCheck(db, { apply: true });
     assert.equal(again.changes.length, 0, "a second run rewrites nothing");
@@ -234,9 +234,10 @@ describe("category check (admin HTTP)", { skip: skipReason }, () => {
     const id = idFrom(add.headers.location);
     assert.equal((await post(`/admin/discovery/candidates/${id}`, readyForm({ businessName, signal_no_online_booking: "unknown", signal_digital_inspections: "unknown" }))).statusCode, 303);
     assert.equal((await post(`/admin/discovery/candidates/${id}/status`, { status: "researching" })).statusCode, 303);
-    for (const signalKey of ["independent_shop", "general_repair_services"]) {
+    for (const signalKey of ["independent_shop", "general_repair_services", "collision_repair_services"]) {
       await post(`/admin/discovery/candidates/${id}/evidence`, { signalKey, sourceUrl: `${WEBSITE}/about`, excerpt: `Public page supports ${signalKey}.` });
     }
+    if (businessName !== "Able Auto Glass") await setCandidateCategory(db, id, "in_target", "Fixture human verification of collision/body services.");
     assert.equal((await post(`/admin/discovery/candidates/${id}/status`, { status: "researched" })).statusCode, 303);
     return id;
   }
@@ -246,7 +247,7 @@ describe("category check (admin HTTP)", { skip: skipReason }, () => {
     const html = (await get(`/admin/discovery/candidates/${id}`)).body;
     assert.match(html, /Category check/);
     assert.match(html, /✕ Wrong category/);
-    assert.match(html, /The name indicates auto glass/);
+    assert.match(html, /The name indicates glass/);
     assert.match(html, /not qualification/);
     assert.match(html, /Not scored: outside the target category/);
     assert.match(html, /Not assessed/);

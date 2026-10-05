@@ -14,76 +14,14 @@ import {
 
 const verdict = (name: string) => nameCategory({ businessName: name, category: "automotive_repair", categoryTier: "core" }).verdict;
 
-describe("category check: ReclaimBay names (automotive@c1)", () => {
-  const cases: [CategoryVerdict, string[]][] = [
-    [
-      "wrong_category",
-      [
-        "Able Auto Glass",
-        "Mario's Auto Body",
-        "Streamline Garage Doors",
-        "URO Parts",
-        "Larry Dudley Yacht Sales",
-        "Intoxalock Ignition Interlock",
-        "Wrap Labs",
-        "Caliber Collision",
-      ],
-    ],
-    ["in_target", ["Bill Hahn's Automotive", "Pops One Stop Repair Shop", "Brakes & Wheels - Complete Auto Service", "Clean Planet Smog Check and Auto Repairs"]],
-    ["unclear", ["Auto Body & Repair", "German Tech Auto Repair and Sales"]],
-  ];
-  for (const [expected, names] of cases) {
-    for (const name of names) test(`${name} → ${expected}`, () => assert.equal(verdict(name), expected));
-  }
-
-  test("'Cummins Sales and Service' is not wrong: sales, but also service", () => assert.equal(verdict("Cummins Sales and Service"), "unclear"));
-
-  test("policy v1: tires, RV, trucks, smog, mobile mechanics", () => {
-    // Tire-only names can't prove tire-only: unclear, never wrong on the name alone.
-    assert.equal(verdict("Saticoy Tires & Wheels"), "unclear");
-    assert.equal(verdict("Hi-Tech Auto & Tire Center"), "unclear", "a real, verified repair shop: never wrong from its name");
-    assert.equal(verdict("Avenue Tire & Service"), "in_target");
-    assert.equal(verdict("Valley Tire & Auto Repair"), "in_target");
-    assert.equal(verdict("H & H Rv Repair & Storage"), "wrong_category", "RV repair is out, even with 'repair'");
-    assert.equal(verdict("Quality Rv Repair"), "wrong_category");
-    assert.equal(verdict("Whitney's Auto & Rv Care Center"), "unclear", "autos and RVs: may serve both, so a person looks");
-    assert.equal(verdict("Heavy Duty Truck & Auto Repair"), "in_target", "it names auto repair: it also serves cars");
-    assert.equal(verdict("Specialty Marine"), "wrong_category");
-    assert.equal(verdict("Auto & Marine Repair"), "in_target");
-    assert.equal(verdict("Ventura Heavy Duty Truck Repair"), "wrong_category");
-    assert.equal(verdict("Coast Semi Truck Service"), "wrong_category");
-    assert.equal(verdict("Santos Truck & Auto Repair"), "in_target", "light-duty truck repair is in");
-    assert.equal(verdict("Simi Test Only Smog Center"), "wrong_category");
-    assert.equal(verdict("Americar (Smog Check: Test Only)"), "wrong_category");
-    assert.equal(verdict("Ventura Smog Test & Auto Repair"), "in_target");
-    assert.equal(verdict("Oxnard Mobile Mechanic"), "in_target");
-    assert.equal(verdict("David's Mobile Auto Glass"), "wrong_category", "mobile is neutral; the glass decides");
-  });
-
-  test("Spanish repair names are in scope", () => {
-    assert.equal(verdict("Taller Mecánico Ortiz"), "in_target");
-    assert.equal(verdict("Reparación de Autos Lopez"), "in_target");
-  });
-
-  test("'auto' alone is not repair evidence, and plain names keep the provider's category", () => {
-    assert.equal(verdict("Mario's Auto Body"), "wrong_category");
-    const r = nameCategory({ businessName: "Bill Hahn's Automotive", category: "automotive_repair", categoryTier: "core" });
-    assert.deepEqual([r.verdict, r.source], ["in_target", "provider"]);
-    assert.match(r.reason, /provider lists it as automotive_repair \(core\)/);
-    const manual = nameCategory({ businessName: "Bill Hahn's Automotive" });
-    assert.deepEqual([manual.verdict, manual.source], ["in_target", "name"], "a hand-added candidate has no provider category");
-  });
-
-  test("results carry the rule set and a quotable reason", () => {
-    const r = nameCategory({ businessName: "Able Auto Glass" });
-    assert.equal(r.rules, "automotive@c1");
-    assert.equal(r.source, "name");
-    assert.equal(r.sourceUrl, null);
-    assert.match(r.reason, /auto glass, outside general automotive repair/);
-  });
+describe("category check: collision/body discovery leads", () => {
+ for (const name of ["Mario's Auto Body", "Caliber Collision", "Harbor Auto Body & Paint", "Harbor Collision Repair", "Bill Hahn's Automotive", "Pops One Stop Repair Shop", "Taller Mec?nico Ortiz"]) test(name + " requires verification", () => assert.equal(verdict(name), "unclear"));
+ for (const name of ["Able Auto Glass", "URO Parts", "Streamline Garage Doors", "Larry Dudley Yacht Sales", "Intoxalock Ignition Interlock", "Wrap Labs"]) test(name + " lacks collision evidence", () => assert.equal(verdict(name), "wrong_category"));
+ test("categories are provisional leads", () => { const r = nameCategory({businessName:"Harbor",category:"auto_body_shop",categoryTier:"core"}); assert.equal(r.verdict,"unclear"); assert.equal(r.source,"provider"); assert.match(r.reason,/Provider categories are leads/); });
+ test("policy is versioned", () => assert.equal(nameCategory({businessName:"Harbor"}).rules,"collision@c2"));
 });
 
-describe("category check: websites (automotive@c1)", () => {
+describe("category check: websites (collision@c2)", () => {
   const POPS = [
     { url: "http://popsonestoprepairshop.com/", text: "HOME SHOE REPAIR BOOT REPAIR VACUUM REPAIR LAMP REPAIR SHARPENING SERVICE Pop's Camarillo 805 388 - 0700 Pop's Floorcare 805 504 - 9565" },
     { url: "http://popsonestoprepairshop.com/LUGGAGE_REPAIR.html", text: "Luggage repair: zippers, wheels and handles. Sewing machine service." },
@@ -94,7 +32,7 @@ describe("category check: websites (automotive@c1)", () => {
     assert.equal(r.verdict, "wrong_category");
     assert.equal(r.source, "website");
     assert.equal(r.sourceUrl, "http://popsonestoprepairshop.com/");
-    assert.match(r.reason, /^Website describes shoe repair, boot repair, vacuum repair, lamp repair, sharpening, luggage repair and sewing machines; no automotive services or vocabulary on the 2 pages read\.$/);
+    assert.match(r.reason, /^Website describes shoe repair, boot repair, vacuum repair, lamp repair, sharpening, luggage repair and sewing machines; no collision\/body services or vocabulary on the 2 pages read\.$/);
   });
 
   test("absence of automotive words alone is never wrong", () => {
@@ -107,11 +45,11 @@ describe("category check: websites (automotive@c1)", () => {
 
   test("Spanish automotive vocabulary counts as automotive", () => {
     const r = checkWebsite(AUTOMOTIVE_CATEGORY_RULES, [{ url: "https://taller.example/", text: "Taller mecánico. Reparamos frenos, motores y transmisiones de su vehículo. Afilado de cuchillos y reparación de zapatos y botas también." }], null);
-    assert.notEqual(r?.verdict, "wrong_category");
+    assert.notEqual(r?.verdict, "in_target");
   });
 
   test("automotive specialties (glass only) say nothing new about the category", () => {
-    assert.equal(checkWebsite(AUTOMOTIVE_CATEGORY_RULES, [{ url: "https://glass.example/", text: "Auto glass and windshield replacement for every car and truck. ".repeat(10) }], null), null);
+    assert.equal(checkWebsite(AUTOMOTIVE_CATEGORY_RULES, [{ url: "https://glass.example/", text: "Auto glass and windshield replacement for every car and truck. ".repeat(10) }], null)?.verdict, "unclear");
   });
 
   test("confirmed general repair is in target, with its source", () => {
@@ -120,7 +58,7 @@ describe("category check: websites (automotive@c1)", () => {
   });
 
   test("other trades alongside automotive work: unclear, not wrong", () => {
-    const r = checkWebsite(AUTOMOTIVE_CATEGORY_RULES, [{ url: "https://mix.example/", text: "Car repair, brakes, and also lawn mower, boat and solar panel service." }], null)!;
+    const r = checkWebsite(AUTOMOTIVE_CATEGORY_RULES, [{ url: "https://mix.example/", text: "Collision repair, and also lawn mower, boat and solar panel service." }], null)!;
     assert.equal(r.verdict, "unclear");
   });
 });

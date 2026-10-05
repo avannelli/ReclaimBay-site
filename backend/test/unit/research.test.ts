@@ -1059,7 +1059,7 @@ describe("category check on the business's own website", () => {
     assert.equal(r.category!.verdict, "wrong_category");
     assert.equal(r.category!.source, "website");
     assert.equal(r.category!.sourceUrl, "https://saviersauto.example.com/");
-    assert.match(r.category!.reason, /^Website describes shoe repair, boot repair, vacuum repair, lamp repair and sharpening; no automotive services or vocabulary on the \d pages? read\.$/);
+    assert.match(r.category!.reason, /^Website describes shoe repair, boot repair, vacuum repair, lamp repair and sharpening; no collision\/body services or vocabulary on the \d pages? read\.$/);
     const f = fact(r, "business_category")!;
     assert.deepEqual([f.value, f.state, f.sourceUrl], ["Wrong category", "verified", "https://saviersauto.example.com/"]);
     assert.equal(signal(r, "general_repair_services"), undefined, "no automotive signal is invented or changed");
@@ -1070,15 +1070,15 @@ describe("category check on the business's own website", () => {
     const s = server(siteWith(`<!doctype html><html><head><title>Saviers Road Auto Repair</title>${ld}</head><body><div id="root"></div></body></html>`));
     const r = await researchCandidate(subject(), s.fetcher(), TODAY);
     assert.equal(r.outcome, "website_verified");
-    assert.equal(r.category, null);
-    assert.equal(fact(r, "business_category"), undefined);
+    assert.equal(r.category?.verdict, "unclear");
+    assert.equal(fact(r, "business_category")?.state, "uncertain");
   });
 
-  test("a clear general repair site is in target, citing the services", async () => {
+  test("a mechanical-only site awaits collision product-fit evidence", async () => {
     const s = server(goodSite());
     const r = await researchCandidate(subject(), s.fetcher(), TODAY);
-    assert.equal(r.category!.verdict, "in_target");
-    assert.match(r.category!.reason, /^The website names general repair services \(/);
+    assert.equal(r.category!.verdict, "unclear");
+    assert.match(r.category!.reason, /No verified collision/);
     assert.ok(r.category!.sourceUrl?.startsWith("https://saviersauto.example.com/"));
   });
 
@@ -1097,7 +1097,7 @@ describe("category check on the business's own website", () => {
       "<h1>Saviers Road Auto Repair</h1><p>(805) 555-0101</p><p>Auto glass and windshield replacement, and window tint, for every car and truck.</p>",
     );
     assert.equal(signal(r, "general_repair_services")!.value, "no", "the existing qualification rule is unchanged");
-    assert.equal(r.category, null, "no double report as a category error");
+    assert.equal(r.category?.verdict, "unclear", "glass-only services cannot establish collision fit");
   });
 
   test("a website that isn't confirmed as the business's own is never category-checked", async () => {

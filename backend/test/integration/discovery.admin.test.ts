@@ -58,7 +58,7 @@ describe("discovery admin (HTTP)", { skip: skipReason }, () => {
     const edit = await post(`/admin/discovery/candidates/${id}`, readyForm({ businessName: "Smith Auto", signal_no_online_booking: "unknown", signal_digital_inspections: "unknown", ...over }));
     assert.equal(edit.statusCode, 303, edit.body);
     assert.equal((await post(`/admin/discovery/candidates/${id}/status`, { status: "researching" })).statusCode, 303);
-    for (const signalKey of ["independent_shop", "general_repair_services"]) {
+    for (const signalKey of ["independent_shop", "general_repair_services", "collision_repair_services"]) {
       const ev = await post(`/admin/discovery/candidates/${id}/evidence`, { signalKey, sourceUrl: `${WEBSITE}/about`, excerpt: `Public page supports ${signalKey}.` });
       assert.equal(ev.statusCode, 303, ev.body);
     }
@@ -206,7 +206,7 @@ describe("discovery admin (HTTP)", { skip: skipReason }, () => {
       assert.match(page, /class="vd vd-warn lg"><span aria-hidden="true">⚠<\/span>Needs verification/);
       assert.match(page, /Opportunity score · ranking only, not a verdict/);
       assert.match(page, /directory\.example\.com\/listing\/fx-1001/);
-      assert.match(page, /8 of 9 signals are unknown/, "only 'has a website' is known; the provider phone is unverified");
+      assert.match(page, /9 of 10 signals are unknown/, "only 'has a website' is known; the provider phone is unverified");
       assert.match(page, /Provider phone/);
       assert.match(page, /Unverified/);
       assert.match(page, /Can&#39;t approve yet/);
@@ -404,8 +404,8 @@ describe("discovery admin (HTTP)", { skip: skipReason }, () => {
 
       const prospect = await db.prospect.findUniqueOrThrow({ where: { id: prospectId }, include: { evidence: true, notes: true, signals: true } });
       assert.equal(prospect.status, "new");
-      assert.equal(prospect.evidence.length, 2);
-      assert.equal(prospect.signals.length, 2);
+      assert.equal(prospect.evidence.length, 3);
+      assert.equal(prospect.signals.length, 3);
       assert.match(prospect.notes[0]!.body, /Approved by a human from a discovery candidate\. Provider: manual/);
 
       const page = (await get(String(res.headers.location))).body;

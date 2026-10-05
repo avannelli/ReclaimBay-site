@@ -1,3 +1,4 @@
+import { addFixtureCollisionEvidence } from "./helpers.js";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { after, before, beforeEach, describe, test } from "node:test";
@@ -55,6 +56,7 @@ describe("outreach measurement", { skip: skipReason }, () => {
       db,
       readyForm({ businessName: `Measure ${n} Auto`, website: site, phoneSourceUrl: `${site}/contact`, email: `service@measure${n}.example.com`, emailSourceUrl: `${site}/contact`, ...over }),
     );
+    await addFixtureCollisionEvidence(db, p);
     await addEvidence(db, p.id, { signalKey: "independent_shop", sourceUrl: `${site}/about`, excerpt: "Family owned." });
     return p;
   };

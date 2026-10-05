@@ -31,8 +31,9 @@ const clean = (over: Partial<AutoApprovalInput> = {}): AutoApprovalInput => ({
   signals: [
     { key: "independent_shop", value: "yes" },
     { key: "general_repair_services", value: "yes" },
+    { key: "collision_repair_services", value: "yes" },
   ],
-  evidence: [{ signalKey: "independent_shop" }, { signalKey: "general_repair_services" }],
+  evidence: [{ signalKey: "independent_shop" }, { signalKey: "general_repair_services" }, { signalKey: "collision_repair_services", sourceUrl: SRC, excerpt: "We offer collision repair." }],
   status: "researched",
   categoryVerdict: "in_target",
   categorySource: "website",
@@ -43,34 +44,34 @@ const clean = (over: Partial<AutoApprovalInput> = {}): AutoApprovalInput => ({
 });
 const run = (over: Partial<NonNullable<AutoApprovalInput["latestRun"]>>) => ({ ...clean().latestRun!, ...over });
 
-describe("automatic approval (approval@a1)", () => {
+describe("automatic approval (approval@a2)", () => {
   test("a clean, verified, independent, in-target lead is approved, with every reason recorded", () => {
     const a = assessAutoApproval(clean());
     assert.equal(a.decision, "approve");
     assert.equal(
       a.approvalNote,
-      `${AUTO_APPROVED_PREFIX} (${AUTO_APPROVAL_RULES}): target category confirmed (in target, from the business's own website), website ownership verified (research r11), independent shop confirmed, general repair confirmed, qualification meets criteria, no blocking warnings.`,
+      `${AUTO_APPROVED_PREFIX} (${AUTO_APPROVAL_RULES}): target category confirmed (in target, from the business's own website), website ownership verified (research r11), collision/body services confirmed with a source and excerpt, qualification meets criteria, no blocking warnings.`,
     );
   });
 
-  test("independence unknown: held for review", () => {
+  test("collision/body fit unknown: held for review", () => {
     const a = assessAutoApproval(clean({ signals: [{ key: "general_repair_services", value: "yes" }], evidence: [{ signalKey: "general_repair_services" }] }));
     assert.equal(a.decision, "review");
-    assert.ok(a.reasons.includes("Independent shop is unknown, not yes."));
+    assert.ok(a.reasons.includes("Verified collision/body repair is unknown, not yes."));
     assert.ok(a.reasons.includes("Qualification is Unverified, not Meets criteria."));
     assert.equal(a.approvalNote, null);
   });
 
-  test("general repair not confirmed: held", () => {
+  test("mechanical-only observations do not qualify", () => {
     const a = assessAutoApproval(clean({ signals: [{ key: "independent_shop", value: "yes" }], evidence: [{ signalKey: "independent_shop" }] }));
     assert.equal(a.decision, "review");
-    assert.ok(a.reasons.includes("Offers general repair is unknown, not yes."));
+    assert.ok(a.reasons.includes("Verified collision/body repair is unknown, not yes."));
   });
 
   test("category unclear or not checked: held; wrong category set by a person: blocked, not rejected automatically", () => {
     assert.equal(assessAutoApproval(clean({ categoryVerdict: "unclear", categoryReason: "The name points to tires." })).decision, "review");
     assert.ok(assessAutoApproval(clean({ categoryVerdict: null })).reasons.includes("The category hasn't been checked yet."));
-    // (A wrong category from the category check itself is rejected automatically: rejection@r1, below.)
+    // (A wrong category from the category check itself is rejected automatically: rejection@r2, below.)
     const wrong = assessAutoApproval(clean({ categoryVerdict: "wrong_category", categorySource: "manual", categoryReason: "Glass only." }));
     assert.equal(wrong.decision, "blocked");
     assert.match(wrong.reasons[0]!, /outside the target category \(Glass only\)/);
@@ -100,7 +101,7 @@ describe("automatic approval (approval@a1)", () => {
   });
 
   test("contradicting business types on the website: held", () => {
-    for (const value of ["dealership", "chain or franchise", "possibly a chain"]) {
+    for (const value of ["dealership"]) {
       assert.equal(assessAutoApproval(clean({ latestRun: run({ businessType: { value, note: null } }) })).decision, "review", value);
     }
     const conflict = { value: null, note: "The site states it is independent but also shows dealership activity. Check by hand." };
@@ -166,7 +167,7 @@ describe("automatic approval (approval@a1)", () => {
   });
 });
 
-describe("automatic rejection (rejection@r1)", () => {
+describe("automatic rejection (rejection@r2)", () => {
   const PAGE = "https://shop.example.com/about";
   /** A researched candidate whose signals and evidence research recorded (origin "research"), with a quote and URL each. */
   const researched = (signals: [string, "yes" | "no"][], over: Partial<AutoApprovalInput> = {}): AutoApprovalInput =>
@@ -175,34 +176,34 @@ describe("automatic rejection (rejection@r1)", () => {
       evidence: signals.map(([key]) => ({ signalKey: key, origin: "research", sourceUrl: PAGE, excerpt: `Quote for ${key}.` })),
       ...over,
     });
-  const chain = (over: Partial<AutoApprovalInput> = {}) =>
-    researched([["independent_shop", "no"], ["general_repair_services", "yes"]], {
+  const notFit = (over: Partial<AutoApprovalInput> = {}) =>
+    researched([["collision_repair_services", "no"], ["general_repair_services", "yes"]], {
       evidence: [
-        { signalKey: "independent_shop", origin: "research", sourceUrl: PAGE, excerpt: 'Franchise or chain brand "Jiffy Lube": a Jiffy Lube location' },
+        { signalKey: "collision_repair_services", origin: "research", sourceUrl: PAGE, excerpt: "We do not offer collision repair." },
         { signalKey: "general_repair_services", origin: "research", sourceUrl: PAGE, excerpt: "Oil changes and brakes." },
       ],
       ...over,
     });
 
   test("a clearly independent shop with research evidence is still approved", () => {
-    assert.equal(assessAutoApproval(researched([["independent_shop", "yes"], ["general_repair_services", "yes"]])).decision, "approve");
+    assert.equal(assessAutoApproval(researched([["collision_repair_services", "yes"], ["general_repair_services", "yes"]])).decision, "approve");
   });
 
-  test("a national chain or franchise, with research's quote and URL: rejected, with the evidence in the reason", () => {
-    const a = assessAutoApproval(chain());
+  test("a sourced explicit product-fit No is rejected with its evidence", () => {
+    const a = assessAutoApproval(notFit());
     assert.equal(a.decision, "reject");
-    assert.equal(a.approvalNote, `${AUTO_REJECTED_PREFIX} (${AUTO_REJECTION_RULES}): Independent shop is No: "Franchise or chain brand \"Jiffy Lube\": a Jiffy Lube location" (${PAGE}).`);
+    assert.equal(a.approvalNote, `${AUTO_REJECTED_PREFIX} (${AUTO_REJECTION_RULES}): Verified collision/body repair is No: "We do not offer collision repair." (${PAGE}).`);
   });
 
-  test("a dealership: rejected", () => {
+  test("an explicit sourced product-fit No remains grounds for rejection", () => {
     const a = assessAutoApproval(
-      chain({ evidence: [{ signalKey: "independent_shop", origin: "research", sourceUrl: PAGE, excerpt: "Dealership (Toyota): new and certified pre-owned" }, { signalKey: "general_repair_services", origin: "research", sourceUrl: PAGE, excerpt: "Service department." }] }),
+      notFit({ evidence: [{ signalKey: "collision_repair_services", origin: "research", sourceUrl: PAGE, excerpt: "Our dealership does not provide collision repair." }, { signalKey: "general_repair_services", origin: "research", sourceUrl: PAGE, excerpt: "Service department." }] }),
     );
     assert.equal(a.decision, "reject");
-    assert.match(a.reasons[0]!, /Independent shop is No: "Dealership \(Toyota\)/);
+    assert.match(a.reasons[0]!, /Verified collision\/body repair is No: "Our dealership does not provide collision repair/);
   });
 
-  test("collision-only, by the website's own category check: rejected", () => {
+  test("an outside-target website without verified collision fit is rejected", () => {
     const a = assessAutoApproval(
       researched([["independent_shop", "yes"]], {
         categoryVerdict: "wrong_category",
@@ -224,47 +225,47 @@ describe("automatic rejection (rejection@r1)", () => {
   });
 
   test("a No without research evidence: held for review, not rejected", () => {
-    const a = assessAutoApproval(chain({ evidence: [{ signalKey: "general_repair_services", origin: "research", sourceUrl: PAGE, excerpt: "Brakes." }] }));
+    const a = assessAutoApproval(notFit({ evidence: [{ signalKey: "general_repair_services", origin: "research", sourceUrl: PAGE, excerpt: "Brakes." }] }));
     assert.notEqual(a.decision, "reject");
-    assert.ok(rejectionGrounds(chain({ evidence: [] })).stops.includes("Independent shop is No without research evidence."));
+    assert.ok(rejectionGrounds(notFit({ evidence: [] })).stops.includes("Verified collision/body repair is No without research evidence."));
   });
 
-  test("conflicting evidence: the name says another trade, the website shows general repair: held, not rejected", () => {
-    const c = researched([["independent_shop", "yes"], ["general_repair_services", "yes"]], {
+  test("conflicting category and collision evidence: held, not rejected", () => {
+    const c = researched([["collision_repair_services", "yes"], ["general_repair_services", "yes"]], {
       categoryVerdict: "wrong_category",
       categorySource: "name",
       categoryReason: "The name indicates collision repair, outside general automotive repair, and names no in-scope service.",
     });
     assert.notEqual(assessAutoApproval(c).decision, "reject");
-    assert.match(rejectionGrounds(c).stops.join(" "), /research found general repair on the website/);
+    assert.match(rejectionGrounds(c).stops.join(" "), /collision\/body evidence says Yes/);
   });
 
   test("a person's explicit No is never rejected automatically: a person decides", () => {
     const a = assessAutoApproval(
-      chain({
-        signals: [{ key: "independent_shop", value: "no", origin: "manual" }, { key: "general_repair_services", value: "yes", origin: "research" }],
-        evidence: [{ signalKey: "independent_shop", origin: "manual", sourceUrl: PAGE, excerpt: "Part of a group." }, { signalKey: "general_repair_services", origin: "research", sourceUrl: PAGE, excerpt: "Brakes." }],
+      notFit({
+        signals: [{ key: "collision_repair_services", value: "no", origin: "manual" }, { key: "general_repair_services", value: "yes", origin: "research" }],
+        evidence: [{ signalKey: "collision_repair_services", origin: "manual", sourceUrl: PAGE, excerpt: "Part of a group." }, { signalKey: "general_repair_services", origin: "research", sourceUrl: PAGE, excerpt: "Brakes." }],
       }),
     );
     assert.notEqual(a.decision, "reject");
-    assert.ok(rejectionGrounds(chain({ signals: [{ key: "independent_shop", value: "no", origin: "manual" }] })).stops.includes("A person recorded Independent shop as No; a person decides."));
+    assert.ok(rejectionGrounds(notFit({ signals: [{ key: "collision_repair_services", value: "no", origin: "manual" }] })).stops.includes("A person recorded Verified collision/body repair as No; a person decides."));
   });
 
   test("a person's hold, a person's category, a reopened candidate, or research disputing a person: never rejected automatically", () => {
-    assert.equal(assessAutoApproval(chain({ status: "needs_review" })).decision, "review", "a hold stays a hold");
-    assert.equal(assessAutoApproval(chain({ reopenedByPerson: true })).decision, "review", "reopened after a rejection: only a person rejects it again");
+    assert.equal(assessAutoApproval(notFit({ status: "needs_review" })).decision, "review", "a hold stays a hold");
+    assert.equal(assessAutoApproval(notFit({ reopenedByPerson: true })).decision, "review", "reopened after a rejection: only a person rejects it again");
     assert.equal(
       assessAutoApproval(researched([["independent_shop", "yes"]], { categoryVerdict: "wrong_category", categorySource: "manual", categoryReason: "Glass only." })).decision,
       "blocked",
       "a person's own category verdict",
     );
-    const disputed = chain({ latestRun: run({ warnings: ["Research found independent shop = no, but a person recorded yes; the person's value was kept."] }) });
+    const disputed = notFit({ latestRun: run({ warnings: ["Research found independent shop = no, but a person recorded yes; the person's value was kept."] }) });
     assert.notEqual(assessAutoApproval(disputed).decision, "reject");
   });
 
   test("only a completed run of a researched candidate counts", () => {
-    assert.notEqual(assessAutoApproval(chain({ latestRun: run({ status: "failed" }) })).decision, "reject");
-    assert.equal(assessAutoApproval(chain({ status: "approved" })).decision, "approved");
-    assert.equal(assessAutoApproval(chain({ status: "rejected" })).decision, "blocked", "already closed: nothing to do");
+    assert.notEqual(assessAutoApproval(notFit({ latestRun: run({ status: "failed" }) })).decision, "reject");
+    assert.equal(assessAutoApproval(notFit({ status: "approved" })).decision, "approved");
+    assert.equal(assessAutoApproval(notFit({ status: "rejected" })).decision, "blocked", "already closed: nothing to do");
   });
 });

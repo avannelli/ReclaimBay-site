@@ -48,7 +48,7 @@ describe("signal definitions", () => {
   test("required criteria are plain observations (the list's SQL qualification filter relies on this)", () => {
     const required: SignalDefinition[] = SIGNALS.filter((s: SignalDefinition) => s.requiredCriterion);
     assert.deepEqual(required.map((s) => s.key), [...REQUIRED_CRITERIA]);
-    assert.deepEqual([...REQUIRED_CRITERIA], ["independent_shop", "general_repair_services"]);
+    assert.deepEqual([...REQUIRED_CRITERIA], ["collision_repair_services"]);
     for (const s of required) assert.ok(s.kind === "observation" && !s.requiresWebsite, s.key);
   });
 
@@ -63,7 +63,7 @@ describe("scoreProspect", () => {
     assert.equal(r.score, 0);
     assert.equal(r.band, "low");
     assert.equal(r.qualification, "unverified");
-    assert.deepEqual(r.unverifiedCriteria, ["independent_shop", "general_repair_services"]);
+    assert.deepEqual(r.unverifiedCriteria, ["collision_repair_services"]);
     assert.equal(r.known, 0);
     assert.equal(r.total, SIGNALS.length);
     assert.ok(r.breakdown.every((s) => s.state === "unknown" && s.points === 0));
@@ -82,29 +82,29 @@ describe("scoreProspect", () => {
     const r = scoreProspect({
       signals: { independent_shop: "yes", general_repair_services: "no", multiple_bays_or_staff: "yes" },
     });
-    assert.equal(r.score, 25 + 15);
+    assert.equal(r.score, 15 + 15);
     assert.equal(r.breakdown.find((s) => s.key === "general_repair_services")?.points, 0);
   });
 
   test("qualification and score are independent: disqualified with a high score", () => {
-    const r = scoreProspect({ ...full, signals: { ...allObservationsYes, independent_shop: "no" } });
+    const r = scoreProspect({ ...full, signals: { ...allObservationsYes, collision_repair_services: "no" } });
     assert.equal(r.qualification, "disqualified");
-    assert.deepEqual(r.disqualifiedBy, ["independent_shop"]);
-    assert.equal(r.score, 75);
+    assert.deepEqual(r.disqualifiedBy, ["collision_repair_services"]);
+    assert.equal(r.score, 80);
     assert.equal(r.band, "high", "band reflects the score only");
   });
 
   test("meets criteria with a low score", () => {
-    const r = scoreProspect({ signals: { independent_shop: "yes", general_repair_services: "yes" } });
+    const r = scoreProspect({ signals: { collision_repair_services: "yes" } });
     assert.equal(r.qualification, "meets_criteria");
-    assert.equal(r.score, 45);
-    assert.equal(r.band, "medium");
+    assert.equal(r.score, 20);
+    assert.equal(r.band, "low");
   });
 
   test("one required criterion unknown means unverified", () => {
-    const r = scoreProspect({ ...full, signals: { ...allObservationsYes, general_repair_services: undefined } });
+    const r = scoreProspect({ ...full, signals: { ...allObservationsYes, collision_repair_services: undefined } });
     assert.equal(r.qualification, "unverified");
-    assert.deepEqual(r.unverifiedCriteria, ["general_repair_services"]);
+    assert.deepEqual(r.unverifiedCriteria, ["collision_repair_services"]);
     assert.equal(r.band, "high");
   });
 

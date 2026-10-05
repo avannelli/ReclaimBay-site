@@ -18,6 +18,7 @@ import { execFileSync } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createDb, type Db } from "../../src/db.js";
+import { addEvidence } from "../../src/prospects.js";
 
 export const TEST_DATABASE_URL = process.env.TEST_DATABASE_URL?.trim() || "";
 export const skipReason = TEST_DATABASE_URL ? false : "TEST_DATABASE_URL is not set";
@@ -96,6 +97,13 @@ export async function truncate(db: Db) {
 
 export const WEBSITE = "https://smithauto.example.com";
 
+/** Explicit collision provenance for synthetic prospects used by unrelated workflow tests. */
+export async function addFixtureCollisionEvidence(db: Db, p: { id: string }) {
+  const prospect = await db.prospect.findUniqueOrThrow({ where: { id: p.id }, include: { signals: true } });
+  if (!prospect.signals.some(s => s.key === "collision_repair_services" && s.value === "yes")) return;
+  await addEvidence(db, p.id, { signalKey: "collision_repair_services", sourceUrl: prospect.website ?? prospect.emailSourceUrl ?? prospect.phoneSourceUrl ?? WEBSITE, excerpt: `${prospect.businessName}: We offer automotive collision repair.` });
+}
+
 /** A complete, valid create/edit form for a prospect that can reach ready_to_contact. */
 export function readyForm(overrides: Record<string, string> = {}): Record<string, string> {
   return {
@@ -108,6 +116,7 @@ export function readyForm(overrides: Record<string, string> = {}): Record<string
     phoneSourceUrl: `${WEBSITE}/contact`,
     signal_independent_shop: "yes",
     signal_general_repair_services: "yes",
+    signal_collision_repair_services: "yes",
     signal_multiple_bays_or_staff: "unknown",
     signal_digital_inspections: "yes",
     signal_no_online_booking: "no",

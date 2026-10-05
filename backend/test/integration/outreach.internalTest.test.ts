@@ -1,3 +1,4 @@
+import { addFixtureCollisionEvidence } from "./helpers.js";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { after, afterEach, before, beforeEach, describe, test } from "node:test";
@@ -55,6 +56,7 @@ describe("internal outreach test (service)", { skip: skipReason }, () => {
   after(async () => db?.$disconnect());
 
   const withEvidence = async <P extends { id: string; website: string | null }>(p: P) => {
+    await addFixtureCollisionEvidence(db, p);
     await addEvidence(db, p.id, { signalKey: "independent_shop", sourceUrl: `${p.website}/about`, excerpt: "Family owned." });
     return p;
   };
@@ -74,6 +76,7 @@ describe("internal outreach test (service)", { skip: skipReason }, () => {
     assert.equal(await db.prospect.count(), 0, "refused: nothing created");
 
     const t = await createInternalTestProspect(db, form({ confirmInternalTest: "yes" }));
+    await addFixtureCollisionEvidence(db, t);
     assert.equal(t.internalTest, true);
     const history = await db.prospectStatusChange.findMany({ where: { prospectId: t.id } });
     assert.deepEqual(history.map((h) => h.reason), ["Created as an internal outreach test"]);
@@ -83,7 +86,7 @@ describe("internal outreach test (service)", { skip: skipReason }, () => {
     const r = await createProspect(db, form({ internalTest: "true", confirmInternalTest: "yes" }));
     assert.equal(r.internalTest, false, "the normal create path never marks a prospect");
     await updateProspect(db, r.id, form({ internalTest: "true", confirmInternalTest: "yes", email: "", emailSourceUrl: "" }));
-    await updateProspect(db, t.id, form({ internalTest: "false", email: "", emailSourceUrl: "" }));
+    await updateProspect(db, t.id, form({ businessName: t.businessName!, website: t.website!, internalTest: "false", email: "", emailSourceUrl: "" }));
     await changeStatus(db, t.id, "qualified", null);
     const [r2, t2] = await Promise.all([db.prospect.findUniqueOrThrow({ where: { id: r.id } }), db.prospect.findUniqueOrThrow({ where: { id: t.id } })]);
     assert.deepEqual([r2.internalTest, t2.internalTest], [false, true], "permanent both ways");

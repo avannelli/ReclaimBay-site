@@ -4,6 +4,7 @@ import type { Prisma } from "./generated/prisma/client.js";
 import { OUTREACH_CLOSED } from "./outreach/lifecycle.js";
 import { cancelOpenOutreach, lockSendGate, suppressEmail } from "./outreach/records.js";
 import { STATUS_LABELS, isStatus, statusRequirementErrors, transitionErrors, type Status } from "./prospectStatus.js";
+import { collisionEvidenceErrors, hasCollisionResearchConflict } from "./research/collisionFit.js";
 import {
   BAND_THRESHOLDS,
   REQUIRED_CRITERIA,
@@ -234,6 +235,19 @@ const scoreData = (input: ScoringInput, now: Date) => ({
   scoredAt: now,
 });
 
+/** Evidence is required at the existing qualification/readiness write boundary, not on New records. */
+async function statusEvidenceErrors(
+  tx: Tx, prospectId: string, status: Status,
+  input: ScoringInput & { businessName: string | null; website: string | null },
+  evidence: readonly { signalKey: string; sourceUrl: string; excerpt: string }[],
+): Promise<string[]> {
+  if ((status !== "qualified" && status !== "ready_to_contact") || scoreProspect(input).qualification !== "meets_criteria") return [];
+  const errors = collisionEvidenceErrors(input, evidence);
+  const candidate = await tx.discoveryCandidate.findUnique({ where: { prospectId }, select: { research: { where: { status: "completed" }, orderBy: { queuedAt: "desc" }, take: 1, select: { warnings: true } } } });
+  if (hasCollisionResearchConflict(candidate?.research[0]?.warnings)) errors.push("Resolve contradictory collision/body research before qualification or Ready to contact.");
+  return errors;
+}
+
 // ---------- writes ----------
 
 /** Anything that can run queries: the client or a transaction. */
@@ -333,7 +347,7 @@ export async function updateProspect(db: Db, id: string, raw: Raw) {
   // Under the send gate: an edit (the email, the signals behind qualification) can stop a queued send.
   return db.$transaction(async (tx) => {
     await lockSendGate(tx);
-    const current = await tx.prospect.findUnique({ where: { id }, include: { signals: true } });
+    const current = await tx.prospect.findUnique({ where: { id }, include: { signals: true, evidence: true } });
     if (!current) throw notFound();
 
     // An edit can't leave the prospect in a status whose requirements fail.
@@ -341,6 +355,7 @@ export async function updateProspect(db: Db, id: string, raw: Raw) {
       businessName: input.fields.businessName,
       ...statusContext(scoring),
     });
+    blocked.push(...await statusEvidenceErrors(tx, id, current.status, { ...scoring, ...input.fields }, current.evidence));
     if (blocked.length) {
       throw new ProspectError([
         ...blocked,
@@ -387,11 +402,12 @@ export async function changeStatus(db: Db, id: string, toRaw: string, reasonRaw:
  * sharing that address can be emailed either.
  */
 export async function changeStatusInTx(tx: Tx, id: string, to: Status, reason: string | null, now = new Date()) {
-  const current = await tx.prospect.findUnique({ where: { id }, include: { signals: true } });
+  const current = await tx.prospect.findUnique({ where: { id }, include: { signals: true, evidence: true } });
   if (!current) throw notFound();
   const from = current.status;
   const input = scoringInputFromRecord(current);
   const errors = transitionErrors(from, to, { businessName: current.businessName, ...statusContext(input) }, reason);
+  errors.push(...await statusEvidenceErrors(tx, id, to, { ...input, businessName: current.businessName, website: current.website }, current.evidence));
   if (errors.length) throw new ProspectError(errors);
 
   // Compare-and-set: fails if the status changed since it was read.
@@ -443,13 +459,25 @@ export function parseEvidence(raw: Raw): { evidence: EvidenceInput | null; error
 export async function addEvidence(db: Db, prospectId: string, raw: Raw) {
   const { evidence, errors } = parseEvidence(raw);
   if (!evidence) throw new ProspectError(errors);
-  await requireProspect(db, prospectId);
-  return db.prospectEvidence.create({ data: { prospectId, ...evidence } });
+  return db.$transaction(async (tx) => {
+    await lockSendGate(tx);
+    const current = await tx.prospect.findUnique({ where: { id: prospectId }, include: { signals: true, evidence: true } });
+    if (!current) throw notFound();
+    const blocked = await statusEvidenceErrors(tx, prospectId, current.status, { ...scoringInputFromRecord(current), businessName: current.businessName, website: current.website }, [...current.evidence, evidence]);
+    if (blocked.length) throw new ProspectError([...blocked, `Move the prospect out of ${STATUS_LABELS[current.status]} first, or keep the supporting evidence.`]);
+    return tx.prospectEvidence.create({ data: { prospectId, ...evidence } });
+  });
 }
 
 export async function deleteEvidence(db: Db, prospectId: string, evidenceId: string) {
-  const { count } = await db.prospectEvidence.deleteMany({ where: { id: evidenceId, prospectId } });
-  if (count !== 1) throw new ProspectError(["Evidence not found."], "not_found");
+  await db.$transaction(async (tx) => {
+    await lockSendGate(tx);
+    const current = await tx.prospect.findUnique({ where: { id: prospectId }, include: { signals: true, evidence: true } });
+    if (!current?.evidence.some(e => e.id === evidenceId)) throw new ProspectError(["Evidence not found."], "not_found");
+    const blocked = await statusEvidenceErrors(tx, prospectId, current.status, { ...scoringInputFromRecord(current), businessName: current.businessName, website: current.website }, current.evidence.filter(e => e.id !== evidenceId));
+    if (blocked.length) throw new ProspectError([...blocked, `Move the prospect out of ${STATUS_LABELS[current.status]} first, or keep the supporting evidence.`]);
+    await tx.prospectEvidence.deleteMany({ where: { id: evidenceId, prospectId } });
+  });
 }
 
 async function requireProspect(db: Db, id: string) {

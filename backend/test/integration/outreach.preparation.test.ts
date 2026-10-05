@@ -1,3 +1,4 @@
+import { addFixtureCollisionEvidence } from "./helpers.js";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { after, before, beforeEach, describe, test } from "node:test";
@@ -68,6 +69,7 @@ describe("outreach preparation and queueing", { skip: skipReason }, () => {
       db,
       readyForm({ businessName: name, website: site, phoneSourceUrl: `${site}/contact`, ...(withEmail ? { email: `service@prep${n}.example.com`, emailSourceUrl: `${site}/contact` } : {}) }),
     );
+    await addFixtureCollisionEvidence(db, p);
     await addEvidence(db, p.id, { signalKey: "independent_shop", sourceUrl: `${site}/about`, excerpt: "Family owned since 1998." });
     return p;
   };

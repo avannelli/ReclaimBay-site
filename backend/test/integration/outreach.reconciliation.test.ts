@@ -1,3 +1,4 @@
+import { addFixtureCollisionEvidence } from "./helpers.js";
 import assert from "node:assert/strict";
 import { after, afterEach, before, beforeEach, describe, test } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
@@ -49,6 +50,7 @@ describe("provider-verified send reconciliation (real PostgreSQL, fake Gmail)", 
     const n = ++seq;
     const website = `https://reconcile${n}.example.com`;
     const p = await createProspect(db, readyForm({ businessName: `Recovery ${n} Auto`, website, email: `service@reconcile${n}.example.com`, emailSourceUrl: `${website}/contact`, phoneSourceUrl: `${website}/contact` }));
+    await addFixtureCollisionEvidence(db, p);
     await addEvidence(db, p.id, { signalKey: "independent_shop", sourceUrl: `${website}/about`, excerpt: "Family owned." });
     const { outreach: o } = await createOutreachDraft(db, p.id, OPTS);
     await queueOutreach(db, o.id, cfg);

@@ -1,9 +1,9 @@
 # Prospects: model, scoring, and workflow
 
-Prospects are auto-repair shops that might benefit from ReclaimBay. This
-milestone covers recording, scoring, and managing them by hand in the admin.
-There is no scraping, automated discovery, email sending, or outreach
-automation.
+Prospects are verified automotive collision/body repair businesses that may
+benefit from ReclaimBay. This document defines their product-fit qualification,
+separate prioritization score, and lifecycle. Discovery and source verification
+are documented in DISCOVERY.md; outreach safety is documented in OUTREACH.md.
 
 ## What is stored
 
@@ -44,7 +44,7 @@ untouched by edits.
 - Sensitive inferences (ethnicity, religion, health, finances), and
   geographic targeting in the score.
 
-## Scoring (v1)
+## Scoring (v2)
 
 Scoring produces two separate results from the same observations:
 **qualification** (does the shop meet the required business criteria?) and an
@@ -53,7 +53,7 @@ shop, and disqualification never lowers the score.
 
 The score is a sum. Each signal observed as **yes** adds its weight; **no**
 and **unknown** add nothing. Weights total 100. Unknown is shown separately
-("6 of 9 signals known"), so missing research never looks like a negative.
+("6 of 10 signals known"), so missing research never looks like a negative.
 
 Subjective ideas are replaced with things anyone can check. "The website looks
 dated" becomes two facts: no HTTPS, and no date from the last two years. The
@@ -61,8 +61,9 @@ admin form shows each signal's rules next to its radio buttons.
 
 | Key | Label | Weight | Yes | No | Unknown |
 | --- | ----- | -----: | --- | -- | ------- |
-| `independent_shop` | Independent shop | 25 | Website and primary listing show no franchise brand (Midas, Meineke, Firestone, Jiffy Lube, Pep Boys, Christian Brothers…), not a new-car dealer's service department, and the name operates 5 or fewer locations | A franchise location, dealer service department, or brand with more than 5 locations. **Required criterion: disqualifies.** | Not checked, or sources conflict |
-| `general_repair_services` | Offers general repair | 20 | Website or listing names at least 2 of: brakes, suspension/steering, engine diagnostics, maintenance/oil service, A/C, electrical, transmission, cooling, exhaust | Every service is a non-mechanical specialty: collision/body, glass, tint, detailing, audio, towing, or tires only. **Required criterion: disqualifies.** | No services list found |
+| `independent_shop` | Independent shop | 15 | Website and primary listing show no franchise brand (Midas, Meineke, Firestone, Jiffy Lube, Pep Boys, Christian Brothers…), not a new-car dealer's service department, and the name operates 5 or fewer locations | A franchise location, dealer service department, or brand with more than 5 locations. **Prioritization only; does not disqualify.** | Not checked, or sources conflict |
+| `general_repair_services` | Offers general repair | 10 | Website or listing names at least 2 of: brakes, suspension/steering, engine diagnostics, maintenance/oil service, A/C, electrical, transmission, cooling, exhaust | Every service is a non-mechanical specialty: collision/body, glass, tint, detailing, audio, towing, or tires only. **Prioritization only; does not disqualify.** | No services list found |
+| `collision_repair_services` | Verified collision/body repair | 20 | Verified identity and sourced, quoted public evidence of automotive collision/body repair; no unresolved contradiction | Explicit sourced statement that the business does not perform collision/body repair | Missing/ambiguous evidence or dealership/specialty case needing human verification |
 | `multiple_bays_or_staff` | 3+ bays or technicians | 15 | A public source shows or states 3 or more bays, or 3 or more technicians | A source states 1–2 bays or a single-mechanic operation | No source gives a count |
 | `digital_inspections` | Mentions digital inspections | 10 | Website mentions digital or photo/video inspections, reports sent by text or email, or names a DVI product | Homepage and services pages reviewed, no mention | No website, or not reviewed |
 | `public_business_contact` | Public business contact | 10 | *Automatic:* a phone or email is stored with its source URL | Website and primary listing searched, neither listed | Not searched, nothing stored |
@@ -71,19 +72,7 @@ admin form shows each signal's rules next to its radio buttons.
 | `website_not_https` | Website not on HTTPS | 5 | `https://<domain>` fails, redirects to http, or shows a certificate warning | Loads over https with no warning | No website, or not checked |
 | `website_no_recent_date` | No recent date on website | 5 | The newest date anywhere on the site (copyright, post, "updated") is 2+ calendar years before the observation | A date in the current or previous calendar year | No website, not checked, or no dates at all |
 
-**Why these weights.**
-- **Fit (45 points):** ReclaimBay helps independent general-repair shops recover
-  declined work, so `independent_shop` (25) and `general_repair_services` (20)
-  carry the most. They are also the two required criteria (see Qualification):
-  a "no" on either disqualifies, because franchises and dealers
-  use mandated corporate systems and specialty shops produce little declined work.
-- **Size of the opportunity (15):** `multiple_bays_or_staff`, since more bays
-  mean more inspections and more declined work.
-- **Data readiness (10):** `digital_inspections`. It indicates itemized
-  recommendations and shop software that can export them, which is ReclaimBay's input.
-- **Actionability (15):** `public_business_contact` (10) and `has_website` (5).
-- **Room to improve (15):** `no_online_booking`, `website_not_https`, and
-  `website_no_recent_date` at 5 each. They are weak proxies, so they stay small.
+**Why these weights.** Collision/body fit contributes 20 points and is the sole required criterion. Independence (15) and mechanical services (10) remain optional prioritization observations. Size (15), digital inspections (10), public contact (10), website (5), and the three website-condition signals (5 each) retain their weights. Total: 100. No score can establish product fit.
 
 **Consistency rules** (enforced on save):
 - "yes" can't be recorded by hand for the derived signals.
@@ -92,15 +81,11 @@ admin form shows each signal's rules next to its radio buttons.
 
 ### Qualification
 
-Qualification is a separate verdict from the required criteria only:
-`independent_shop` and `general_repair_services`. No other signal, and no
-score, affects it.
+Product fit is based only on `collision_repair_services`: Yes means Meets criteria, No means Disqualified, and absent/Unknown means Unverified. Identity and repair evidence must be checked before recording Yes. Historical mechanical Yes values are never converted. Independent ownership and mechanical services no longer disqualify body shops.
 
-| Qualification | Rule |
-| ------------- | ---- |
-| `meets_criteria` | Both required criteria are "yes" |
-| `unverified` | Neither is "no", but at least one is still unknown |
-| `disqualified` | Either required criterion is "no" |
+Dealership collision departments and specialty-only dent/paint/structural businesses require human verification. Automation leaves their fit Unknown, retaining sourced findings for review.
+
+Manual prospects may be created and corrected in New before research is complete. Recording collision Yes alone does not authorize Qualified or Ready to contact: those transitions and edits while in either status require stored collision-specific public URL/excerpt evidence. The source must belong to the recorded business's own website, using the existing business-site checks; without an own website, the excerpt must identify the business. Shared listing hosts alone do not establish identity. The existing collision classifier must recognize an actual repair offering, and contradictory excerpts or linked completed research block the transition. Evidence cannot be removed or made contradictory while either status still requires it; move back to New to revise unresolved findings. Unknown and No remain unchanged, and evidence alone never changes a signal to Yes.
 
 ### Opportunity score and band
 
@@ -112,7 +97,7 @@ fitness. The band is a label for the score alone:
 - **Low:** below 35.
 
 **The two are independent.**
-- A disqualified shop keeps its full score. A franchise with every other signal "yes" scores 75 and is in the High band.
+- A disqualified shop keeps its full score. A business with collision/body fit No and every other signal Yes scores 80 and remains Disqualified.
 - A shop that meets the criteria can still score Low.
 - The admin shows qualification and score side by side, and filters them separately.
 - To rank prospects, filter to **Meets criteria** and sort by score.
@@ -133,7 +118,7 @@ rows "cache stale", and the detail page always shows the live score.
 | Status | Meaning | Requirements while in it |
 | ------ | ------- | ------------------------ |
 | `new` | Added, not yet researched | — |
-| `qualified` | Verified to meet both required criteria | Business name; Qualification = `meets_criteria` (both required criteria "yes") |
+| `qualified` | Verified to meet the collision/body product-fit criterion | Business name; Qualification = `meets_criteria` (the collision/body product-fit criterion "yes") |
 | `ready_to_contact` | Qualified, and reachable through published business contact | Same as qualified, **plus** a public business phone or email with its source URL |
 | `contacted` | Reached out to at least once | — |
 | `engaged` | Replied, visited via referral link, or in conversation | — |
@@ -254,3 +239,7 @@ TEST_DATABASE_URL=<that url> npm run test:integration
 - They refuse any non-local host unless `ALLOW_REMOTE_TEST_DB=1`.
 - They refuse a URL equal to `DATABASE_URL`, and refuse to run in production
   or on Railway.
+
+## Historical ICP recovery (separate milestone)
+
+No data recovery is performed by this code change. Old mechanical signals/evidence remain stored. Existing prospects without a new sourced collision signal become Unverified under v2; cached scores are stale until an explicitly authorized rescore. Do not infer collision fit from old approval, categories, mechanical or ownership values. Previously excluded businesses require a reviewed fresh/forced import because they were never staged; same-release imports are otherwise reused. Preserve human decisions, suppression, invitations and send history. Production discovery, recovery and rescore are separate future work.

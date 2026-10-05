@@ -1,8 +1,23 @@
 # Discovery and research (Milestones 3 to 6)
 
-Discovery helps find independent repair shops that may fit ReclaimBay. It
-never decides who is a good lead. Every business moves through the same
-human-controlled path before it becomes a prospect:
+## Current collision/body ICP (supersedes mechanical-fit policy below)
+
+ReclaimBay serves auto body, collision repair and hybrid mechanical/collision shops. Dealership collision departments and specialty dent/body/paint/structural businesses are possible targets requiring human verification. Mechanical-only, tire-only, glass-only, detailing, towing, washing and accessory businesses do not qualify from those services alone.
+
+**Product fit vs prioritization:** collision_repair_services is a distinct, required signal. Yes requires verified identity, actual positive public automotive body/collision repair evidence, a source URL and excerpt, and no unresolved contradiction. A name/provider category, generic repair, paint or insurance wording, missing services, negative statements, suppliers, directories and referrals never create Yes. Missing/conflicting evidence stays Unknown/Unclear for review. Independence and historical mechanical services remain optional ranking observations.
+
+Current versions: collision@c2, research r12, scoring v2, approval@a2, rejection@r2. Overture auto_body_shop is core/default; prior mechanical categories are adjacent optional leads. Hierarchy/primary-category checks, geography, confidence, deduplication and explicit human decisions remain protected. No unverified provider category aliases were invented.
+
+Research finds collision/body/accident/dent/structural/paint/insurance service links with the existing bounded same-site fetcher. Collision evidence is retained independently of mechanical observations. Dealership/specialty cases and contradictions await verification. Manual approval creates New; sourced fit, public email, lifecycle, suppression, invitation and compliance govern outreach readiness.
+
+**Historical recovery is separate future work.** This milestone runs no production discovery/research/backfill/rescore and does not recover excluded businesses or convert old mechanical signals. Omitted businesses require a reviewed fresh/forced import; completed same-release imports are reused. Old automatic website decisions/rejections and approved prospects need source-backed reassessment. Existing name-only backfill leaves manual/website/approved decisions alone. Preserve human decisions and safety history.
+
+The mechanical-targeting descriptions and old version labels below describe prior implementation milestones. This section and PROSPECTS.md define the current policy.
+
+
+Discovery finds collision/body repair leads. Provider records do not establish
+fit; evidence-backed research and the existing approval workflow do. The
+following workflow remains in use with the current collision/body policy:
 
 ```
 discovery provider / manual entry

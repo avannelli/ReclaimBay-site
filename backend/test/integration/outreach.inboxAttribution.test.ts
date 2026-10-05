@@ -1,3 +1,4 @@
+import { addFixtureCollisionEvidence } from "./helpers.js";
 import assert from "node:assert/strict";
 import { after, afterEach, before, beforeEach, describe, test } from "node:test";
 import { buildApp } from "../../src/app.js";
@@ -27,6 +28,7 @@ describe("non-unsubscribe Inbox attribution (PostgreSQL/fake Gmail)", { skip: sk
   async function sent() {
     const n = ++seq; const site = `https://inbox${n}.example.com`;
     const p = await createProspect(db, readyForm({ businessName: `Inbox ${n} Auto`, website: site, email: `owner@inbox${n}.example.com`, emailSourceUrl: `${site}/contact`, phoneSourceUrl: `${site}/contact` }));
+    await addFixtureCollisionEvidence(db, p);
     await addEvidence(db, p.id, { signalKey: "independent_shop", sourceUrl: `${site}/about`, excerpt: "Family owned." });
     const draft = (await createOutreachDraft(db, p.id, OPTS)).outreach;
     const o = await db.outreach.update({ where: { id: draft.id }, data: { status: "sent", provider: "gmail", providerMessageId: `out-${draft.id}`, sentAt: new Date(AT.getTime() - 120_000 + n * 10), openForProspectId: null } });

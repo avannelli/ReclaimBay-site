@@ -1,3 +1,4 @@
+import { addFixtureCollisionEvidence } from "./helpers.js";
 import assert from "node:assert/strict";
 import { after, afterEach, before, beforeEach, describe, test } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
@@ -59,6 +60,7 @@ describe("the send gate (real PostgreSQL)", { skip: skipReason }, () => {
       db,
       readyForm({ businessName: `Gate ${n} Auto`, website: site, phoneSourceUrl: `${site}/contact`, email: `service@gate${n}.example.com`, emailSourceUrl: `${site}/contact` }),
     );
+    await addFixtureCollisionEvidence(db, p);
     await addEvidence(db, p.id, { signalKey: "independent_shop", sourceUrl: `${site}/about`, excerpt: "Family owned." });
     return p;
   };

@@ -51,9 +51,11 @@ export function unevidencedSignals(
 /** Why a candidate can't be called "researched" yet (empty when it can). */
 export function researchGateErrors(
   signals: readonly { key: string }[],
-  evidence: readonly { signalKey: string }[],
+  evidence: readonly { signalKey: string; sourceUrl?: string; excerpt?: string }[],
 ): string[] {
-  return researchedErrors({ unevidencedSignals: unevidencedSignals(signals, evidence), evidenceCount: evidence.length });
+  const errors = researchedErrors({ unevidencedSignals: unevidencedSignals(signals, evidence), evidenceCount: evidence.length });
+  if (signals.some(s => s.key === "collision_repair_services") && !evidence.some(e => e.signalKey === "collision_repair_services" && e.sourceUrl?.trim() && e.excerpt?.trim())) errors.push("Collision/body fit needs a public source URL and supporting excerpt.");
+  return errors;
 }
 
 /**

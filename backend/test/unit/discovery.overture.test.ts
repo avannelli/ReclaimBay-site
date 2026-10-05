@@ -91,10 +91,10 @@ describe("Overture releases", () => {
 describe("Overture categories → tiers (a discovery filter only)", () => {
   const tax = (primary: string, hierarchy = [...AUTO, primary], alternates: string[] | null = null) => ({ primary, hierarchy, alternates });
 
-  test("general and mechanical repair is core", () => {
+  test("mechanical repair is adjacent; body repair is core", () => {
     for (const c of ["automotive_repair", "transmission_repair", "brake_service_and_repair", "engine_repair_service", "exhaust_and_muffler_repair", "auto_electrical_repair"]) {
       const h = c === "automotive_repair" ? [...AUTO, c] : [...AUTO, "automotive_repair", c];
-      assert.deepEqual(overtureTier(tax(c, h)), { tier: "core", category: c }, c);
+      assert.deepEqual(overtureTier(tax(c, h)), { tier: "adjacent", category: c }, c);
     }
   });
 
@@ -106,7 +106,7 @@ describe("Overture categories → tiers (a discovery filter only)", () => {
   });
 
   test("body, glass, cosmetic, washing, towing, retail, and trailer categories are excluded, conservatively", () => {
-    for (const c of ["auto_body_shop", "car_wash", "auto_detailing", "towing_service", "tire_shop", "trailer_repair", "wheel_and_rim_repair", "windshield_installation_and_repair"]) {
+    for (const c of ["car_wash", "auto_detailing", "towing_service", "tire_shop", "trailer_repair", "wheel_and_rim_repair", "windshield_installation_and_repair"]) {
       assert.deepEqual(overtureTier(tax(c)), { tier: null, reason: "excluded_automotive", category: c }, c);
     }
   });
@@ -148,7 +148,7 @@ describe("mapping an Overture place", () => {
       latitude: 34.1468,
       longitude: -119.1773,
       category: "automotive_repair",
-      categoryTier: "core",
+      categoryTier: "adjacent",
       brand: null,
       confidence: 0.92,
       operatingStatus: "open",
@@ -242,7 +242,7 @@ describe("mapping an Overture place", () => {
   });
 
   test("non-repair places are left out with the reason", () => {
-    assert.equal(skip(row({ taxonomy: { primary: "auto_body_shop", hierarchy: [...AUTO, "auto_body_shop"] } })), "excluded_automotive");
+    assert.equal(skip(row({ taxonomy: { primary: "auto_detailing", hierarchy: [...AUTO, "auto_detailing"] } })), "excluded_automotive");
     assert.equal(skip(row({ taxonomy: null })), "no_category");
   });
 });
@@ -316,7 +316,7 @@ describe("the Overture importer", () => {
     assert.equal(stats["excluded:car_wash"], 1);
     assert.equal(stats.outside_area, 1);
     assert.equal(stats.malformed, 1);
-    assert.equal(stats["tier:core"], 2);
+    assert.equal(stats["tier:adjacent"], 2);
     assert.match(String(stats.source), /^s3:\/\/overturemaps-us-west-2\/release\/2026-09-23\.1\/theme=places\/type=place\/$/);
     assert.match(String(stats.boundary), /TIGERweb county 06111/);
   });

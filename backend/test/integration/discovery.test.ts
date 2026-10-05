@@ -69,7 +69,7 @@ describe("discovery service", { skip: skipReason }, () => {
     await changeCandidateStatus(db, c.id, "researching", null);
     const stored = await db.candidateSignal.findMany({ where: { candidateId: c.id } });
     for (const s of stored) {
-      await addCandidateEvidence(db, c.id, { signalKey: s.key, sourceUrl: `${WEBSITE}/about`, excerpt: `Public page supports ${s.key}.` });
+      await addCandidateEvidence(db, c.id, { signalKey: s.key, sourceUrl: c.website ?? WEBSITE, excerpt: s.key === "collision_repair_services" ? `${c.businessName}: We ${s.value === "no" ? "do not offer" : "offer"} collision repair.` : `Public page supports ${s.key}.` });
     }
     await changeCandidateStatus(db, c.id, "researched", null);
     return c;
@@ -304,7 +304,7 @@ describe("discovery service", { skip: skipReason }, () => {
       await updateCandidate(db, c.id, form({ website: "https://newsite.example.com" }));
       const stored = await db.discoveryCandidate.findUniqueOrThrow({ where: { id: c.id }, include: { signals: true } });
       assert.equal(stored.domainKey, "newsite.example.com");
-      assert.deepEqual(stored.signals.map((s) => s.key).sort(), ["general_repair_services", "independent_shop"]);
+      assert.deepEqual(stored.signals.map((s) => s.key).sort(), ["collision_repair_services", "general_repair_services", "independent_shop"]);
       await rejects(updateCandidate(db, c.id, form({ signal_has_website: "yes" })), /set automatically/);
       await rejects(updateCandidate(db, c.id, form({ website: "", phone: "", phoneSourceUrl: "", signal_no_online_booking: "no" })), /only be observed on a website/);
       await rejects(updateCandidate(db, c.id, form({ phoneSourceUrl: "" })), /public URL where it is listed/);
@@ -319,6 +319,7 @@ describe("discovery service", { skip: skipReason }, () => {
       await addCandidateEvidence(db, c.id, { signalKey: "independent_shop", sourceUrl: `${WEBSITE}/about`, excerpt: "Family owned since 1984." });
       await rejects(changeCandidateStatus(db, c.id, "researched", null), /general_repair_services/);
       await addCandidateEvidence(db, c.id, { signalKey: "general_repair_services", sourceUrl: `${WEBSITE}/services`, excerpt: "Brakes, A/C, diagnostics, oil service." });
+      await addCandidateEvidence(db, c.id, { signalKey: "collision_repair_services", sourceUrl: `${WEBSITE}/services`, excerpt: "We offer collision repair." });
       await changeCandidateStatus(db, c.id, "researched", null);
       const done = await db.discoveryCandidate.findUniqueOrThrow({ where: { id: c.id } });
       assert.equal(done.status, "researched");
@@ -384,10 +385,11 @@ describe("discovery service", { skip: skipReason }, () => {
     const fresh = () =>
       addManualCandidate(db, { businessName: `Smith Auto ${++n}`, website: `https://smith${n}.example.com`, city: "Springfield", state: "IL" });
     const good: ResearchFindings = {
-      signals: { independent_shop: "yes", general_repair_services: "yes" },
+      signals: { independent_shop: "yes", general_repair_services: "yes", collision_repair_services: "yes" },
       evidence: [
         { signalKey: "independent_shop", sourceUrl: `${WEBSITE}/about`, excerpt: "Family owned and operated." },
         { signalKey: "general_repair_services", sourceUrl: `${WEBSITE}/services`, excerpt: "Brakes, A/C, suspension." },
+        { signalKey: "collision_repair_services", sourceUrl: `${WEBSITE}/services`, excerpt: "We offer collision repair." },
       ],
     };
 
@@ -396,11 +398,11 @@ describe("discovery service", { skip: skipReason }, () => {
       const findings = await new FixtureResearch(good).research({ businessName: c.businessName, website: c.website, city: c.city, state: c.state });
       const updated = await applyResearchFindings(db, c.id, findings, "fixture-research");
       assert.equal(updated.status, "researched");
-      assert.equal(await db.candidateEvidence.count({ where: { candidateId: c.id } }), 2);
+      assert.equal(await db.candidateEvidence.count({ where: { candidateId: c.id } }), 3);
       const stored = await candidateByExternalIdless(c.id);
       assert.equal(scoreCandidate(stored).qualification, "meets_criteria");
       assert.equal(await db.prospect.count(), 0, "research never creates a prospect");
-      assert.match((await db.candidateNote.findFirstOrThrow({ where: { candidateId: c.id } })).body, /Research applied by fixture-research: 2 signal\(s\), 2 evidence item\(s\)/);
+      assert.match((await db.candidateNote.findFirstOrThrow({ where: { candidateId: c.id } })).body, /Research applied by fixture-research: 3 signal\(s\), 3 evidence item\(s\)/);
     });
 
     test("unknown stays unknown: a yes/no without evidence is refused", async () => {
@@ -463,15 +465,15 @@ describe("discovery service", { skip: skipReason }, () => {
       assert.deepEqual(await ids({ q: "harbor" }), ["fx-2002", "fx-2001"]);
       assert.deepEqual((await ids({ state: "ca", city: "camarillo" })), ["fx-3001"]);
       assert.deepEqual((await ids({ provider: "manual" })), []);
-      assert.equal((await listCandidates(db, { qualification: "unverified" })).total, 6, "nothing researched yet");
+      assert.equal((await listCandidates(db, { qualification: "unverified" })).total, 5, "nothing researched yet; the tire-only category is excluded");
       assert.equal((await listCandidates(db, { qualification: "meets_criteria" })).total, 0);
-      assert.equal((await listCandidates(db, { band: "low" })).total, 6);
+      assert.equal((await listCandidates(db, { band: "low" })).total, 5);
       assert.equal((await listCandidates(db, { status: "nonsense", band: "nonsense", sort: "nonsense" })).total, 6);
 
       const c = await candidateByExternalId("fx-4001");
       await updateCandidate(db, c.id, form({ businessName: "Simi Valley Motor Works", website: "", phone: "", phoneSourceUrl: "", signal_no_online_booking: "unknown", signal_digital_inspections: "unknown" }));
       assert.deepEqual(await ids({ qualification: "meets_criteria" }), ["fx-4001"]);
-      assert.equal((await listCandidates(db, { qualification: "unverified" })).total, 5);
+      assert.equal((await listCandidates(db, { qualification: "unverified" })).total, 4);
       assert.deepEqual(await ids({ band: "medium" }), ["fx-4001"], "45 points");
       assert.equal((await ids({ sort: "score" }))[0], "fx-4001");
       assert.deepEqual((await ids({ sort: "name" }))[0], "fx-3001");
@@ -493,6 +495,7 @@ describe("discovery service", { skip: skipReason }, () => {
       await changeCandidateStatus(db, c.id, "researching", null);
       await addCandidateEvidence(db, c.id, { signalKey: "independent_shop", sourceUrl: "https://conejoauto.example.com/about", excerpt: "Family owned since 1984." });
       await addCandidateEvidence(db, c.id, { signalKey: "general_repair_services", sourceUrl: "https://conejoauto.example.com/services", excerpt: "Brakes, A/C, diagnostics." });
+      await addCandidateEvidence(db, c.id, { signalKey: "collision_repair_services", sourceUrl: "https://conejoauto.example.com/services", excerpt: "We offer collision repair." });
       await changeCandidateStatus(db, c.id, "researched", null);
       const signalsBefore = await db.candidateSignal.findMany({ where: { candidateId: c.id } });
 
@@ -510,7 +513,7 @@ describe("discovery service", { skip: skipReason }, () => {
       // Signals: same keys, values, and observation times.
       assert.deepEqual(p.signals.map((s) => [s.key, s.value, s.observedAt.getTime()]).sort(), signalsBefore.map((s) => [s.key, s.value, s.observedAt.getTime()]).sort());
       // Evidence: transferred with excerpts, URLs, and original timestamps.
-      assert.equal(p.evidence.length, 2);
+      assert.equal(p.evidence.length, 3);
       const candEvidence = await db.candidateEvidence.findMany({ where: { candidateId: c.id } });
       assert.deepEqual(p.evidence.map((e) => [e.signalKey, e.sourceUrl, e.excerpt, e.createdAt.getTime()]).sort(), candEvidence.map((e) => [e.signalKey, e.sourceUrl, e.excerpt, e.createdAt.getTime()]).sort());
       // Score cache agrees with scoring.ts run on the candidate.
@@ -537,7 +540,7 @@ describe("discovery service", { skip: skipReason }, () => {
     test("approval does not bypass qualification or status rules", async () => {
       // Unverified: only one required criterion established.
       const c = await addManualCandidate(db, { businessName: "Half Known Auto", website: WEBSITE, city: "Ojai", state: "CA", phone: "(805) 555-0100", phoneSourceUrl: `${WEBSITE}/contact` });
-      await updateCandidate(db, c.id, form({ businessName: "Half Known Auto", city: "Ojai", state: "CA", signal_general_repair_services: "unknown" }));
+      await updateCandidate(db, c.id, form({ businessName: "Half Known Auto", city: "Ojai", state: "CA", signal_general_repair_services: "unknown", signal_collision_repair_services: "unknown" }));
       await changeCandidateStatus(db, c.id, "researching", null);
       await addCandidateEvidence(db, c.id, { signalKey: "independent_shop", sourceUrl: `${WEBSITE}/about`, excerpt: "Independent." });
       await changeCandidateStatus(db, c.id, "researched", null);
@@ -555,7 +558,7 @@ describe("discovery service", { skip: skipReason }, () => {
     });
 
     test("a disqualified candidate can be approved into the pipeline but can never be qualified", async () => {
-      const r = await researchedCandidate({ businessName: "Chain Store", website: "https://chain.example.com", city: "Ventura", state: "CA", signal_independent_shop: "no" });
+      const r = await researchedCandidate({ businessName: "Chain Store", website: "https://chain.example.com", city: "Ventura", state: "CA", signal_collision_repair_services: "no" });
       const { prospect } = await approveCandidate(db, r.id);
       assert.equal(prospect.status, "new");
       await rejects(changeStatus(db, prospect.id, "qualified", null), /Disqualified/);
@@ -584,6 +587,7 @@ describe("discovery service", { skip: skipReason }, () => {
       await addCandidateEvidence(db, c.id, { signalKey: "independent_shop", sourceUrl: `${WEBSITE}/a`, excerpt: "Independent." });
       await rejects(approveCandidate(db, c.id), /general_repair_services/);
       await addCandidateEvidence(db, c.id, { signalKey: "general_repair_services", sourceUrl: `${WEBSITE}/b`, excerpt: "Brakes and A/C." });
+      await addCandidateEvidence(db, c.id, { signalKey: "collision_repair_services", sourceUrl: `${WEBSITE}/b`, excerpt: "We offer collision repair." });
       const { prospect } = await approveCandidate(db, c.id);
       assert.equal(prospect.status, "new");
     });

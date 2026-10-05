@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { addFixtureCollisionEvidence } from "./helpers.js";
 import { randomUUID } from "node:crypto";
 import { after, before, beforeEach, describe, test } from "node:test";
 import type { FastifyInstance } from "fastify";
@@ -38,10 +39,11 @@ describe("admin prospect workflow (HTTP)", { skip: skipReason }, () => {
   const get = (url: string, auth = true) => app.inject({ method: "GET", url, headers: auth ? { cookie } : {} });
   const post = (url: string, data: Record<string, string>, headers: Record<string, string> = {}) =>
     app.inject({ method: "POST", url, headers: { ...FORM, cookie, ...headers }, payload: form(data) });
-  const createViaHttp = async (data = readyForm()) => {
+  const createViaHttp = async (data = readyForm(), evidenced = true) => {
     const res = await post("/admin/prospects", data);
     assert.equal(res.statusCode, 303, res.body);
     const id = /\/admin\/prospects\/([0-9a-f-]{36})/.exec(String(res.headers.location))![1]!;
+    if (evidenced) await addFixtureCollisionEvidence(db, await db.prospect.findUniqueOrThrow({ where: { id } }));
     return id;
   };
 
@@ -111,11 +113,11 @@ describe("admin prospect workflow (HTTP)", { skip: skipReason }, () => {
   });
 
   test("a disqualified prospect keeps its score, and the page shows both separately", async () => {
-    const id = await createViaHttp(readyForm({ businessName: "Midas Downtown", signal_independent_shop: "no", signal_multiple_bays_or_staff: "yes" }));
+    const id = await createViaHttp(readyForm({ businessName: "Midas Downtown", signal_collision_repair_services: "no", signal_multiple_bays_or_staff: "yes" }));
     const detail = (await get(`/admin/prospects/${id}`)).body;
     assert.match(detail, /class="st q-disqualified q-big">Disqualified/);
-    assert.match(detail, /Independent shop observed as “no”/);
-    assert.match(detail, />60<\/span><span class="muted">\/100<\/span> <span class="pill band-high">High/);
+    assert.match(detail, /Verified collision\/body repair observed as “no”/);
+    assert.match(detail, />65<\/span><span class="muted">\/100<\/span> <span class="pill band-high">High/);
     const list = (await get("/admin/prospects?qualification=disqualified")).body;
     assert.match(list, /Midas Downtown/);
     assert.match(list, /q-disqualified[\s\S]*band-high/);
@@ -172,7 +174,7 @@ describe("admin prospect workflow (HTTP)", { skip: skipReason }, () => {
   });
 
   test("evidence and notes can be added; evidence removed", async () => {
-    const id = await createViaHttp();
+    const id = await createViaHttp(readyForm(), false);
     const ev = await post(`/admin/prospects/${id}/evidence`, {
       signalKey: "digital_inspections",
       sourceUrl: `${WEBSITE}/services`,

@@ -60,6 +60,8 @@ export interface CategoryRules {
     /** Terms that show the business does what the target needs. */
     inScope: readonly Term[];
     outOfScope: readonly OutOfScopeTerm[];
+    /** Discovery names/categories remain provisional until sourced services are confirmed. */
+    provisional?: boolean;
   };
   website: {
     /** One word for the target's vocabulary in reasons ("no <noun> services or vocabulary"). */
@@ -124,12 +126,12 @@ export function checkName(rules: CategoryRules, ev: NameEvidence): CategoryResul
   if (weak.length && !inScope.length) {
     return result("unclear", "name", `The name points to ${list(weak)} and names no in-scope service; check by hand whether it offers ${rules.target}.`);
   }
-  if (inScope.length) return result("in_target", "name", `The name indicates ${list(inScope)}.`);
+  if (inScope.length) return result(rules.name.provisional ? "unclear" : "in_target", "name", `The name indicates ${list(inScope)}.${rules.name.provisional ? " Verify the business's actual services." : ""}`);
   if (ev.providerCategory) {
     const tier = ev.providerTier ? ` (${ev.providerTier})` : "";
-    return result("in_target", "provider", `The provider lists it as ${ev.providerCategory}${tier}, and nothing in the name is outside ${rules.target}.`);
+    return result(rules.name.provisional ? "unclear" : "in_target", "provider", `The provider lists it as ${ev.providerCategory}${tier}, and nothing in the name is outside ${rules.target}.${rules.name.provisional ? " Provider categories are leads, not verified product fit." : ""}`);
   }
-  return result("in_target", "name", `Nothing in the name is outside ${rules.target}.`);
+  return result(rules.name.provisional ? "unclear" : "in_target", "name", `Nothing in the name establishes ${rules.target}.${rules.name.provisional ? " Verify its services." : ""}`);
 }
 
 export interface WebsitePage {

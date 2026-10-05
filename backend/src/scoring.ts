@@ -20,7 +20,7 @@
  * running `npm run prospects:rescore` to refresh the cached scores.
  */
 
-export const SCORING_VERSION = "v1";
+export const SCORING_VERSION = "v2";
 
 export type SignalState = "yes" | "no" | "unknown";
 export type StoredSignalValue = "yes" | "no";
@@ -51,28 +51,38 @@ export const SIGNALS = [
   {
     key: "independent_shop",
     label: "Independent shop",
-    weight: 25,
+    weight: 15,
     kind: "observation",
-    requiredCriterion: true,
     question: "Is the shop independent of franchises, dealerships, and large chains?",
     yes: "The website and primary business listing show no franchise brand (e.g. Midas, Meineke, Firestone, Jiffy Lube, Pep Boys, Christian Brothers), it is not a new-car dealership's service department, and the same business name operates 5 or fewer locations.",
     no: "It is a franchise location, a dealership service department, or part of a brand operating more than 5 locations.",
     unknown: "Ownership or brand affiliation has not been checked, or public sources conflict.",
     rationale:
-      "Highest weight. Independent shops choose their own tools and feel the cost of unrecovered declined work directly; franchises and dealers use mandated corporate systems, so ReclaimBay is not a fit. Also a required criterion: “no” disqualifies.",
+      "Prioritization only: independent ownership may simplify purchasing. Chains and dealerships are not disqualified by ownership.",
   },
   {
     key: "general_repair_services",
     label: "Offers general repair",
-    weight: 20,
+    weight: 10,
     kind: "observation",
-    requiredCriterion: true,
     question: "Does the shop advertise general mechanical repair or maintenance?",
     yes: "The website or primary listing names at least 2 of: brakes, suspension/steering, engine diagnostics, scheduled maintenance/oil service, A/C, electrical, transmission, cooling system, exhaust.",
     no: "Every advertised service is a non-mechanical specialty only: collision/body, glass, tint, detailing, audio, towing, or tires only.",
     unknown: "No services list was found or checked.",
     rationale:
-      "Declined work comes from inspections and repair recommendations, which general repair shops generate constantly. A specialty-only shop produces little of it. Also a required criterion: “no” disqualifies.",
+      "Historical mechanical-service observation, useful for hybrid shops. It does not establish or disqualify collision/body product fit.",
+  },
+  {
+    key: "collision_repair_services",
+    label: "Verified collision/body repair",
+    weight: 20,
+    kind: "observation",
+    requiredCriterion: true,
+    question: "Does this verified business actually perform automotive collision/body repair?",
+    yes: "Verified business identity and a public source with an excerpt explicitly advertising automotive collision, accident, auto body, panel/body or structural repair; no unresolved contradictory evidence. Dealership departments and specialty-only dent/paint businesses require human verification.",
+    no: "Positive sourced evidence explicitly says this business does not perform collision/body repair. Mechanical, tire, glass, detailing, towing or accessory work alone never establishes a Yes.",
+    unknown: "Identity or repair services are unverified, evidence is missing, contradictory, third-party or generic, or a possible dealership/specialty case needs human verification.",
+    rationale: "The sole required product-fit signal. A high opportunity score cannot replace collision/body evidence, and a low score cannot disqualify verified fit. Historical mechanical observations are never converted into collision evidence.",
   },
   {
     key: "multiple_bays_or_staff",

@@ -1,3 +1,4 @@
+import { addFixtureCollisionEvidence } from "./helpers.js";
 import assert from "node:assert/strict";
 import { after, afterEach, before, beforeEach, describe, test } from "node:test";
 import type { FastifyInstance } from "fastify";
@@ -62,6 +63,7 @@ describe("outreach (service)", { skip: skipReason }, () => {
   const prospect = async (over: Record<string, string> = {}, evidence = true) => {
     const p = await createProspect(db, emailForm(over));
     if (evidence) {
+      await addFixtureCollisionEvidence(db, p);
       await addEvidence(db, p.id, { signalKey: "independent_shop", sourceUrl: `${WEBSITE}/about`, excerpt: "Family owned and operated since 1998." });
       await addEvidence(db, p.id, { signalKey: "general_repair_services", sourceUrl: `${WEBSITE}/services`, excerpt: "Brakes, diagnostics, and A/C repair." });
     }
@@ -242,7 +244,7 @@ describe("outreach (service)", { skip: skipReason }, () => {
   });
 
   test("ineligible prospects can't enter outreach", async () => {
-    const unverified = await prospect({ businessName: "Unverified Auto", signal_independent_shop: "unknown" });
+    const unverified = await prospect({ businessName: "Unverified Auto", signal_collision_repair_services: "unknown" });
     await assert.rejects(createOutreachDraft(db, unverified.id, OPTS), /Outreach requires Qualification "Meets criteria"; this prospect is Unverified/);
 
     const phoneOnly = await createProspect(db, readyForm({ businessName: "Phone Only Auto" }));
@@ -357,6 +359,7 @@ describe("outreach (admin HTTP)", { skip: skipReason }, () => {
 
   test("an administrator prepares a draft from the prospect page, reads it, and repeating changes nothing", async () => {
     const p = await createProspect(db, emailForm());
+    await addFixtureCollisionEvidence(db, p);
     await addEvidence(db, p.id, { signalKey: "independent_shop", sourceUrl: `${WEBSITE}/about`, excerpt: "Family owned." });
 
     const page = (await get(`/admin/prospects/${p.id}`)).body;
@@ -413,6 +416,7 @@ describe("outreach (admin HTTP)", { skip: skipReason }, () => {
 
   test("a reply recorded in the admin moves the prospect", async () => {
     const p = await createProspect(db, emailForm());
+    await addFixtureCollisionEvidence(db, p);
     const { outreach } = await createOutreachDraft(db, p.id, OPTS);
     await queueAndSend(db, outreach.id, mockSender());
 

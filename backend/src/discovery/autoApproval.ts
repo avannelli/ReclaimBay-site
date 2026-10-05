@@ -38,11 +38,11 @@ import { CANDIDATE_STATUS_LABELS, type CandidateStatus } from "./candidateStatus
 import { QUALIFICATION_LABELS, REQUIRED_CRITERIA, SIGNALS, type SignalDefinition } from "../scoring.js";
 
 /** Rule set and version, written into every automatic approval. */
-export const AUTO_APPROVAL_RULES = "approval@a1";
+export const AUTO_APPROVAL_RULES = "approval@a2";
 /** Every automatic approval's recorded reason starts with this. */
 export const AUTO_APPROVED_PREFIX = "Automatically approved";
 /** Rule set and version, written into every automatic rejection. */
-export const AUTO_REJECTION_RULES = "rejection@r1";
+export const AUTO_REJECTION_RULES = "rejection@r2";
 /** Every automatic rejection's recorded reason starts with this. */
 export const AUTO_REJECTED_PREFIX = "Automatically rejected";
 /** The note a person's reopening of a rejected candidate leaves: from then on, only a person rejects it. */
@@ -86,7 +86,7 @@ export const NOTED_WARNINGS: readonly Labelled[] = [
 ];
 
 /** Business types on the website that contradict an independent shop. */
-const CONTRADICTING_TYPES = new Set(["dealership", "chain or franchise", "possibly a chain"]);
+const POSSIBLE_TYPES = new Set(["dealership"]);
 
 export interface LatestResearch {
   status: string;
@@ -138,7 +138,7 @@ export function rejectionGrounds(c: AutoApprovalInput): { grounds: string[]; sto
   if (c.status !== "researched") stops.push("Only a researched candidate is rejected automatically.");
   if (!run || run.status !== "completed") stops.push("No completed research run to rely on.");
   if (c.reopenedByPerson) stops.push("A person reopened it after a rejection; only a person rejects it again.");
-  if (run?.status === "completed" && warningList(run.warnings).some((w) => /but a person (?:recorded|set the category)/.test(w))) {
+  if (run?.status === "completed" && warningList(run.warnings).some((w) => /but a person (?:recorded|set the category)|Collision\/body evidence is contradictory/.test(w))) {
     stops.push("Research disagrees with something a person recorded.");
   }
 
@@ -160,11 +160,11 @@ export function rejectionGrounds(c: AutoApprovalInput): { grounds: string[]; sto
 
   // Outside the target category, by the category check (never a person's verdict).
   if (c.categoryVerdict === "wrong_category" && c.categoryReason) {
-    const generalRepair = c.signals.find((s) => s.key === "general_repair_services");
+    const collisionRepair = c.signals.find((s) => s.key === "collision_repair_services");
     if (c.categorySource === "manual") stops.push("A person set the category; a person decides.");
-    else if (c.categorySource !== "website" && generalRepair?.value === "yes") {
+    else if (collisionRepair?.value === "yes") {
       // The name says another trade, but the website shows general repair: conflicting evidence.
-      stops.push(`The ${c.categorySource ?? "name"} says it is outside the target category, but research found general repair on the website.`);
+      stops.push(`The ${c.categorySource ?? "name"} says it is outside the target category, but collision/body evidence says Yes; resolve the conflict.`);
     } else {
       const from = c.categorySource === "website" && c.categorySourceUrl ? ` (${c.categorySourceUrl})` : ` (from the ${c.categorySource ?? "name"})`;
       grounds.push(`Outside the target category: ${c.categoryReason.replace(/\.$/, "")}${from}.`);
@@ -183,6 +183,7 @@ export function assessAutoApproval(c: AutoApprovalInput): AutoApprovalAssessment
     approvalNote,
   });
   if (c.status === "approved") return out("approved", ["This candidate is already a prospect."]);
+  if (c.latestRun?.status === "completed" && warningList(c.latestRun.warnings).some(w => /Collision\/body evidence is contradictory/.test(w))) return out("review", ["Collision/body evidence is contradictory; human review is required."]);
 
   // rejection@r1: source-backed grounds, and nothing a person did or research disputes.
   if (c.status === "researched") {
@@ -214,12 +215,12 @@ export function assessAutoApproval(c: AutoApprovalInput): AutoApprovalAssessment
   const result = scoreCandidate(c);
   const state = (key: string) => result.breakdown.find((s) => s.key === key)?.state ?? "unknown";
   if (result.qualification !== "meets_criteria") held.push(`Qualification is ${QUALIFICATION_LABELS[result.qualification]}, not Meets criteria.`);
-  if (state("independent_shop") !== "yes") held.push(`Independent shop is ${state("independent_shop")}, not yes.`);
-  if (state("general_repair_services") !== "yes") held.push(`Offers general repair is ${state("general_repair_services")}, not yes.`);
+  if (state("collision_repair_services") !== "yes") held.push(`Verified collision/body repair is ${state("collision_repair_services")}, not yes.`);
+  if (!c.evidence.some(e => e.signalKey === "collision_repair_services" && e.sourceUrl?.trim() && e.excerpt?.trim())) held.push("Collision/body fit requires its own source URL and supporting excerpt.");
 
   const type = run?.status === "completed" ? run.businessType : null;
-  if (type && ((type.value && CONTRADICTING_TYPES.has(type.value)) || /also shows dealership activity/.test(type.note ?? ""))) {
-    held.push(`The website contradicts an independent shop (business type: ${type.value ?? type.note}).`);
+  if (type && ((type.value && POSSIBLE_TYPES.has(type.value)) || /also shows dealership activity/.test(type.note ?? ""))) {
+    held.push("A dealership collision/body department requires human verification and approval.");
   }
 
   const noted: string[] = [];
@@ -239,8 +240,7 @@ export function assessAutoApproval(c: AutoApprovalInput): AutoApprovalAssessment
   const conditions = [
     `target category confirmed (in target, ${c.categorySource === "manual" ? "set by a person" : `from the ${CATEGORY_SOURCE_LABELS[c.categorySource ?? "name"]}`})`,
     `website ownership verified (research ${run!.version})`,
-    "independent shop confirmed",
-    "general repair confirmed",
+    "collision/body services confirmed with a source and excerpt",
     "qualification meets criteria",
     "no blocking warnings",
   ];

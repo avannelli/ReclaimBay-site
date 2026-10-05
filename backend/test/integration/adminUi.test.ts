@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { addFixtureCollisionEvidence } from "./helpers.js";
 import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { after, before, beforeEach, describe, test } from "node:test";
@@ -167,11 +168,11 @@ describe("admin UI structure (HTTP)", { skip: skipReason }, () => {
       const body = (await get("/admin/prospects/new")).body;
       assert.match(body, /Required qualification criteria/);
       assert.match(body, /Opportunity signals/);
-      assert.equal(body.match(/<span class="kind req">Required criterion<\/span>/g)?.length, 2);
-      assert.equal(body.match(/<span class="kind">Opportunity signal<\/span>/g)?.length, 7);
-      assert.equal(body.match(/<span>Unknown<\/span>/g)?.length, 9, "every signal offers Unknown");
+      assert.equal(body.match(/<span class="kind req">Required criterion<\/span>/g)?.length, 1);
+      assert.equal(body.match(/<span class="kind">Opportunity signal<\/span>/g)?.length, 9);
+      assert.equal(body.match(/<span>Unknown<\/span>/g)?.length, 10, "every signal offers Unknown");
       assert.match(body, /<summary>View rules<\/summary>/);
-      assert.match(body, /\+25/);
+      assert.match(body, /\+20/);
     });
 
     test("the six workflow steps are present on create and edit alike", async () => {
@@ -187,6 +188,7 @@ describe("admin UI structure (HTTP)", { skip: skipReason }, () => {
 
     test("editing a Qualified or Ready to contact prospect explains the status gate", async () => {
       const p = await createProspect(db, readyForm({ businessName: "Gated Auto", website: "https://gated.example.com" }));
+      await addFixtureCollisionEvidence(db, p);
       await post(`/admin/prospects/${p.id}/status`, { status: "qualified" });
       assert.match((await get(`/admin/prospects/${p.id}/edit`)).body, /This prospect is <b>Qualified<\/b>\. A save is refused if/);
       await post(`/admin/prospects/${p.id}/status`, { status: "ready_to_contact" });
@@ -231,7 +233,7 @@ describe("admin UI structure (HTTP)", { skip: skipReason }, () => {
       const p = await createProspect(db, readyForm({ businessName: "Cards Auto", website: "https://cards.example.com" }));
       const body = (await get(`/admin/prospects/${p.id}`)).body;
       assert.match(body, /v-label">Qualification<\/div>/);
-      assert.match(body, /Required criteria: Independent shop and Offers general repair/);
+      assert.match(body, /Required criteria: Verified collision\/body repair/);
       assert.match(body, /v-label">Opportunity score<\/div>/);
       assert.match(body, /Opportunity score · ranking only, not a verdict/);
       assert.match(body, /A high score does not mean the business is qualified\./);
@@ -315,6 +317,7 @@ describe("admin UI structure (HTTP)", { skip: skipReason }, () => {
 
     test("the queue leads with what needs a decision, and each row has one labelled action", async () => {
       await post("/admin/discovery/runs", { provider: "fixture", region: "Ventura County, CA" });
+      await db.discoveryCandidate.updateMany({ where: { externalId: "fx-1001" }, data: { categoryVerdict: "in_target", categorySource: "manual", categoryReason: "Fixture category verified; services still require research." } });
       const body = (await get("/admin/discovery")).body;
       assert.match(body, /<section class="q-tiles" aria-label="What needs attention">/);
       assert.match(body, /<h2 class="q-group-h" id="lane-decision-h">/);
@@ -347,7 +350,7 @@ describe("admin UI structure (HTTP)", { skip: skipReason }, () => {
       const id = /candidates\/([0-9a-f-]{36})/.exec(String(add.headers.location))![1]!;
       await post(`/admin/discovery/candidates/${id}`, readyForm({ businessName: "Approve Me", website: "https://approve.example.com", city: "Ojai", state: "CA", signal_digital_inspections: "unknown", signal_no_online_booking: "unknown" }));
       await post(`/admin/discovery/candidates/${id}/status`, { status: "researching" });
-      for (const signalKey of ["independent_shop", "general_repair_services"]) {
+      for (const signalKey of ["independent_shop", "general_repair_services", "collision_repair_services"]) {
         await post(`/admin/discovery/candidates/${id}/evidence`, { signalKey, sourceUrl: "https://approve.example.com/a", excerpt: "Public page." });
       }
       await post(`/admin/discovery/candidates/${id}/status`, { status: "researched" });

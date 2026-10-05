@@ -1,3 +1,4 @@
+import { addFixtureCollisionEvidence } from "./helpers.js";
 import assert from "node:assert/strict";
 import { after, afterEach, before, beforeEach, describe, test } from "node:test";
 import type { Db } from "../../src/db.js";
@@ -42,6 +43,7 @@ describe("outreach recipients", { skip: skipReason }, () => {
       db,
       readyForm({ businessName: `Recipient ${n} Auto`, website: site, phoneSourceUrl: `${site}/contact`, email: email ?? `service@recipient${n}.example.com`, emailSourceUrl: `${site}/contact` }),
     );
+    await addFixtureCollisionEvidence(db, p);
     await addEvidence(db, p.id, { signalKey: "independent_shop", sourceUrl: `${site}/about`, excerpt: "Family owned." });
     return p;
   };

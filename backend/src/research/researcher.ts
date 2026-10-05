@@ -16,7 +16,7 @@ import { RESEARCH_LIMITS, type PoliteFetcher, type SourceRecord } from "./fetche
 import { parseHtml } from "./html.js";
 
 /** Bumped whenever a rule changes, so runs say which rules produced them. */
-export const RESEARCH_VERSION = "r11";
+export const RESEARCH_VERSION = "r12";
 
 export type ResearchOutcome =
   | "website_verified"
@@ -66,7 +66,7 @@ export interface ResearchResult {
 const ROLE_PATTERNS: [PageRole, RegExp][] = [
   ["contact", /contact|location|directions|find-us|visit/i],
   ["about", /about|who-we-are|our-story|why-us|why-choose/i],
-  ["services", /service|repair|maintenance|what-we-do|brakes|diagnostic/i],
+  ["services", /service|repair|collision|accident|body|dent|paint|structural|insurance|maintenance|what-we-do|brakes|diagnostic/i],
   ["team", /team|staff|technician|meet-us|our-people/i],
 ];
 
@@ -79,7 +79,8 @@ export function pickPages(home: Page, max: number): { url: string; role: PageRol
   const base = new URL(home.url);
   const picked = new Map<string, PageRole>();
   for (const [role, re] of ROLE_PATTERNS) {
-    for (const link of home.parsed.links) {
+    const links = role === "services" ? [...home.parsed.links].sort((a, b) => Number(/collision|body|accident|dent|structural/i.test(b.href + " " + b.text)) - Number(/collision|body|accident|dent|structural/i.test(a.href + " " + a.text))) : home.parsed.links;
+    for (const link of links) {
       if (picked.size >= max) break;
       if (SKIP.test(link.href)) continue;
       let u: URL;
