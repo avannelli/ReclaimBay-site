@@ -22,6 +22,7 @@ const DEV_PROSPECTS = [
     phoneSourceUrl: "https://example.com/smith-auto/contact",
     signal_independent_shop: "yes",
     signal_general_repair_services: "yes",
+    signal_collision_repair_services: "yes",
     signal_digital_inspections: "yes",
   },
   {
@@ -30,6 +31,7 @@ const DEV_PROSPECTS = [
     city: "Riverton",
     state: "WY",
     signal_general_repair_services: "yes",
+    signal_collision_repair_services: "yes",
     signal_website_not_https: "no",
   },
   { businessName: "Valley Motors", city: "Fresno", state: "CA", signal_has_website: "no" },
@@ -45,6 +47,7 @@ const DEV_PROSPECTS = [
     emailSourceUrl: "https://example.com/harbor-lane-auto/contact",
     signal_independent_shop: "yes",
     signal_general_repair_services: "yes",
+    signal_collision_repair_services: "yes",
   },
 ];
 
@@ -53,6 +56,7 @@ const DEV_EVIDENCE: Record<string, { signalKey: string; sourceUrl: string; excer
   "Harbor Lane Auto": [
     { signalKey: "independent_shop", sourceUrl: "https://example.com/harbor-lane-auto/about", excerpt: "Family owned and operated since 1998." },
     { signalKey: "general_repair_services", sourceUrl: "https://example.com/harbor-lane-auto/services", excerpt: "Brakes, engine diagnostics, and general repair." },
+    { signalKey: "collision_repair_services", sourceUrl: "https://example.com/harbor-lane-auto/services", excerpt: "We offer automotive collision repair." },
   ],
 };
 

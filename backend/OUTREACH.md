@@ -5,7 +5,7 @@ what happened to it, and what came of it.
 
 **What ReclaimBay sells in outreach:** recovering revenue from declined and
 deferred repair work at independent repair shops. The first message
-(`intro@t2`) is short and low-pressure: it invites the shop to run its own
+(`intro@t4`) is short and low-pressure: it invites the shop to run its own
 declined-work data through ReclaimBay, with one link, its invitation. It
 never mentions websites, invents figures, claims an analysis of the business,
 or promises results.
@@ -76,7 +76,7 @@ Archived, or Customer **cancels any open message**.
 | Field | Holds |
 | ----- | ----- |
 | `prospectId`, `kind`, `followUpOfId` | The prospect; `initial` or `follow_up`; the message a follow-up answers |
-| `template`, `campaign` | `intro@t2` / `follow-up@t2` (`intro@t1` / `follow-up@t1` before invitations); the campaign (`outreach-intro-t2`) |
+| `template`, `campaign` | `intro@t4` / `follow-up@t2` (`intro@t1` / `follow-up@t1` before invitations); the campaign (`outreach-intro-t4`) |
 | `subject`, `body`, `evidence`, `generatedAt` | The message as generated and reviewed, and the stored facts it relies on |
 | `recipientEmail`, `recipientSourceUrl` | The published business email and where it was found |
 | `senderName`, `senderEmail` | Who it was prepared for |
@@ -154,7 +154,7 @@ A follow-up can be drafted for a sent or delivered message without a reply
 [`src/outreach/compose.ts`](src/outreach/compose.ts) is deterministic: no
 model and no network. Every personal detail comes from a fact the record
 supports: a stored field, or a signal recorded **yes** with evidence. The
-first message (`intro@t2`) uses only the business's name, its city when
+first message (`intro@t4`) uses only the business's name, its city when
 known, and that it is independent when that is evidenced; it never quotes
 excerpts. Its one link is its invitation (see [Invitations](#invitations)).
 Every message ends with the sender's name, an opt-out instruction ("reply 'no

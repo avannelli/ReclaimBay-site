@@ -64,8 +64,10 @@ const outcomeLabel = (o: string | null) => (o && o in OUTCOME_LABELS ? OUTCOME_L
 function researchTag(r: { status: string; outcome: string | null } | undefined): string {
   if (!r) return "";
   const label =
-    r.status === "queued" || r.status === "running"
-      ? "Research running"
+    r.status === "queued"
+      ? "Research queued"
+      : r.status === "running"
+        ? "Research running"
       : r.status === "failed"
         ? "Research failed"
         : `Research: ${outcomeLabel(r.outcome)}`;
@@ -316,13 +318,14 @@ function queueRow(item: QueueItem, view: QueueView): string {
   });
   // Ready to approve: a person approves it because the automatic rule held it. Say why.
   const reason = step.kind === "ready" && item.held ? `Automatic approval held it: ${item.held.replace(/\.$/, "")}.` : why;
-  // Only what adds to the state above: an unusual research outcome, a non-default category tier, a related location.
+  // Recorded research and evidence remain distinct from qualification and ranking.
   const latest = c.research[0];
   const meta = [
     outsideTarget ? `<span>${NOT_SCORED}</span>` : `<span>Opportunity ${result.score}/${MAX_SCORE} <span class="muted">(ranking only)</span></span>`,
-    latest && step.lane !== "research" && latest.status === "completed" && latest.outcome !== "website_verified"
-      ? researchTag(latest).replace('<div class="sub">', "").replace(/<\/div>$/, "")
-      : "",
+    `<a href="/admin/discovery/candidates/${esc(c.id)}#evidence">${c._count.evidence} evidence record${c._count.evidence === 1 ? "" : "s"}</a>`,
+    latest
+      ? `<a class="q-research-link" href="/admin/discovery/candidates/${esc(c.id)}#research">${researchTag(latest).replace('<div class="sub">', "").replace(/<\/div>$/, "")}</a>`
+      : '<span class="muted">Not researched yet</span>',
     c.categoryTier && c.categoryTier !== "core" ? tierTag(c.categoryTier, true).trim() : "",
     c.relatedCandidateId || c.relatedProspectId ? '<span class="tag">Other location shares this website</span>' : "",
     c.status === "approved" ? `<span class="tag">${isAutoApproved(c) ? "Approved automatically" : "Approved by a person"}</span>` : "",
@@ -480,9 +483,9 @@ export function discoveryPage(opts: {
   <div class="actions"><a class="btn btn-secondary" href="#find">Find new businesses</a><a class="btn btn-ghost" href="/admin/discovery/candidates/new">Add candidate</a></div>
 </div>
 ${noticeHtml}${errorSummary(opts.errors, fe, "Not done")}
-${automationSummary(automation)}
-${opts.autoResearch ? autoResearchLine(opts.autoResearch) : ""}
 <section class="q-tiles" aria-label="What needs attention">${(["decision", "ready", "verify", "research"] as const).map(tile).join("")}</section>
+${opts.autoResearch?.stale ? autoResearchLine(opts.autoResearch) : ""}
+<details class="workspace-context"><summary>Automation &amp; research activity</summary>${automationSummary(automation)}${opts.autoResearch && !opts.autoResearch.stale ? autoResearchLine(opts.autoResearch) : ""}<a href="/admin/research">Inspect research runs &rarr;</a></details>
 
 <section class="q-queue" id="candidates" aria-labelledby="queue-h">
   <h2 class="sr-only" id="queue-h">Review queue</h2>
@@ -906,7 +909,7 @@ function decisionCard(d: Detail, research: ResearchView | undefined, values: Val
       "warn",
       "Is this ready to approve?",
       verdict("warn", "⚠", "Verify before approving", "lg"),
-      `<p class="rv-why">${esc(missing)} ${result.unverifiedCriteria.length === 1 ? "hasn't" : "haven't"} been verified. You can still approve it; it enters as New and can't be marked Qualified until both criteria are Yes.</p>`,
+      `<p class="rv-why">${esc(missing)} ${result.unverifiedCriteria.length === 1 ? "hasn't" : "haven't"} been verified. You can still approve it; it enters as New and can't be marked Qualified until the required collision criterion is Yes.</p>`,
       `<a class="btn" href="/admin/discovery/candidates/${id}/edit#sig-${esc(first)}">Verify ${esc(signalLabel(first))}</a>${approve("Approve anyway", "btn-secondary")}${keep}${disregard("Not a business to pursue.")}`,
     );
   }
@@ -1134,6 +1137,7 @@ export function candidateDetailPage(opts: {
 ${decidedNotice}${errorSummary(opts.errors, fe, "Not done")}
 <div class="rv">
 ${identity}
+<nav class="dossier-nav" aria-label="Candidate dossier sections"><a href="#research">Research</a><a href="#category">Category / identity</a><a href="#evidence">Evidence</a><a href="#duplicates">Duplicate review</a><a href="#approval">Approval history</a></nav>
 ${duplicatePanel(detail)}
 <div class="rv-grid">
 ${qualificationCard(detail)}

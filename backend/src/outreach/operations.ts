@@ -56,6 +56,11 @@ export interface MessageFilters {
   /** Activity: invitations whose message was sent only (the funnel's Invitations sent, SENT_INVITATION). */
   sent: boolean;
   page: number;
+  /** Optional read-only search, prospect and UTC date range. */
+  q?: string;
+  prospect?: string;
+  from?: string;
+  to?: string;
 }
 
 const CAMPAIGN_RE = new RegExp(CAMPAIGN_PATTERN);
@@ -65,6 +70,11 @@ const oneOf = <T extends string>(list: readonly T[], v: unknown): T | null => (t
 export function parseMessageFilters(q: Record<string, unknown>): MessageFilters {
   const campaign = typeof q.campaign === "string" && (q.campaign === NO_CAMPAIGN || CAMPAIGN_RE.test(q.campaign)) ? q.campaign : null;
   const page = typeof q.page === "string" && /^\d{1,5}$/.test(q.page) ? Math.max(1, Number(q.page)) : 1;
+  const date = (v: unknown) => typeof v === "string" && /^\d{4}-\d{2}-\d{2}$/.test(v) && !v.startsWith("0000") && Number.isFinite(new Date(`${v}T00:00:00Z`).getTime()) && new Date(`${v}T00:00:00Z`).toISOString().slice(0, 10) === v ? v : undefined;
+  const from = date(q.from), to = date(q.to);
+  const ordered = !from || !to || from <= to;
+  const search = typeof q.q === "string" ? q.q.trim().slice(0, 100) : "";
+  const prospect = typeof q.prospect === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(q.prospect) ? q.prospect : undefined;
   return {
     view: oneOf(MESSAGE_VIEWS, q.view) ?? "messages",
     status: oneOf(OUTREACH_STATUSES, q.status),
@@ -73,11 +83,21 @@ export function parseMessageFilters(q: Record<string, unknown>): MessageFilters 
     activated: q.activated === "1",
     sent: q.sent === "1",
     page,
+    ...(search ? { q: search } : {}),
+    ...(prospect ? { prospect } : {}),
+    ...(ordered && from ? { from } : {}),
+    ...(ordered && to ? { to } : {}),
   };
 }
 
 const campaignWhere = (campaign: string | null) => (campaign === null ? {} : { campaign: campaign === NO_CAMPAIGN ? null : campaign });
 const pageOf = (page: number) => ({ skip: (page - 1) * PAGE_SIZE, take: PAGE_SIZE });
+const dateRange = (f: MessageFilters) => ({ ...(f.from ? { gte: new Date(`${f.from}T00:00:00Z`) } : {}), ...(f.to ? { lt: new Date(new Date(`${f.to}T00:00:00Z`).getTime() + 86_400_000) } : {}) });
+const messageScope = (f: MessageFilters): Prisma.OutreachWhereInput => ({
+  ...(f.kind ? { kind: f.kind } : {}), ...campaignWhere(f.campaign),
+  ...(f.prospect ? { prospectId: f.prospect } : {}),
+  ...(f.q ? { OR: [{ subject: { contains: f.q, mode: "insensitive" } }, { recipientEmail: { contains: f.q, mode: "insensitive" } }, { prospect: { businessName: { contains: f.q, mode: "insensitive" } } }] } : {}),
+});
 
 const MESSAGE_SELECT = {
   id: true,
@@ -129,7 +149,7 @@ async function withActivation(db: Db, rows: MessageRecord[]): Promise<MessageRow
 
 /** Messages, newest change first, filtered and paged in the database. */
 export async function listMessages(db: Db, f: MessageFilters) {
-  const where: Prisma.OutreachWhereInput = { ...(f.status ? { status: f.status } : {}), ...(f.kind ? { kind: f.kind } : {}), ...campaignWhere(f.campaign) };
+  const where: Prisma.OutreachWhereInput = { ...(f.status ? { status: f.status } : {}), ...messageScope(f), ...(f.from || f.to ? { generatedAt: dateRange(f) } : {}) };
   const [total, rows] = await Promise.all([
     db.outreach.count({ where }),
     db.outreach.findMany({ where, orderBy: [{ statusChangedAt: "desc" }, { id: "asc" }], ...pageOf(f.page), select: MESSAGE_SELECT }),
@@ -139,7 +159,7 @@ export async function listMessages(db: Db, f: MessageFilters) {
 
 /** Individual replies, unclassified first. Provider/mailbox identities never leave this read. */
 export async function listReplies(db: Db, f: MessageFilters) {
-  const where: Prisma.OutreachReplyWhereInput = { outreach: { status: "replied", ...(f.kind ? { kind: f.kind } : {}), ...campaignWhere(f.campaign) } };
+  const where: Prisma.OutreachReplyWhereInput = { outreach: { status: "replied", ...messageScope(f) }, ...(f.from || f.to ? { receivedAt: dateRange(f) } : {}) };
   const [total, unclassified, rows] = await Promise.all([
     db.outreachReply.count({ where }),
     db.outreachReply.count({ where: { ...where, outcome: null } }),
@@ -176,7 +196,7 @@ async function invitationActivity(db: Db, f: { campaign: string | null; activate
 }
 
 export interface ActivityRow {
-  prospect: { id: string; businessName: string | null };
+  prospect: { id: string; businessName: string | null; internalTest: boolean; };
   outreach: { id: string; subject: string; status: OutreachStatus; recipientEmail: string };
   campaign: string | null;
   firstOpenedAt: Date | null;

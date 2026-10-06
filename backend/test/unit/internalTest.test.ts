@@ -23,6 +23,7 @@ const mentioning = files(SRC).filter((f) => read(f).includes("internalTest"));
 describe("internal outreach test: one mark, set once, never special-cased", () => {
   test("only these files mention it: creation, the metric exclusions, and labels", () => {
     assert.deepEqual(mentioning.sort(), [
+      "admin/commandCenter.ts", // read-only metric exclusions and activity labels
       "admin/outreachViews.ts", // label
       "admin/prospectViews.ts", // label, the form
       "admin/stats.ts", // excluded from the analytics summary and prospect intent
@@ -31,6 +32,7 @@ describe("internal outreach test: one mark, set once, never special-cased", () =
       "outreach/operations.ts", // selected for the label
       "prospects.ts", // the one creation path
       "routes/admin.ts", // the form's route
+      "routes/adminOutreach.ts", // read-only prospect filter labels
     ]);
   });
 

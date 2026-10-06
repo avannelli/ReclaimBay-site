@@ -1,8 +1,9 @@
 import type { FastifyInstance, FastifyReply } from "fastify";
 import { outreachControlPage, outreachDetailPage, outreachMessagesPage, unsubscribeReviewsPage, type MessagesPageData } from "../admin/outreachViews.js";
+import { sendingVerdict, type ProviderCheckMemo } from "../admin/sendingState.js";
 import type { Config } from "../config.js";
 import type { Db } from "../db.js";
-import { confirmStuckSent, dailyCapacity, readinessErrors, sendingStatus, sendingSwitch, setSendingSwitch, stuckMessages } from "../outreach/dispatch.js";
+import { confirmStuckSent, dailyCapacity, readinessErrors, sendingSwitch, setSendingSwitch, stuckMessages } from "../outreach/dispatch.js";
 import { STATE_COOKIE, authorizationUrl, gmailCredentialsFromConfig, gmailOAuthConfig, newOAuthState } from "../outreach/gmailAuth.js";
 import { invitationForOutreach, revokeInvitationForOutreach } from "../invitations/service.js";
 import { outreachMetrics } from "../outreach/metrics.js";
@@ -13,7 +14,6 @@ import {
   listReplies,
   messageCampaigns,
   parseMessageFilters,
-  queueLooksStale,
   recentActivity,
   waitingQueue,
 } from "../outreach/operations.js";
@@ -84,7 +84,10 @@ function preparedNotice(q: Record<string, string | undefined>): string | undefin
  * No route here sends: queued messages are sent by the dispatcher job
  * (npm run outreach:send), and only while the global switch is on.
  */
-export async function outreachRoutes(app: FastifyInstance, opts: { config: Config; db: Db; sender: OutreachSender; googleFetch?: typeof fetch }) {
+export async function outreachRoutes(
+  app: FastifyInstance,
+  opts: { config: Config; db: Db; sender: OutreachSender; googleFetch?: typeof fetch; providerChecks?: ProviderCheckMemo },
+) {
   const { config, db, sender } = opts;
 
   /** What the admin sees about the Gmail provider: configuration, authorization, and a live check. */
@@ -132,11 +135,19 @@ export async function outreachRoutes(app: FastifyInstance, opts: { config: Confi
     ]);
     const counts = Object.fromEntries(grouped.map((g) => [g.status, g._count._all]));
     const readiness = readinessErrors(config, sender);
-    // What the dispatcher checks, plus the provider's live check (a revoked authorization).
-    const blockers = [...new Set([...readiness, ...(gmail && !gmail.authorized && gmail.problem ? [gmail.problem] : [])])];
-    const status = sendingStatus({ switchOn: sw.enabled, blockers, remaining: capacity.remaining, limit: capacity.limit, queued: counts.queued ?? 0 });
-    // "Sending is ON" (tone pos) is the one state where a long-waiting queue means the sender job isn't running.
-    const stale = queueLooksStale({ sendingLive: status.tone === "pos", switchedAt: sw.at, oldestQueuedAt: queue.oldestQueuedAt, lastSentAt: attention.lastSentAt, now });
+    // The live check's result, remembered so the top bar and Overview can show it without calling Gmail again.
+    if (gmail) opts.providerChecks?.record(gmail.authorized ? null : (gmail.problem ?? "Not authorized."), now);
+    // What the dispatcher checks, plus the provider's live check (a revoked authorization): one combination, shared with the top bar.
+    const { blockers, status, stale } = sendingVerdict({
+      sw,
+      readiness,
+      provider: gmail ? { kind: "live", problem: gmail.authorized ? null : gmail.problem } : { kind: "not_applicable" },
+      capacity,
+      queued: counts.queued ?? 0,
+      oldestQueuedAt: queue.oldestQueuedAt,
+      lastSentAt: attention.lastSentAt,
+      now,
+    });
     const totalMessages = grouped.reduce((n, g) => n + g._count._all, 0);
     const page = outreachControlPage(
       {
@@ -257,11 +268,12 @@ export async function outreachRoutes(app: FastifyInstance, opts: { config: Confi
   app.get<{ Querystring: Record<string, string | undefined> }>("/admin/outreach/messages", async (req, reply) => {
     const q = req.query ?? {};
     const filters = parseMessageFilters(q);
-    const [campaigns, grouped, unclassified, activity] = await Promise.all([
+    const [campaigns, grouped, unclassified, activity, prospects] = await Promise.all([
       messageCampaigns(db),
       db.outreach.groupBy({ by: ["status"], _count: { _all: true } }),
       db.outreachReply.count({ where: { outcome: null, outreach: { status: "replied" } } }),
       db.invitation.count({ where: { firstOpenedAt: { not: null } } }),
+      db.prospect.findMany({ where: { outreach: { some: {} } }, orderBy: [{ businessName: "asc" }, { id: "asc" }], select: { id: true, businessName: true, internalTest: true }, take: 1_000 }),
     ]);
     const statusCounts = Object.fromEntries(grouped.map((g) => [g.status, g._count._all]));
     const messages = grouped.reduce((n, g) => n + g._count._all, 0);
@@ -281,7 +293,7 @@ export async function outreachRoutes(app: FastifyInstance, opts: { config: Confi
               : undefined;
       data = { view: "eligible", filters, campaigns, nav: { ...nav, eligible: eligible.total }, notice, ...eligible };
     } else data = { view: "messages", filters, campaigns, nav, statusCounts, ...(await listMessages(db, filters)) };
-    return html(reply, outreachMessagesPage(data));
+    return html(reply, outreachMessagesPage({ ...data, prospects }));
   });
 
   app.get<{ Params: { id: string }; Querystring: { done?: string } }>("/admin/outreach/:id", async (req, reply) => {

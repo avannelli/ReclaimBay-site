@@ -10,6 +10,19 @@ import { NO_CAMPAIGN, STALE_QUEUE_MS, parseMessageFilters, queueLooksStale } fro
  */
 
 describe("operations view filters", () => {
+  test("search, exact prospect and a valid UTC date range are retained", () => {
+    const f = parseMessageFilters({ q: "  Harbor  ", prospect: "aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa", from: "2026-10-01", to: "2026-10-05" });
+    assert.equal(f.q, "Harbor");
+    assert.equal(f.prospect, "aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa");
+    assert.equal(f.from, "2026-10-01");
+    assert.equal(f.to, "2026-10-05");
+  });
+  test("invalid dates and inverted ranges never reach the database", () => {
+    for (const value of ["2026-02-30", "0000-01-01", "2026-10-01;DROP", "tomorrow"]) assert.equal(parseMessageFilters({ from: value }).from, undefined);
+    assert.equal(parseMessageFilters({ from: "2026-10-05", to: "2026-10-01" }).from, undefined);
+    assert.equal(parseMessageFilters({ prospect: "not-a-prospect" }).prospect, undefined);
+    assert.equal(parseMessageFilters({ q: "x".repeat(200) }).q?.length, 100);
+  });
   test("the defaults: all messages, first page", () => {
     assert.deepEqual(parseMessageFilters({}), { view: "messages", status: null, kind: null, campaign: null, activated: false, sent: false, page: 1 });
   });

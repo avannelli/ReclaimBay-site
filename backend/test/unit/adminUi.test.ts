@@ -148,10 +148,11 @@ describe("stepper and empty states", () => {
     assert.doesNotMatch(stepper(["a", "b"], labels, "zzz"), /aria-current|class="now"/);
   });
 
-  test("empty states are calm text, not illustrations", () => {
+  test("empty states retain readable text and hide the decorative icon from assistive technology", () => {
     const html = emptyState("No prospects yet.", "Add your first prospect.");
     assert.match(html, /<b>No prospects yet\.<\/b>/);
-    assert.doesNotMatch(html, /<img|<svg/);
+    assert.match(html, /class="empty-mark" aria-hidden="true"/);
+    assert.doesNotMatch(html, /<img|<script/);
   });
 
   test("esc escapes the five HTML-significant characters", () => {

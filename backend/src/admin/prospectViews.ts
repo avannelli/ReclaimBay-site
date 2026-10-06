@@ -21,6 +21,7 @@ import {
   type SignalKey,
 } from "../scoring.js";
 import { outreachSection } from "./outreachViews.js";
+import type { prospectListContext } from "./commandCenter.js";
 import { appPage } from "./views.js";
 import {
   bandBadge,
@@ -63,7 +64,7 @@ export function qualificationDetail(result: ScoreResult): string {
     return `${names(result.disqualifiedBy)} observed as “no”. The opportunity score is still shown for reference.`;
   }
   if (result.qualification === "unverified") return `Still unknown: ${names(result.unverifiedCriteria)}.`;
-  return `${esc(criteriaNames)} both observed as “yes”.`;
+  return `${esc(criteriaNames)} observed as “yes”.`;
 }
 
 // ---------- list ----------
@@ -72,10 +73,18 @@ export function prospectListPage(opts: {
   list: ListResult;
   filters: Values;
   statusCounts: Partial<Record<Status, number>>;
+  context?: Awaited<ReturnType<typeof prospectListContext>>;
 }): string {
   const { list, filters: f, statusCounts } = opts;
+  const contexts = new Map((opts.context ?? []).map(x => [x.id, x]));
   const total = Object.values(statusCounts).reduce((n, v) => n + (v ?? 0), 0);
   const anyFilter = Boolean(f.q || f.status || f.qualification || f.band || f.state || f.city);
+  const summary = `<section class="pipeline-summary" aria-label="Current prospect inventory">${[
+    { label: "All prospects", n: total, href: "/admin/prospects", hint: "Current records" },
+    { label: "Ready to contact", n: statusCounts.ready_to_contact ?? 0, href: "/admin/prospects?status=ready_to_contact", hint: "Current lifecycle status" },
+    { label: "Contacted", n: statusCounts.contacted ?? 0, href: "/admin/prospects?status=contacted", hint: "Current lifecycle status" },
+    { label: "Engaged", n: statusCounts.engaged ?? 0, href: "/admin/prospects?status=engaged", hint: "Current lifecycle status" },
+  ].map(s => `<a href="${s.href}"><span>${s.label}</span><b>${s.n}</b><small>${s.hint}</small></a>`).join("")}</section><p class="pipeline-scope">All records, including internal tests. Current states, not historical reach. Search filters apply to the list below.</p>`;
 
   const chips = [
     `<a class="chip" href="/admin/prospects"${!f.status ? ' aria-current="true"' : ""}>All <span class="n">${total}</span></a>`,
@@ -89,15 +98,16 @@ export function prospectListPage(opts: {
     .map(({ prospect: p, result, stale }) => {
       const loc = [p.city, p.state].filter(Boolean).join(", ");
       const contact = [p.phone && '<span class="tag">Phone</span>', p.email && '<span class="tag">Email</span>'].filter(Boolean).join(" ");
+      const ctx = contexts.get(p.id);
+      const collision = p.signals.find(s => s.key === "collision_repair_services")?.value ?? "unknown";
       return `<tr>
-  <td><a class="name" href="/admin/prospects/${esc(p.id)}">${esc(p.businessName ?? "Unnamed prospect")}</a>${p.internalTest ? ` ${INTERNAL_TEST_TAG}` : ""}${p.website ? `<div class="sub">${extLink(p.website)}</div>` : ""}</td>
-  <td class="hide-md" data-label="Location">${loc ? esc(loc) : '<span class="muted">—</span>'}${p.postalCode ? `<div class="sub">${esc(p.postalCode)}</div>` : ""}</td>
+  <td><a class="name" href="/admin/prospects/${esc(p.id)}">${esc(p.businessName ?? "Unnamed prospect")}</a>${p.internalTest ? ` ${INTERNAL_TEST_TAG}` : ""}${p.website ? `<div class="sub">${extLink(p.website)}</div>` : ""}<details class="row-context"><summary>Record details</summary><div>Public contact: ${contact || "None recorded"}</div><div>Updated ${fmtDay(p.updatedAt)}</div></details></td>
+  <td data-label="Location">${loc ? esc(loc) : '<span class="muted">—</span>'}${p.postalCode ? `<div class="sub">${esc(p.postalCode)}</div>` : ""}</td>
   <td data-label="Status">${statusBadge(p.status)}</td>
   <td data-label="Qualification">${qualificationBadge(result.qualification)}</td>
-  <td class="num" data-label="Opportunity score"><span class="score-cell"><b>${result.score}</b><span class="of">/${MAX_SCORE}</span></span>${stale ? `<div class="sub" style="color:var(--warn)">cache stale</div>` : ""}</td>
-  <td class="hide-md" data-label="Band">${bandBadge(result.band)}<div class="sub">${result.known}/${result.total} signals known</div></td>
-  <td class="hide-md" data-label="Public contact">${contact || '<span class="muted" title="No public business contact recorded">—</span>'}</td>
-  <td class="hide-lg small muted" data-label="Updated">${fmtDay(p.updatedAt)}</td>
+  <td data-label="Collision evidence"><a href="/admin/prospects/${esc(p.id)}#evidence">${ctx?.evidence.length ? `${ctx.evidence.length} source record${ctx.evidence.length === 1 ? "" : "s"}` : "No source recorded"}</a><div class="sub">Recorded ${esc(collision === "unknown" ? "Unknown" : collision === "yes" ? "Yes" : "No")}</div></td>
+  <td data-label="Outreach">${ctx?.outreach[0] ? `<span class="tag">${esc(ctx.outreach[0].status.replace(/_/g, " "))}</span><div class="sub">${fmtDay(ctx.outreach[0].statusChangedAt)}</div>` : '<span class="muted">Not contacted</span>'}</td>
+  <td class="num" data-label="Opportunity score"><span class="score-cell"><b>${result.score}</b><span class="of">/${MAX_SCORE}</span></span><div class="sub">${bandBadge(result.band)}</div><div class="sub">${result.known}/${result.total} signals known</div>${stale ? `<div class="sub" style="color:var(--warn)">cache stale</div>` : ""}</td>
 </tr>`;
     })
     .join("\n");
@@ -117,10 +127,12 @@ export function prospectListPage(opts: {
       lede: "The businesses in your pipeline, tracked from first research to customer.",
       actions: `<a class="btn" href="/admin/prospects/new">+ Add prospect</a><a class="btn btn-ghost" href="/admin/prospects/internal-test">Internal outreach test</a>`,
     })}
+${summary}
 <nav class="chips" aria-label="Filter by status">${chips}</nav>
 <form class="card filters" method="get" action="/admin/prospects" role="search" aria-label="Search and filter prospects">
-  <div><label class="sr-only" for="f-q">Search prospects</label>
-  <input class="search" id="f-q" type="search" name="q" value="${esc(f.q)}" placeholder="Search name, website, city, phone, or referral code" maxlength="100"></div>
+  <div class="workspace-search"><label class="sr-only" for="f-q">Search prospects</label>
+  <input class="search" id="f-q" type="search" name="q" value="${esc(f.q)}" placeholder="Search name, website, city, phone, or referral code" maxlength="100"><button type="submit" class="btn-secondary">Search</button></div>
+  <details class="workspace-context"${anyFilter || f.sort ? " open" : ""}><summary>Pipeline filters${anyFilter ? " · in use" : ""}</summary>
   <div class="filter-row">
     <div><label class="lbl" for="f-status">Status</label><select id="f-status" name="status">${options([["", "Any"], ...STATUSES.map((s): [string, string] => [s, STATUS_LABELS[s]])], f.status)}</select></div>
     <div><label class="lbl" for="f-qual">Qualification</label><select id="f-qual" name="qualification">${options([["", "Any"], ...Object.entries(QUALIFICATION_LABELS)], f.qualification)}</select></div>
@@ -129,15 +141,15 @@ export function prospectListPage(opts: {
     <div><label class="lbl" for="f-city">City</label><input id="f-city" type="text" name="city" value="${esc(f.city)}" maxlength="100"></div>
     <div><label class="lbl" for="f-sort">Sort by</label><select id="f-sort" name="sort">${options(Object.entries(SORTS), list.sort)}</select></div>
     <div class="filter-actions"><button type="submit">Apply filters</button><a class="btn btn-secondary" href="/admin/prospects">Reset</a></div>
-  </div>
+  </div></details>
 </form>
 <div class="result-line"><span><b>${esc(shown)}</b>${anyFilter ? " match" : ""}</span>
-  <span><b>Qualification</b> uses only the required criteria (${esc(criteriaNames)}). <b>Opportunity score</b> is a research ranking, not a verdict: High ≥ ${BAND_THRESHOLDS.high}, Medium ≥ ${BAND_THRESHOLDS.medium}.</span></div>
+  <details class="row-context"><summary>Qualification &amp; ranking</summary><p><b>Qualification</b> uses only the required criteria (${esc(criteriaNames)}). <b>Opportunity score</b> is a research ranking, not a verdict: High ≥ ${BAND_THRESHOLDS.high}, Medium ≥ ${BAND_THRESHOLDS.medium}.</p></details></div>
 ${
   list.rows.length
-    ? `<div class="scroll"><table class="tbl cards">
+    ? `<div class="scroll pipeline-table"><table class="tbl cards">
 <caption class="sr-only">Prospects</caption>
-<thead><tr><th scope="col">Prospect</th><th scope="col" class="hide-md">Location</th><th scope="col">Status</th><th scope="col">Qualification<br><span class="muted" style="text-transform:none;letter-spacing:0;font-weight:500">required criteria</span></th><th scope="col" class="num">Opportunity score<br><span class="muted" style="text-transform:none;letter-spacing:0;font-weight:500">research ranking</span></th><th scope="col" class="hide-md">Band</th><th scope="col" class="hide-md">Public contact</th><th scope="col" class="hide-lg">Updated</th></tr></thead>
+<thead><tr><th scope="col">Business</th><th scope="col">Location</th><th scope="col">Lifecycle</th><th scope="col">Qualification<br><span class="column-hint">required criteria</span></th><th scope="col">Collision evidence</th><th scope="col">Outreach</th><th scope="col" class="num">Opportunity score<br><span class="column-hint">research ranking</span></th></tr></thead>
 <tbody>${rows}</tbody>
 </table></div>`
     : `<div class="card">${empty}</div>`
@@ -377,6 +389,7 @@ ${pageHead({
   badges: `${statusBadge(p.status)}${p.internalTest ? INTERNAL_TEST_TAG : ""}${location ? `<span class="muted">${esc(location)}</span>` : ""}<span class="muted small">Status since ${fmtDay(p.statusChangedAt)}</span>`,
   actions: `<a class="btn" href="/admin/prospects/${id}/edit">Edit</a>${allowed.length ? `<a class="btn btn-secondary" href="#status">Change status</a>` : ""}`,
 })}
+<nav class="dossier-nav" aria-label="Business dossier sections"><a href="#business">Business</a><a href="#evidence">Collision evidence</a><a href="#score">Scoring</a><a href="#status">Decisions</a><a href="#outreach">Outreach</a><a href="#notes">Research notes</a><a href="#activity">Engagement</a></nav>
 ${p.internalTest ? `<div class="callout warn" style="margin-bottom:14px"><b>Internal outreach test.</b> Not a business: ReclaimBay's own mailbox. It is sent through every normal check, and its activity is left out of the outreach funnel, the analytics summary, and prospect intent. Its own activity is shown below.</div>` : ""}
 ${stale ? `<div class="callout warn" style="margin-bottom:14px">The saved score (${p.score}, ${esc(p.scoreVersion ?? "never scored")}) differs from the current scoring ${esc(SCORING_VERSION)}. Saving the prospect or running <code>npm run prospects:rescore</code> updates it. The numbers on this page are always current.</div>` : ""}
 

@@ -66,7 +66,7 @@ describe("outreach operations views", { skip: skipReason }, () => {
     return start === -1 ? "" : html.slice(start, html.indexOf("</section>", start));
   };
   /** The table row that names a business (one row per business in these tests). */
-  const rowOf = (html: string, name: string) => html.split("<tr").find((r) => r.includes(`>${name}<`)) ?? "";
+  const rowOf = (html: string, name: string) => [...html.matchAll(/<tr\b[^]*?<\/tr>/g)].map(m => m[0]).find(r => r.includes(`>${name}<`)) ?? "";
   /** The table row of one message. */
   const rowById = (html: string, outreachId: string) => html.split("<tr").find((r) => r.includes(`href="/admin/outreach/${outreachId}"`)) ?? "";
 
@@ -215,8 +215,9 @@ describe("outreach operations views", { skip: skipReason }, () => {
 
     const html = await page("/admin/outreach/messages?view=replies");
     assert.match(html, /Showing 1–2 of 2<\/b> · 1 not yet classified/);
-    assert.ok(html.indexOf("Unclassified Auto") < html.indexOf("Interested Auto"), "the unclassified reply comes first, though it is older");
-    assert.ok(!html.includes("No Reply Auto"), "only messages with a reply");
+    const rows = /<tbody>([^]*?)<\/tbody>/.exec(html)![1]!;
+    assert.ok(rows.indexOf("Unclassified Auto") < rows.indexOf("Interested Auto"), "the unclassified reply comes first, though it is older");
+    assert.ok(!rows.includes("No Reply Auto"), "only messages with a reply");
     assert.match(rowOf(html, "Unclassified Auto"), /<b>Not yet classified<\/b>/);
     assert.match(rowOf(html, "Interested Auto"), new RegExp(REPLY_OUTCOME_LABELS.interested));
     assert.match(html, /Can you call me Tuesday\? &#60;b&#62;bold&#60;\/b&#62;/, "the summary is escaped");

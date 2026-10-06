@@ -310,7 +310,7 @@ describe("discovery work queue", { skip: skipReason }, () => {
   test("the funnel's attention counts come from the same queue", async () => {
     await seedEveryState();
     const q = await reviewQueue(db, {}, "all");
-    const funnel = (await get("/admin")).body;
+    const funnel = (await get("/admin/analytics")).body;
     assert.match(funnel, new RegExp(`href="/admin/discovery\\?view=decision"><b>${q.counts.decision}</b><span>candidates need your decision</span>`));
     assert.match(funnel, /href="\/admin\/discovery\?view=ready"><b>1<\/b><span>candidate ready to approve<\/span>/);
   });

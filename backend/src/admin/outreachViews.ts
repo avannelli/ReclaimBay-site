@@ -63,13 +63,25 @@ function outreachNav(current: "overview" | MessageView, n: { eligible: number | 
   const chip = (key: string, href: string, label: string, count: number | null, attn = false) =>
     `<a class="chip${attn ? " attn" : ""}" href="${esc(href)}"${current === key ? ' aria-current="true"' : ""}>${esc(label)}${count === null ? "" : ` <span class="n">${count}</span>`}</a>`;
   return `<nav class="chips" aria-label="Outreach views">${[
-    chip("overview", "/admin/outreach", "Overview", null),
+    chip("overview", "/admin/outreach", "Sending", null),
     chip("eligible", messagesHref({ view: "eligible" }), "Eligible now", n.eligible),
     chip("messages", messagesHref({}), "Messages", n.messages),
     chip("replies", messagesHref({ view: "replies" }), "Replies to classify", n.unclassified, n.unclassified > 0),
     chip("activity", messagesHref({ view: "activity" }), "Invitation activity", n.activity),
     chip("funnel", "/admin/outreach#funnel", "Funnel by campaign", null),
   ].join("")}</nav>`;
+}
+
+/** Navigation through the existing review workflow, never a progress or permission verdict. */
+function outreachWorkflow(): string {
+  return `<nav class="workflow" aria-label="Outreach workflow"><ol>${[
+    ["Select", "/admin/outreach/messages?view=eligible"],
+    ["Prepare", "/admin/outreach/messages?view=eligible"],
+    ["Review", "/admin/outreach/messages?status=draft"],
+    ["Queue", "/admin/outreach/messages?status=queued"],
+    ["Send", "/admin/outreach"],
+    ["Classify reply", "/admin/outreach/messages?view=replies"],
+  ].map(([label, href], i) => `<li><a href="${esc(href)}"><span>${i + 1}</span>${label}</a></li>`).join("")}</ol><p>Preparation creates drafts. Review and queue each message deliberately; the dispatcher checks sending safety again.</p></nav>`;
 }
 
 /** A message's invitation, in one cell: status, first open, opens, activation. */
@@ -305,13 +317,14 @@ export function outreachDetailPage(opts: { detail: Detail; invitation?: Invitati
 
   return appPage(
     `${o.subject} · ReclaimBay admin`,
-    "outreach",
+    "messages",
     `${crumbs([{ label: "Outreach", href: "/admin/outreach" }, { label: "Messages", href: messagesHref({ status: o.status }) }, { label: o.subject }])}
 ${notice(opts.notice)}${errorSummary(opts.errors, fe, "Not done")}
 ${pageHead({
   title: o.subject,
   badges: `${outreachBadge(o.status)}${o.prospect.internalTest ? INTERNAL_TEST_TAG : ""}<span class="muted small">${esc(OUTREACH_KIND_LABELS[o.kind])}</span><span class="muted small">Prospect: ${statusBadge(o.prospect.status)}</span>`,
 })}
+<nav class="dossier-nav" aria-label="Message workspace sections"><a href="#message">Reviewed email</a><a href="#invitation">Invitation</a><a href="#replies">Individual replies</a><a href="#lifecycle">Timeline</a></nav>
 ${messageState(o)}
 ${o.suppressed ? `<div class="callout warn" style="margin-bottom:14px">${esc(o.recipientEmail)} is suppressed: it will never be emailed again.</div>` : ""}
 
@@ -351,7 +364,7 @@ ${r.outcome ? `<p><b>${esc(REPLY_OUTCOME_LABELS[r.outcome])}</b>${r.classifiedAt
 <div class="card-h" style="margin:0">Classify this reply</div>
 <div class="field"><label for="outcome-${esc(r.id)}">How did they reply?</label><select id="outcome-${esc(r.id)}" name="outcome">${replyOptions(values.replyId === r.id ? values.outcome : undefined)}</select></div>
 <div><button type="submit">Classify</button></div></form>`}
-</div>`).join("")}</div>`) : ""}
+</div>`).join("")}</div>`) : section("replies", "Replies", `<div class="card">${emptyState("No replies recorded.", "Each received reply will appear here as a separate record.")}</div>`)}
 
 ${section("facts", "Evidence used", `<p class="small muted" style="margin:-4px 0 10px">Every personal detail in the message comes from one of these stored facts.</p>${factList}`)}
 
@@ -542,7 +555,7 @@ export function outreachControlPage(d: ControlPageData, opts: { notice?: string;
     <p class="o-status-d">${esc(s.detail)}${providerFix ? ` <a href="#provider">Fix it under Email provider ↓</a>` : ""}</p>
     <p class="small muted" style="margin:0">Switch: ${esc(d.sw.reason)}${d.sw.at ? ` · ${fmtDate(d.sw.at)}` : ""} · Last message sent: ${a.lastSentAt ? fmtDate(a.lastSentAt) : "never"}</p>
   </div>
-  ${action ? `<div class="o-status-act">${action}</div>` : ""}
+  ${action ? `<div class="o-status-act">${d.sw.enabled ? action : `<details class="safety-switch"><summary>Open deliberate sending controls</summary><p>First-five procedure: one reviewed message, empty queue before preparation, at most one attempt per rolling 24 hours. Enabling applies to the whole queue.</p>${action}</details>`}</div>` : ""}
   ${notReady}
 </section>`;
 
@@ -686,12 +699,13 @@ ${
     "Outreach · ReclaimBay admin",
     "outreach",
     `${notice(opts.notice)}${errorSummary(opts.errors, fe, "Not done")}
-${pageHead({ title: "Outreach", lede: "Approved prospects get one personal email each, written from their stored evidence. Nothing is sent unless sending is switched on." })}
-${outreachNav("overview", { eligible: eligibleN, messages: d.totalMessages, unclassified: a.replyCount, activity: d.openedInvitations })}
-<p><a href="/admin/outreach/unsubscribe-reviews">Emailed unsubscribe reviews (${d.unsubscribeReviewCount ?? 0} open)</a> <span class="small muted">Ambiguous requests remain unsuppressed until explicitly resolved.</span></p>
+${pageHead({ title: "Sending", lede: "Sending state, daily capacity and the decisions that keep outreach safe." })}
 ${statusBlock}
 ${tiles}
+<div class="review-link"><a href="/admin/outreach/unsubscribe-reviews">Emailed unsubscribe reviews (${d.unsubscribeReviewCount ?? 0} open)</a> <span class="small muted">Ambiguous requests remain unsuppressed until explicitly resolved.</span></div>
 ${attentionBlock}
+${outreachWorkflow()}
+${outreachNav("overview", { eligible: eligibleN, messages: d.totalMessages, unclassified: a.replyCount, activity: d.openedInvitations })}
 ${prepare}
 ${provider}
 ${details}`,
@@ -703,6 +717,7 @@ ${details}`,
 export type MessagesPageData = {
   filters: MessageFilters;
   campaigns: { campaign: string; count: number }[];
+  prospects?: { id: string; businessName: string | null; internalTest: boolean }[];
   nav: { eligible: number | null; messages: number; unclassified: number; activity: number };
 } & (
   | { view: "messages"; total: number; rows: MessageRow[]; statusCounts: Partial<Record<OutreachStatus, number>> }
@@ -716,7 +731,7 @@ const VIEW_TITLES: Record<MessageView, [string, string]> = {
   messages: ["Messages", "Every outreach message and what happened to it. Open one for its full history and actions."],
   replies: ["Replies", "Messages the business answered. Unclassified replies come first: read each one and record how they answered."],
   activity: ["Invitation activity", "Invitations that were opened, newest activity first. Activated means a visitor who arrived through the link ran a real scan."],
-  eligible: ["Eligible now", "Prospects a first message could be prepared for right now, highest score first. Nothing here prepares or sends anything."],
+  eligible: ["Prepare", "Eligible now, highest opportunity score first. Review the business and its evidence before preparing a draft."],
 };
 
 function filterForm(d: MessagesPageData): string {
@@ -735,12 +750,14 @@ function filterForm(d: MessagesPageData): string {
       ? `<div><label class="lbl" for="f-kind">Kind</label><select id="f-kind" name="kind">${options([["", "Any"], ["initial", OUTREACH_KIND_LABELS.initial], ["follow_up", OUTREACH_KIND_LABELS.follow_up]], f.kind ?? undefined)}</select></div>`
       : `<div><label class="lbl" for="f-activated">Activation</label><select id="f-activated" name="activated">${options([["", "Opened or activated"], ["1", "Activated only"]], f.activated ? "1" : undefined)}</select></div>
 <div><label class="lbl" for="f-sent">Message</label><select id="f-sent" name="sent">${options([["", "Sent or not"], ["1", "Sent only"]], f.sent ? "1" : undefined)}</select></div>`;
-  return `<form class="card filters" method="get" action="/admin/outreach/messages" aria-label="Filter ${esc(VIEW_TITLES[d.view][0].toLowerCase())}">
+  const active = Boolean(f.status || f.kind || f.campaign || f.q || f.prospect || f.from || f.to || f.activated || f.sent);
+  return `<details class="filter-panel"${active ? " open" : ""}><summary>Search &amp; filter ${esc(VIEW_TITLES[d.view][0].toLowerCase())}${active ? " · in use" : ""}</summary><form class="card filters" method="get" action="/admin/outreach/messages" aria-label="Filter ${esc(VIEW_TITLES[d.view][0].toLowerCase())}">
   ${d.view === "messages" ? "" : `<input type="hidden" name="view" value="${esc(d.view)}">`}
   <div class="filter-row">${status}${kind}${campaign}
+    ${d.view === "messages" || d.view === "replies" ? `<div><label class="lbl" for="f-message-q">Business / subject / recipient</label><input id="f-message-q" type="search" name="q" maxlength="100" value="${esc(f.q)}" placeholder="Search stored messages"></div><div><label class="lbl" for="f-prospect-filter">Prospect</label><select id="f-prospect-filter" name="prospect">${options([["", "All businesses"], ...(d.prospects ?? []).map(p => [p.id, `${p.businessName ?? "Unnamed business"}${p.internalTest ? " · Internal test" : ""}`] as [string, string])], f.prospect)}</select></div><div><label class="lbl" for="f-message-from">${d.view === "replies" ? "Received" : "Prepared"} from (UTC)</label><input id="f-message-from" type="date" name="from" value="${esc(f.from)}"></div><div><label class="lbl" for="f-message-to">To date (UTC)</label><input id="f-message-to" type="date" name="to" value="${esc(f.to)}"></div>` : ""}
     <div class="filter-actions"><button type="submit">Apply filters</button><a class="btn btn-secondary" href="${esc(messagesHref({ view: d.view === "messages" ? undefined : d.view }))}">Reset</a></div>
   </div>
-</form>`;
+</form></details>`;
 }
 
 /** "Showing 51–100 of 240", with Previous and Next links that keep the filters. */
@@ -755,6 +772,7 @@ function pager(d: MessagesPageData): string {
     campaign: f.campaign,
     activated: f.activated ? "1" : undefined,
     sent: f.sent ? "1" : undefined,
+    q: f.q, prospect: f.prospect, from: f.from, to: f.to,
   };
   const prev = f.page > 1 ? `<a href="${esc(messagesHref({ ...keep, page: f.page - 1 }))}">← Previous</a>` : "";
   const next = to < d.total ? `<a href="${esc(messagesHref({ ...keep, page: f.page + 1 }))}">Next →</a>` : "";
@@ -770,12 +788,11 @@ const table = (caption: string, head: string[], rows: string[]) =>
 function messagesTable(rows: MessageRow[]): string {
   return table(
     "Outreach messages",
-    ["Message", "Business", "Campaign", "Status", "Queued / sent", "Invitation", "Reply"],
+    ["Business / message", "Campaign", "Status", "Queued / sent", "Invitation", "Reply"],
     rows.map((m) => {
       const reason = statusReason(m);
       return `<tr${m.status === "replied" && !m.replyOutcome ? ' class="attn"' : ""}>
-  <td><a class="name" href="/admin/outreach/${esc(m.id)}">${esc(m.subject)}</a><div class="sub">${esc(OUTREACH_KIND_LABELS[m.kind])} · <code>${esc(m.template)}</code></div></td>
-  <td data-label="Business">${businessCell(m.prospect, m.recipientEmail)}</td>
+  <td>${businessCell(m.prospect, m.recipientEmail)}<a class="message-subject" href="/admin/outreach/${esc(m.id)}">${esc(m.subject)}</a><div class="sub">${esc(OUTREACH_KIND_LABELS[m.kind])} · <code>${esc(m.template)}</code></div></td>
   <td data-label="Campaign">${campaignCell(m.campaign)}</td>
   <td data-label="Status">${outreachBadge(m.status)}${reason ? `<div class="sub">${reason}</div>` : ""}</td>
   <td class="small" data-label="Queued / sent">${m.queuedAt ? `Queued ${fmtDate(m.queuedAt)}` : '<span class="muted">Not queued</span>'}${m.sentAt ? `<div>Sent ${fmtDate(m.sentAt)}</div>` : ""}</td>
@@ -801,21 +818,18 @@ export function unsubscribeReviewsPage(rows: Awaited<ReturnType<typeof listUnsub
 <p>${esc(REVIEW_REASONS[r.reason])}</p><ul>${candidates || "<li>No verified outbound candidates. This review can be dismissed without suppression.</li>"}</ul>
 ${r.resolvedOutreachId ? `<p>Explicitly resolved to <a href="/admin/outreach/${esc(r.resolvedOutreachId)}">the selected outbound message</a>.</p>` : ""}${resolve}${dismiss}</article>`;
   }).join("");
-  return appPage("Emailed unsubscribe reviews · ReclaimBay admin", "outreach", `${pageHead({ title: "Emailed unsubscribe reviews", lede: "Ambiguous requests are kept here without assigning a prospect. Inspect the candidates, then explicitly resolve or dismiss each request." })}<p><a href="/admin/outreach">Back to Outreach</a></p>${notice(result ? decisions[result] : undefined)}${errors.length ? `<div class="card">${errors.map((e) => `<p>${esc(e)}</p>`).join("")}</div>` : ""}<div class="stack">${cards || "<p>No reviews on this page.</p>"}</div><p>${page > 1 ? `<a href="?page=${page - 1}">Previous</a> ` : ""}${rows.length === 100 ? `<a href="?page=${page + 1}">Next</a>` : ""}</p>`);
+  return appPage("Emailed unsubscribe reviews · ReclaimBay admin", "reviews", `${pageHead({ title: "Emailed unsubscribe reviews", lede: "Ambiguous requests stay here for an explicit, verified decision.", actions: '<a class="btn btn-secondary" href="/admin/outreach">Back to Sending</a>' })}<div class="review-guidance">Inspect the candidates before resolving a request. Automatic suppression was not performed for an ambiguous match.</div>${notice(result ? decisions[result] : undefined)}${errors.length ? `<div class="errbox" role="alert">${errors.map((e) => `<p>${esc(e)}</p>`).join("")}</div>` : ""}<div class="stack review-records">${cards || `<section class="card">${emptyState(page === 1 ? "No unresolved unsubscribe requests." : "No reviews on this page.", page === 1 ? "There are currently no review records. Requests that need a human decision will appear here; keep honouring opt-outs promptly." : "Return to the first page to inspect current and previous decisions.", '<a class="btn btn-secondary" href="/admin/outreach/unsubscribe-reviews">Refresh reviews</a>')}</section>`}</div><p class="result-line">${page > 1 ? `<a href="?page=${page - 1}">Previous</a> ` : ""}${rows.length === 100 ? `<a href="?page=${page + 1}">Next</a>` : ""}</p>`);
 }
 
 function repliesTable(rows: ReplyRow[]): string {
   return table(
     "Replies",
-    ["Business", "Campaign", "Message", "Replied", "Classification", "Reply summary"],
+    ["Business / received", "Reply", "Decision"],
     rows.map(
       (m) => `<tr${m.outcome ? "" : ' class="attn"'}>
-  <td>${businessCell(m.outreach.prospect, m.outreach.recipientEmail)}</td>
-  <td data-label="Campaign">${campaignCell(m.outreach.campaign)}</td>
-  <td data-label="Message"><a href="/admin/outreach/${esc(m.outreachId)}">${esc(m.outreach.subject)}</a><div class="sub">${esc(OUTREACH_KIND_LABELS[m.outreach.kind])}</div></td>
-  <td class="small" data-label="Replied"><a href="/admin/outreach/${esc(m.outreachId)}#reply-${esc(m.id)}">${fmtDate(m.receivedAt)}</a></td>
-  <td data-label="Classification">${m.outcome ? esc(REPLY_OUTCOME_LABELS[m.outcome]) : "<b>Not yet classified</b>"}</td>
-  <td class="small" data-label="Reply summary">${m.summary ? safeText(m.summary) : '<span class="muted">No summary recorded</span>'}</td>
+  <td>${businessCell(m.outreach.prospect, m.outreach.recipientEmail)}<div class="sub">${fmtDate(m.receivedAt)}</div>${campaignCell(m.outreach.campaign)}</td>
+  <td data-label="Reply"><a class="message-subject" href="/admin/outreach/${esc(m.outreachId)}">${esc(m.outreach.subject)}</a><div class="reply-excerpt">${m.summary ? safeText(m.summary) : '<span class="muted">No summary recorded</span>'}</div><div class="sub">${esc(OUTREACH_KIND_LABELS[m.outreach.kind])} · Recorded reply summary</div></td>
+  <td data-label="Decision">${m.outcome ? esc(REPLY_OUTCOME_LABELS[m.outcome]) : "<b>Not yet classified</b>"}<div class="reply-action"><a class="btn btn-secondary btn-sm" href="/admin/outreach/${esc(m.outreachId)}#reply-${esc(m.id)}">${m.outcome ? "Review reply" : "Read &amp; classify"}</a></div></td>
 </tr>`,
     ),
   );
@@ -850,20 +864,17 @@ function activityTable(rows: ActivityRow[]): string {
  */
 function eligibleTable(rows: EligibleRow[]): string {
   return `<form method="post" action="/admin/outreach/prepare" aria-label="Prepare drafts for eligible prospects">
-<div class="row" style="margin-bottom:10px"><button type="submit">Prepare drafts for the chosen prospects</button>
+<div class="prepare-toolbar"><div><span class="eyebrow">Deliberate preparation</span><h2>Which prospects are ready to prepare?</h2></div><button type="submit">Prepare drafts for the chosen prospects</button>
 <span class="small muted">Tick the ones to prepare (at most ${PREPARE_LIMIT} at a time). Each is checked again first. Drafts only: nothing is queued or sent. Review each draft, then queue it from its page.</span></div>
 ${table(
     "Eligible prospects",
-    ["Choose", "Prospect", "Location", "Business email", "Qualification", "Opportunity score", "Evidence", "Draft"],
+    ["Choose", "Business", "Contact & evidence", "Readiness", "Draft"],
     rows.map(
       (p) => `<tr>
   <td data-label="Choose"><input type="checkbox" name="p:${esc(p.id)}" value="1" aria-label="Choose ${esc(p.businessName ?? "this prospect")}"></td>
-  <td>${businessCell(p)}</td>
-  <td data-label="Location">${esc([p.city, p.state].filter(Boolean).join(", ")) || '<span class="muted">—</span>'}</td>
-  <td data-label="Business email">${esc(p.email)}${p.emailSourceUrl ? `<div class="src">found at ${extLink(p.emailSourceUrl)}</div>` : ""}</td>
-  <td data-label="Qualification">${qualificationBadge(p.qualification)}</td>
-  <td data-label="Opportunity score"><span class="score-cell"><b>${p.score}</b><span class="of">/${MAX_SCORE}</span></span> ${bandBadge(bandFor(p.score))}</td>
-  <td class="small" data-label="Evidence">${p.evidence} excerpt${p.evidence === 1 ? "" : "s"}<div class="sub">${p.known}/${p.totalSignals} signals known</div></td>
+  <td data-label="Business">${businessCell(p)}<div class="sub">${esc([p.city, p.state].filter(Boolean).join(", ")) || "Location not recorded"}</div></td>
+  <td data-label="Contact &amp; evidence">${esc(p.email)}${p.emailSourceUrl ? `<div class="src">found at ${extLink(p.emailSourceUrl)}</div>` : ""}<a class="evidence-link" href="/admin/prospects/${esc(p.id)}#evidence">${p.evidence} excerpt${p.evidence === 1 ? "" : "s"} · Inspect evidence</a><div class="sub">${p.known}/${p.totalSignals} signals known</div></td>
+  <td data-label="Readiness">${qualificationBadge(p.qualification)}<div class="sub">Opportunity <span class="score-cell"><b>${p.score}</b><span class="of">/${MAX_SCORE}</span></span> ${bandBadge(bandFor(p.score))}</div></td>
   <td data-label="Draft"><button type="submit" class="btn-secondary" formaction="/admin/prospects/${esc(p.id)}/outreach">Prepare draft</button></td>
 </tr>`,
     ),
@@ -908,14 +919,16 @@ export function outreachMessagesPage(d: MessagesPageData): string {
   const [emptyTitle, emptyHint] = EMPTY[d.view];
   return appPage(
     `${title} · Outreach · ReclaimBay admin`,
-    "outreach",
+    d.view === "replies" ? "replies" : d.view === "eligible" ? "prepare" : "messages",
     `${crumbs([{ label: "Outreach", href: "/admin/outreach" }, { label: title }])}
 ${d.view === "eligible" ? notice(d.notice) : ""}
-${pageHead({ title, lede: esc(lede) })}
+${pageHead({ title, lede })}
+${d.view === "eligible" ? outreachWorkflow() : ""}
 ${outreachNav(d.view, d.nav)}
+${d.view === "replies" ? `<div class="inbox-verdict"><b>${d.unclassified} not yet classified</b><span>Read each reply and record the outcome. Honour opt-outs promptly.</span></div>` : ""}
 ${d.view === "messages" ? statusLinks(d) : ""}
 ${filterForm(d)}
 ${pager(d)}
-${body || `<div class="card">${emptyState(emptyTitle, emptyHint)}</div>`}`,
+<div class="records records-${d.view}">${body || `<div class="card">${emptyState(emptyTitle, emptyHint)}</div>`}</div>`,
   );
 }

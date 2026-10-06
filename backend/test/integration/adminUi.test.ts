@@ -49,7 +49,8 @@ describe("admin UI structure (HTTP)", { skip: skipReason }, () => {
   test("every signed-in page has one h1 (the page title), a skip link, one main landmark, and the current nav item", async () => {
     const { prospectId, candId } = await seed();
     const pages: [string, string, string][] = [
-      ["/admin", "Funnel", "Funnel"],
+      ["/admin", "Acquisition Command Center", "Overview"],
+      ["/admin/analytics", "Funnel", "Funnel"],
       ["/admin/prospects", "Prospects", "Prospects"],
       ["/admin/prospects/new", "Add prospect", "Prospects"],
       [`/admin/prospects/${prospectId}`, "Structure Auto", "Prospects"],
@@ -66,7 +67,7 @@ describe("admin UI structure (HTTP)", { skip: skipReason }, () => {
       assert.match(res.body, new RegExp(`<h1>${h1}</h1>`), `${url}: h1 is the page title`);
       assert.match(res.body, /<a class="skip" href="#main">/, url);
       assert.equal(res.body.match(/<main /g)?.length, 1, url);
-      assert.match(res.body, new RegExp(`<a href="[^"]+" aria-current="page">${nav}</a>`), `${url}: ${nav} is current`);
+      assert.match(res.body, new RegExp(`<a href="[^"]+" aria-current="page">[^]*?<span>${nav}</span></a>`), `${url}: ${nav} is current`);
       assert.match(res.body, /<nav class="nav" aria-label="Admin sections">/, url);
       assert.match(res.body, /<form method="post" action="\/admin\/logout"><button/, url);
     }
@@ -74,8 +75,8 @@ describe("admin UI structure (HTTP)", { skip: skipReason }, () => {
 
   test("the nav has Funnel, Prospects, and Discovery, and sign out", async () => {
     const body = (await get("/admin")).body;
-    for (const [href, label] of [["/admin", "Funnel"], ["/admin/prospects", "Prospects"], ["/admin/discovery", "Discovery"]]) {
-      assert.match(body, new RegExp(`<a href="${href}"[^>]*>${label}</a>`));
+    for (const [href, label] of [["/admin", "Overview"], ["/admin/analytics", "Funnel"], ["/admin/prospects", "Prospects"], ["/admin/discovery", "Discovery"]]) {
+      assert.match(body, new RegExp(`<a href="${href}"[^>]*>[^]*?<span>${label}</span></a>`));
     }
     assert.match(body, />Sign out</);
   });
@@ -127,7 +128,7 @@ describe("admin UI structure (HTTP)", { skip: skipReason }, () => {
     await seed();
     const body = (await get("/admin/prospects")).body;
     assert.match(body, /<caption class="sr-only">Prospects<\/caption>/);
-    assert.match(body, /<th scope="col">Prospect<\/th>/);
+    assert.match(body, /<th scope="col">Business<\/th>/);
     assert.match(body, /<table class="tbl cards">/);
     assert.match(body, /data-label="Opportunity score"/);
     assert.match(body, /data-label="Qualification"/);
@@ -261,7 +262,7 @@ describe("admin UI structure (HTTP)", { skip: skipReason }, () => {
       const discovery = (await get("/admin/discovery")).body;
       assert.match(discovery, /No candidates to review\./);
       assert.match(discovery, /No discovery runs yet\./);
-      assert.match((await get("/admin")).body, /No prospect activity yet\./);
+      assert.match((await get("/admin/analytics")).body, /No prospect activity yet\./);
     });
 
     test("filters with no matches say so and offer a way out", async () => {
@@ -284,7 +285,7 @@ describe("admin UI structure (HTTP)", { skip: skipReason }, () => {
     test("the funnel points at what needs attention", async () => {
       await seed();
       await db.discoveryCandidate.updateMany({ data: { status: "needs_review" } });
-      const body = (await get("/admin")).body;
+      const body = (await get("/admin/analytics")).body;
       assert.match(body, /<a class="attn-item" href="\/admin\/discovery\?view=decision"><b>1<\/b><span>candidate needs your decision<\/span>/, "a person's hold, counted by the work queue");
       assert.match(body, /<a class="attn-item zero" href="\/admin\/discovery\?view=ready"><b>0<\/b><span>candidates ready to approve<\/span>/);
       assert.match(body, /<a class="attn-item" href="\/admin\/prospects\?status=new"><b>1<\/b><span>new prospect to research<\/span>/);
@@ -294,7 +295,7 @@ describe("admin UI structure (HTTP)", { skip: skipReason }, () => {
       const p = await createProspect(db, readyForm({ businessName: "Sample Auto", website: "https://sample.example.com" }));
       const session = await db.analyticsSession.create({ data: { anonymousSessionId: randomUUID(), prospectId: p.id } });
       await db.productEvent.create({ data: { sessionId: session.id, prospectId: p.id, eventType: "scan_completed", isSample: true } });
-      const body = (await get("/admin")).body;
+      const body = (await get("/admin/analytics")).body;
       assert.match(body, /Sample activity only/);
       assert.match(body, /\+1 sample/);
       assert.match(body, /data-label="Real scans"><span class="muted">0<\/span>/);

@@ -2,7 +2,7 @@ import { ICON_LINKS } from "../routes/brandIcons.js";
 import { LOGO_FULL_REVERSE, LOGO_LOCKUP_REVERSE } from "./brandArt.js";
 import { STYLE } from "./styles.js";
 import type { ProspectRow, Summary } from "./stats.js";
-import { emptyState, esc, extLink, fmtDate, pageHead, section } from "./ui.js";
+import { emptyState, esc, extLink, fmtDate, funnelBar, icon, kpi, MIN_COMPARE, pageHead, section } from "./ui.js";
 
 export { esc, fmtDate };
 
@@ -20,28 +20,87 @@ ${body}
 </div></body></html>`;
 }
 
-export type AdminSection = "funnel" | "prospects" | "discovery" | "outreach";
+export type AdminSection =
+  | "outreach" // Compatibility for existing callers; belongs to Sending.
+  | "overview"
+  | "discovery"
+  | "prospects"
+  | "sending"
+  | "prepare"
+  | "messages"
+  | "replies"
+  | "reviews"
+  | "funnel"
+  | "campaigns"
+  | "health"
+  | "activity";
 
-const NAV: [AdminSection, string, string][] = [
-  ["funnel", "/admin", "Funnel"],
-  ["prospects", "/admin/prospects", "Prospects"],
-  ["discovery", "/admin/discovery", "Discovery"],
-  ["outreach", "/admin/outreach", "Outreach"],
+/**
+ * The navigation, grouped by what the operator is doing. Research is a step
+ * on Discovery candidates, so its pages belong to Discovery. Nothing that
+ * doesn't exist yet is listed.
+ */
+const NAV: { group: string; links: [AdminSection, string, string][] }[] = [
+  { group: "Command center", links: [["overview", "/admin", "Overview"]] },
+  { group: "Acquisition", links: [["discovery", "/admin/discovery", "Discovery"], ["prospects", "/admin/prospects", "Prospects"]] },
+  {
+    group: "Outreach",
+    links: [
+      ["sending", "/admin/outreach", "Sending"],
+      ["prepare", "/admin/outreach/messages?view=eligible", "Prepare"],
+      ["messages", "/admin/outreach/messages", "Messages"],
+      ["replies", "/admin/outreach/messages?view=replies", "Replies"],
+      ["reviews", "/admin/outreach/unsubscribe-reviews", "Unsubscribe reviews"],
+    ],
+  },
+  { group: "Insights", links: [["funnel", "/admin/analytics", "Funnel"], ["campaigns", "/admin/campaigns", "Campaigns"]] },
+  { group: "System", links: [["health", "/admin/system", "Health"], ["activity", "/admin/activity", "Activity"]] },
 ];
+
+/**
+ * Where the live shell status goes: the sending strip in the top bar and the
+ * counts beside some nav items. Pages render without it; the admin scope's
+ * response hook (routes/admin.ts) fills these in from one loader, or removes
+ * them and says the status is unavailable. Never zeros in its place.
+ */
+export const SHELL_STATUS_SLOT = "<!--rb:status-->";
+export const navCountSlot = (key: AdminSection) => `<!--rb:n:${key}-->`;
+/** The nav items that can carry a count: work waiting on a person. */
+export const NAV_COUNT_KEYS = ["sending", "replies", "reviews"] as const satisfies readonly AdminSection[];
 
 /** The shared shell for every signed-in page: one header, one main landmark. */
 export function appPage(title: string, active: AdminSection, body: string): string {
-  const links = NAV.map(
-    ([key, href, label]) => `<a href="${href}"${key === active ? ' aria-current="page"' : ""}>${label}</a>`,
-  ).join("");
-  return `${head(title)}<body>
+  if (active === "outreach") active = "sending";
+  const label = NAV.flatMap((g) => g.links).find(([key]) => key === active)?.[2] ?? "Workspace";
+  const group = NAV.find((g) => g.links.some(([key]) => key === active))?.group ?? "Workspace";
+  const counted = new Set<AdminSection>(NAV_COUNT_KEYS);
+  const links = (idPrefix: string) =>
+    NAV.map(
+      (g, i) =>
+        `<div class="nav-group" role="group" aria-labelledby="${idPrefix}-g${i}"><span class="nav-label" id="${idPrefix}-g${i}">${esc(g.group)}</span>${g.links
+          .map(
+            ([key, href, text]) =>
+              `<a href="${href}"${key === active ? ' aria-current="page"' : ""}>${icon(key)}<span>${esc(text)}</span>${counted.has(key) ? navCountSlot(key) : ""}</a>`,
+          )
+          .join("")}</div>`,
+    ).join("");
+  return `${head(title)}<body class="aos" data-workspace="${active}">
 <a class="skip" href="#main">Skip to content</a>
-<header class="appbar"><div class="appbar-in">
-  <a class="brand" href="/admin" aria-label="ReclaimBay admin home">${LOGO_LOCKUP_REVERSE}</a>
-  <nav class="nav" aria-label="Admin sections">${links}</nav>
-  <form method="post" action="/admin/logout"><button class="btn-quiet" type="submit">Sign out</button></form>
+<div class="side">
+  <div class="side-brand"><a class="brand" href="/admin" aria-label="ReclaimBay admin home">${LOGO_LOCKUP_REVERSE}</a><p class="side-sub">Acquisition Command Center</p></div>
+  <nav class="nav" aria-label="Admin sections">${links("nav")}</nav>
+  <div class="side-foot"><span class="side-private">Private operator workspace</span><form method="post" action="/admin/logout"><button class="btn-quiet btn-sm" type="submit">Sign out</button></form></div>
+</div>
+<div class="content">
+<header class="top"><div class="top-in">
+  <details class="mobile-nav"><summary>Menu</summary><div class="drawer"><nav class="nav" aria-label="Mobile admin sections">${links("mnav")}</nav><form method="post" action="/admin/logout"><button class="btn-quiet btn-sm" type="submit">Sign out</button></form></div></details>
+  <p class="top-context">${esc(group)}<span class="sep" aria-hidden="true">/</span><b>${esc(label)}</b></p>
+  <form class="global-search" method="get" action="/admin/prospects" role="search" aria-label="Find a business"><label class="sr-only" for="workspace-search">Find a business</label><input id="workspace-search" name="q" type="search" placeholder="Find a business…" maxlength="100"><button type="submit" aria-label="Search businesses">${icon("discovery")}</button></form>
+  ${SHELL_STATUS_SLOT}
 </div></header>
 <main id="main" class="wrap">${body}</main>
+<footer class="foot"><span>ReclaimBay · Acquisition Command Center</span><span>Evidence before action.</span></footer>
+</div>
 </body></html>`;
 }
 
@@ -49,7 +108,7 @@ export function loginPage(error?: string): string {
   return page(
     "Sign in · ReclaimBay admin",
     `<div class="login-card">
-  <h1>Admin sign in</h1>
+  <p class="eyebrow">Acquisition Command Center</p><h1>Admin sign in</h1><p class="lede">Your private workspace for running acquisition, one considered decision at a time.</p>
   <form method="post" action="/admin/login">
     <div class="field">
       <label for="f-secret">Admin secret</label>
@@ -135,11 +194,22 @@ export function dashboardPage({ summary: s, rows, attention, highlightId }: Dash
     ["Real scans completed", String(s.realScanSessions), `${s.realScanEvents} ${s.realScanEvents === 1 ? "scan" : "scans"} · ${s.sampleScanEvents} sample excluded`],
     ["Exports", String(s.realExportSessions), `${s.realExportEvents} real exports`],
     ["Contact clicks", String(s.contactClickSessions), `${s.contactClickEvents} real ${s.contactClickEvents === 1 ? "click" : "clicks"}`],
-    ["Scan conversion", fmtPct(s.scanConversionRate), "visitors with a real scan"],
+    ["Scan conversion", s.uniqueVisitors < MIN_COMPARE ? "Too few to compare" : fmtPct(s.scanConversionRate), "visitors with a real scan"],
   ];
-  const kpis = tiles
-    .map(([label, value, hint]) => `<div class="kpi"><div class="k-label">${esc(label)}</div><div class="k-value">${esc(value)}</div><div class="k-hint">${esc(hint)}</div></div>`)
-    .join("");
+  const kpis = tiles.map(([label, value, hint]) => kpi(label, value, hint)).join("");
+  const journey = `<nav class="journey" aria-label="Acquisition and engagement workspaces">${[
+    ["01", "Discovery & qualification", "Establish evidence", "/admin/discovery"],
+    ["02", "Outreach & replies", "Review recorded outcomes", "/admin/outreach"],
+    ["03", "Product engagement", "Inspect real activity", "#engagement"],
+    ["04", "Prospect activity", "Review intent, then decide", "#activity"],
+  ].map(([n, label, detail, href]) => `<a href="${href}"><span class="eyebrow">${n}</span><strong>${label}</strong><span>${detail}</span></a>`).join("")}</nav>`;
+  const engagement = funnelBar([
+    { label: "Product visitors", n: s.uniqueVisitors, base: null },
+    { label: "Upload started", n: s.uploadSessions, base: s.uniqueVisitors, baseLabel: "visitors" },
+    { label: "Real scan completed", n: s.realScanSessions, base: s.uniqueVisitors, baseLabel: "visitors" },
+    { label: "Report exported", n: s.realExportSessions, base: s.realScanSessions, baseLabel: "scanning sessions" },
+    { label: "Contact clicked", n: s.contactClickSessions, base: s.uniqueVisitors, baseLabel: "visitors" },
+  ], "Observed product sessions");
 
   const hasActivity = rows.some((r) => r.visits + r.uploads + r.scans + r.tours + r.exports + r.contacts + r.sampleEvents > 0 || r.lastActivity);
   const table = hasActivity
@@ -156,10 +226,13 @@ export function dashboardPage({ summary: s, rows, attention, highlightId }: Dash
     "funnel",
     `${pageHead({
       title: "Funnel",
-      lede: "Product usage and prospect activity from referral links. Sample-report activity is kept out of the real numbers.",
+      lede: "Follow recorded progress. Review the evidence behind product engagement.",
     })}
-<section aria-label="Key metrics"><div class="kpis">${kpis}</div></section>
+<div class="funnel-summary"><div><p class="eyebrow">Observed reach &middot; all time</p><p><strong>${s.attributedProspects}</strong> ${s.attributedProspects === 1 ? "prospect has" : "prospects have"} an attributed visit</p><span>${s.uniqueVisitors} anonymous browser ${s.uniqueVisitors === 1 ? "session" : "sessions"}, including direct visitors. Internal tests excluded.</span></div><a href="#activity">Inspect prospect activity &rarr;</a></div>
+<section class="card intelligence" id="engagement" aria-labelledby="engagement-h"><header class="card-head"><div><h2 id="engagement-h">Observed product engagement</h2><p>Distinct sessions at each step &middot; real events exclude samples</p></div><a href="/admin#acquisition-h" class="card-link">Acquisition pipeline &rarr;</a></header>${engagement}<div class="analytics-context"><p>Observed session counts, not a single cohort or a guaranteed sequence. Comparisons require at least ${MIN_COMPARE} observations in the stated denominator.</p><p>High intent is a real scan and export, or a contact click. It is a signal to review, not proof of a customer or revenue.</p></div></section>
 ${attention ? attentionStrip(attention) : ""}
-${section("activity", "Prospect activity", table)}`,
+${section("activity", "Prospect activity", table)}
+<details class="workspace-context metric-details"><summary>All product metrics &amp; event counts</summary><section aria-label="Key metrics"><div class="kpis">${kpis}</div></section></details>
+<details class="workspace-context"><summary>Attribution &amp; acquisition context</summary><p>A referral links recorded activity to a prospect. Direct visits have no referral link. These observations do not establish one journey from discovery to a customer.</p><p>Inspect each workspace for its own recorded evidence.</p>${journey}</details>`,
   );
 }

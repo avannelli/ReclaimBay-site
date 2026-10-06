@@ -21,6 +21,12 @@ import type { OutreachSender } from "../outreach/sender.js";
 import { createOutreachDraft, prospectOutreach } from "../outreach/service.js";
 import { discoveryRoutes } from "./adminDiscovery.js";
 import { outreachRoutes } from "./adminOutreach.js";
+import { commandCenterRoutes } from "./adminCommandCenter.js";
+import { prospectListContext } from "../admin/commandCenter.js";
+import { providerCheckMemo } from "../admin/sendingState.js";
+import { fillShell, loadShellStatus, providedShellStatus, type ShellStatus } from "../admin/shell.js";
+import { SHELL_STATUS_SLOT, appPage, page } from "../admin/views.js";
+import { emptyState } from "../admin/ui.js";
 import {
   ProspectError,
   addEvidence,
@@ -96,6 +102,33 @@ export async function adminRoutes(app: FastifyInstance, opts: { config: Config; 
 
   const isAuthed = (req: FastifyRequest) => verifyToken(secret, readCookie(req.headers.cookie, ADMIN_COOKIE));
 
+  /** The Sending page's last live provider check, for the top bar and Overview (this app instance only). */
+  const providerChecks = providerCheckMemo();
+
+  /*
+   * The shell's live status (the top bar's sending strip and the nav counts),
+   * filled into every signed-in page from one loader. Only for a signed-in
+   * request: an error page can be rendered before the session check (a body
+   * that doesn't parse), and the sending state is not for anyone else.
+   */
+  app.addHook("onSend", async (req, _reply, payload) => {
+    if (typeof payload !== "string" || !payload.includes(SHELL_STATUS_SLOT)) return payload;
+    const now = new Date();
+    let status: ShellStatus | null = null;
+    if (isAuthed(req)) {
+      const supplied = providedShellStatus(req);
+      status = supplied ?? null;
+      if (supplied === undefined) {
+        try {
+          status = await loadShellStatus(db, config, opts.sender, providerChecks, now);
+        } catch (err) {
+          req.log.error({ err }, "admin shell status unavailable");
+        }
+      }
+    }
+    return fillShell(payload, status, now);
+  });
+
   /**
    * Rejects cross-site form posts (defense in depth on top of SameSite=Strict).
    * Compares against this backend's own host (Railway domain or a custom one),
@@ -121,6 +154,25 @@ export async function adminRoutes(app: FastifyInstance, opts: { config: Config; 
     const path = req.routeOptions.url ?? req.url;
     if (PUBLIC_PATHS.has(path)) return;
     if (!isAuthed(req)) return reply.redirect("/admin/login", 303);
+  });
+
+  /*
+   * A failed request gets a page that says so, never a page of zeros. Set
+   * before any route in this scope or its plugins, so all of them use it. The
+   * workspace shell only for a signed-in operator (a body that doesn't parse
+   * fails before the session check).
+   */
+  app.setErrorHandler((err, req, reply) => {
+    req.log.error({ err }, "admin request failed");
+    const code = typeof (err as { statusCode?: number }).statusCode === "number" ? (err as { statusCode: number }).statusCode : 500;
+    const hint =
+      req.method === "GET"
+        ? "Refresh this page or return to Overview. No missing data has been replaced with zeroes."
+        : "Inspect the current record before retrying an action. This page does not confirm that the action succeeded.";
+    const body = isAuthed(req)
+      ? appPage("Workspace unavailable · ReclaimBay", "overview", `<h1>Workspace unavailable</h1><div class="card">${emptyState("This request could not be completed.", hint, '<a class="btn btn-secondary" href="/admin">Return to Overview</a>')}</div>`)
+      : page("Request failed · ReclaimBay", `<div class="login-card"><h1>Request failed</h1><p class="lede">This request could not be completed.</p></div>`);
+    reply.code(code).type("text/html; charset=utf-8").send(body);
   });
 
   // ---------- session ----------
@@ -150,7 +202,7 @@ export async function adminRoutes(app: FastifyInstance, opts: { config: Config; 
 
   // ---------- funnel ----------
 
-  app.get<{ Querystring: { created?: string } }>("/admin", async (req, reply) => {
+  app.get<{ Querystring: { created?: string } }>("/admin/analytics", async (req, reply) => {
     const [summary, rows, prospectStatuses, queue] = await Promise.all([
       loadSummary(db),
       loadProspectRows(db),
@@ -212,7 +264,8 @@ export async function adminRoutes(app: FastifyInstance, opts: { config: Config; 
     ]);
     const statusCounts: Partial<Record<Status, number>> = {};
     for (const g of grouped) statusCounts[g.status] = g._count._all;
-    return html(reply, prospectListPage({ list, filters, statusCounts }));
+    const context = await prospectListContext(db, list.rows.map(r => r.prospect.id));
+    return html(reply, prospectListPage({ list, filters, statusCounts, context }));
   });
 
   app.get("/admin/prospects/new", (_req, reply) => html(reply, prospectFormPage({ mode: "new" }, {})));
@@ -333,7 +386,8 @@ export async function adminRoutes(app: FastifyInstance, opts: { config: Config; 
 
   // Discovery shares this scope's session check, origin check, and headers.
   await app.register(discoveryRoutes, { config, db, research: opts.research });
-  await app.register(outreachRoutes, { config, db, sender: opts.sender, googleFetch: opts.googleFetch });
+  await app.register(outreachRoutes, { config, db, sender: opts.sender, googleFetch: opts.googleFetch, providerChecks });
+  await app.register(commandCenterRoutes, { config, db, sender: opts.sender, providerChecks });
 }
 
 const pick = (body: Form | undefined, keys: string[]): Values =>

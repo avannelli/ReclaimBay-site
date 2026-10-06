@@ -191,7 +191,7 @@ Frontend (Cloudflare Pages build variable, inlined at build time):
 | GET    | `/health`         | `{"ok":true,"database":true}`, or 503 with `false`s if the DB is unreachable |
 | GET    | `/favicon.ico`, `/icon.svg`, `/apple-touch-icon.png` | The admin's browser-tab icon: the site's own `app/` icon files, copied unchanged to `assets/brand/` (a unit test keeps them identical) |
 | POST   | `/api/events`     | Analytics intake. CORS limited to `ALLOWED_ORIGIN`, 120 req/min per IP, 2 KB body limit, `204` on success |
-| GET    | `/admin`          | Funnel dashboard (signed in)                                 |
+| GET    | `/admin`          | ReclaimBay Acquisition Command Center (signed in)            |
 | GET    | `/admin/login`    | Sign-in form                                                 |
 | POST   | `/admin/login`    | Rate limited to 10 attempts per 15 min per IP                |
 | POST   | `/admin/logout`   | Clears the session                                           |

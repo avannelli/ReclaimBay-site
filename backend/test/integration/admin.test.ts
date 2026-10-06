@@ -224,7 +224,7 @@ describe("admin prospect workflow (HTTP)", { skip: skipReason }, () => {
     assert.equal(extra.statusCode, 400, "allowlist still rejects extra fields");
 
     assert.equal(await db.productEvent.count({ where: { prospectId: id } }), 3);
-    const funnel = await get("/admin");
+    const funnel = await get("/admin/analytics");
     assert.match(funnel.body, new RegExp(`href="/admin/prospects/${id}"`));
     assert.match(funnel.body, /class="pill">High/);
     const detail = await get(`/admin/prospects/${id}`);
@@ -243,7 +243,7 @@ describe("admin prospect workflow (HTTP)", { skip: skipReason }, () => {
     assert.equal((await send({ sessionId, ref: referralCode, event: "landing_view", isSample: false })).statusCode, 204);
     // Clicked on the sample report: recorded, never counted as real intent.
     assert.equal((await send({ sessionId, event: "contact_clicked", isSample: true })).statusCode, 204);
-    let funnel = (await get("/admin")).body;
+    let funnel = (await get("/admin/analytics")).body;
     assert.match(funnel, /<div class="k-label">Contact clicks<\/div><div class="k-value">0<\/div><div class="k-hint">0 real clicks<\/div>/);
     assert.match(funnel, /data-label="Contact clicks"><span class="muted">0<\/span><\/td>/);
     assert.doesNotMatch(funnel, /class="pill">High/, "a sample click isn't intent");
@@ -262,7 +262,7 @@ describe("admin prospect workflow (HTTP)", { skip: skipReason }, () => {
     const stored = await db.productEvent.findMany({ where: { eventType: "contact_clicked" }, orderBy: { createdAt: "asc" } });
     assert.deepEqual(stored.map((e) => [e.isSample, e.prospectId, e.exportType]), [[true, id, null], [false, id, null], [false, id, null]]);
 
-    funnel = (await get("/admin")).body;
+    funnel = (await get("/admin/analytics")).body;
     assert.match(funnel, /<div class="k-label">Contact clicks<\/div><div class="k-value">1<\/div><div class="k-hint">2 real clicks<\/div>/, "summary: one browser, two real clicks");
     assert.match(funnel, /data-label="Contact clicks">2<\/td>/, "per prospect");
     assert.match(funnel, /class="pill">High/, "a real contact click is high intent");
