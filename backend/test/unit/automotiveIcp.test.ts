@@ -169,7 +169,7 @@ describe("NEEDS VERIFICATION: evidence doesn't settle it", () => {
       const r = decide("Specialty Auto", text);
       assert.equal(r.analysis.signals.find((s) => s.key === FIT_CRITERION), undefined, text);
       assert.equal(r.fit, "needs_verification", text);
-      assert.match(r.why, /Only maintenance or cosmetic specialty services were found/);
+      assert.match(r.why, /Only maintenance, cosmetic specialty, or RV\/trailer\/boat\/motorcycle services were found/);
     }
   });
 

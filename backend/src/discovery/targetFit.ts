@@ -80,19 +80,29 @@ function verifiedServices(c: FitInput): string[] {
     if (e.signalKey === "collision_repair_services" && yes(c, "collision_repair_services")) out.add("collision/body");
   }
   if (yes(c, "collision_repair_services")) out.add("collision/body");
-  return REPAIR_SERVICES.map(([label]) => label).filter((l) => out.has(l));
+  return [...new Set(REPAIR_SERVICES.map(([label]) => label))].filter((l) => out.has(l));
 }
 
-const NAME_TYPES: [RegExp, BusinessTypeLabel][] = [
-  [/\btest[- ]only\b|\bsmog\b|\bemissions?\b|\binspections?\b/i, "Inspection / Smog"],
+/** Mechanical work a body shop does as part of accident repair: it doesn't make a body shop a hybrid. */
+const COLLISION_ADJACENT = new Set(["general repair", "suspension/steering", "A/C", "cooling system", "electrical"]);
+
+/** A name says "vehicle" only with a vehicle word: "Surfboard Repair" or "Smith Diagnostics" says nothing automotive. */
+const AUTO_WORD = /\b(?:auto(?:s|motive)?|cars?|vehicles?|trucks?|motors?)\b/i;
+const NAME_TYPES: [RegExp, BusinessTypeLabel, RegExp?][] = [
+  // [pattern, label, and a vehicle word the name must also have when the pattern alone isn't automotive]
+  [/\btest[- ]only\b|\bsmog\b|\bemissions?\b/i, "Inspection / Smog"],
+  [/\binspections?\b/i, "Inspection / Smog", AUTO_WORD],
   [/\bdealership\b/i, "Dealership Service"],
   [/\bfleet\b/i, "Fleet Service"],
-  [/\bcollision\b|\bauto ?body\b|\bbody ?shop\b|\bbody (?:and|&) paint\b|\bpaint (?:and|&) body\b/i, "Collision / Body Repair"],
-  [/\btransmissions?\b|\bdrive ?(?:train|line)\b|\bclutch\b/i, "Transmission / Drivetrain"],
+  [/\bcollision\b|\bauto ?body\b|\bbody (?:and|&) paint\b|\bpaint (?:and|&) body\b/i, "Collision / Body Repair"],
+  [/\bbody ?shop\b/i, "Collision / Body Repair", AUTO_WORD],
+  [/\btransmissions?\b|\bdrive ?(?:train|line)\b/i, "Transmission / Drivetrain"],
   [/\bdiesel\b/i, "Diesel"],
-  [/\bauto(?:motive)? electric\w*|\bdiagnostics?\b/i, "Automotive Electrical / Diagnostic"],
-  [/\bbrakes?\b|\bmufflers?\b|\bexhaust\b|\bradiators?\b|\bengines?\b/i, "Mechanical Specialty"],
-  [/\brepairs?\b|\bmechanics?\b|\bmechanical\b|\b(?:auto|car) ?care\b|\btaller\b/i, "General Automotive Repair"],
+  [/\bauto(?:motive)? electric\w*|\b(?:auto(?:motive)?|car|vehicle|engine)\s+diagnostics?\b/i, "Automotive Electrical / Diagnostic"],
+  [/\bbrakes?\b|\bmufflers?\b|\bradiators?\b/i, "Mechanical Specialty"],
+  [/\bexhaust\b|\bengines?\b/i, "Mechanical Specialty", AUTO_WORD],
+  [/\bmechanics?\b|\bmechanical\b|\b(?:auto|car) ?care\b|\btaller\b/i, "General Automotive Repair"],
+  [/\brepairs?\b/i, "General Automotive Repair", AUTO_WORD],
   [/\boil change\b|\blube\b|\btune[- ]?ups?\b/i, "Oil Change / Maintenance"],
   [/\btires?\b|\btyres?\b|\bwheels?\b/i, "Tire Service"],
   [/\bglass\b|\bwindshields?\b/i, "Glass"],
@@ -124,7 +134,8 @@ const PROVIDER_TYPES: Record<string, BusinessTypeLabel> = {
 /** What the business does: from sourced repair evidence when there is some, otherwise a lead from its name or provider category. */
 export function businessTypeOf(c: FitInput): BusinessType {
   const services = verifiedServices(c);
-  const dealer = c.evidence.some((e) => e.signalKey === "independent_shop" && /^Dealership\b/.test(e.excerpt ?? ""));
+  // Research's dealership evidence (independent shop: No) labels a vehicle dealer; never a business outside the target.
+  const dealer = c.categoryVerdict !== "wrong_category" && c.evidence.some((e) => e.signalKey === "independent_shop" && /^Dealership\b/.test(e.excerpt ?? ""));
   if (services.length) {
     const collision = services.includes("collision/body");
     const mechanical = services.filter((s) => MECHANICAL.has(s));
@@ -133,7 +144,7 @@ export function businessTypeOf(c: FitInput): BusinessType {
       ? "Dealership Service"
       : /\bfleet\b/i.test(c.businessName)
         ? "Fleet Service"
-        : collision && mechanical.length
+        : collision && mechanical.some((s) => !COLLISION_ADJACENT.has(s))
           ? "Hybrid / Multi-Service"
           : collision
             ? "Collision / Body Repair"
@@ -153,7 +164,7 @@ export function businessTypeOf(c: FitInput): BusinessType {
     return { label, from: "evidence", services };
   }
   if (dealer) return { label: "Dealership Service", from: "evidence", services: [] };
-  const byName = NAME_TYPES.find(([re]) => re.test(c.businessName));
+  const byName = NAME_TYPES.find(([re, , needs]) => re.test(c.businessName) && (!needs || needs.test(c.businessName)));
   if (byName) return { label: byName[1], from: "name", services: [] };
   const byProvider = c.providerCategory ? PROVIDER_TYPES[c.providerCategory.trim().toLowerCase()] : undefined;
   if (byProvider) return { label: byProvider, from: "provider", services: [] };

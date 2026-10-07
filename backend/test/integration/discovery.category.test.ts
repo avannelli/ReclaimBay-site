@@ -116,7 +116,7 @@ describe("category check (service)", { skip: skipReason }, () => {
     assert.equal(c.categoryVerdict, "unclear", "names require service evidence");
     const [q] = (await enqueueResearch(db, [c.id], "admin")).queued;
     const run = (await processResearch(db, q!.researchId, { makeFetcher: popsWeb().makeFetcher, today: TODAY }))!;
-    assert.equal(run.version, "r13");
+    assert.equal(run.version, "r14");
     const after = await db.discoveryCandidate.findUniqueOrThrow({ where: { id: c.id } });
     assert.deepEqual([after.categoryVerdict, after.categorySource, after.categorySourceUrl], ["wrong_category", "website", POPS_SITE]);
     assert.match(after.categoryReason!, /^Website describes shoe repair, boot repair, vacuum repair, lamp repair and sharpening; no automotive repair services or vocabulary/);

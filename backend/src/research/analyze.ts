@@ -693,7 +693,7 @@ export function analyze(subject: Subject, pages: Page[], secureHttps: boolean | 
   const otherTrade = nameOutsideTerms(subject.businessName);
   const verifyWhy =
     repair.status === "possible"
-      ? "Only maintenance or cosmetic specialty services were found"
+      ? "Only maintenance, cosmetic specialty, or RV/trailer/boat/motorcycle services were found"
       : repair.status !== "primary"
         ? null
         : dealerText || /\bdealership\b/i.test(subject.businessName)
