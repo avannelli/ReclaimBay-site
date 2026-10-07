@@ -5,7 +5,7 @@
  * parseProspectInput() in prospects.ts.
  */
 import { parseProspectInput, signalFieldName, type ProspectInput } from "../prospects.js";
-import { SIGNAL_KEYS, isSignalKey, scoreProspect, type ScoreResult, type ScoringInput, type StoredSignalValue } from "../scoring.js";
+import { FIT_SIGNALS, SIGNAL_KEYS, isSignalKey, scoreProspect, type ScoreResult, type ScoringInput, type StoredSignalValue } from "../scoring.js";
 import { researchedErrors } from "./candidateStatus.js";
 
 /** The candidate fields scoring and approval read. */
@@ -54,7 +54,12 @@ export function researchGateErrors(
   evidence: readonly { signalKey: string; sourceUrl?: string; excerpt?: string }[],
 ): string[] {
   const errors = researchedErrors({ unevidencedSignals: unevidencedSignals(signals, evidence), evidenceCount: evidence.length });
-  if (signals.some(s => s.key === "collision_repair_services") && !evidence.some(e => e.signalKey === "collision_repair_services" && e.sourceUrl?.trim() && e.excerpt?.trim())) errors.push("Collision/body fit needs a public source URL and supporting excerpt.");
+  // Product-fit signals (automotive repair, and collision/body as one segment of it) need their own quoted source.
+  for (const key of FIT_SIGNALS) {
+    if (signals.some(s => s.key === key) && !evidence.some(e => e.signalKey === key && e.sourceUrl?.trim() && e.excerpt?.trim())) {
+      errors.push(`${key === "collision_repair_services" ? "Collision/body fit" : "Automotive repair fit"} needs a public source URL and supporting excerpt.`);
+    }
+  }
   return errors;
 }
 

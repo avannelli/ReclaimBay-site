@@ -22,6 +22,7 @@
  */
 
 import { collisionEvidenceErrors, collisionFit } from "../research/collisionFit.js";
+import { repairEvidenceErrors } from "../research/repairFit.js";
 
 export const INTRO_TEMPLATE = "intro@t4";
 /** A follow-up that reuses its first message's invitation link. */
@@ -190,6 +191,22 @@ function collisionObservation(input: ComposeInput): { observation: string; fact:
   }
 }
 
+/**
+ * A business qualified by automotive repair rather than collision/body
+ * evidence can't be told "you handle collision and body repair": its opening
+ * says only what its verified repair evidence supports.
+ */
+function repairObservation(input: ComposeInput): { observation: string; fact?: OutreachFact } | undefined {
+  if (input.internalTest || input.signals.some(s => s.key === "collision_repair_services" && s.value === "yes")) return;
+  if (!input.signals.some(s => s.key === "automotive_repair_services" && s.value === "yes")) return;
+  // The fact is recorded only when its stored evidence passes the same check Qualified requires.
+  const evidence = repairEvidenceErrors(input, input.evidence).length ? undefined : input.evidence.find(e => e.signalKey === "automotive_repair_services");
+  return {
+    observation: "you handle automotive repair",
+    fact: evidence && { key: "automotive_repair_services", statement: "It performs automotive repair.", signalKey: "automotive_repair_services", sourceUrl: evidence.sourceUrl, excerpt: evidence.excerpt },
+  };
+}
+
 /** The first message uses the approved collision-shop opening unless a verified service supports one observation. */
 export function composeIntro(input: ComposeInput): ComposedMessage {
   const facts = new Map(outreachFacts(input).map((f) => [f.key, f]));
@@ -203,8 +220,8 @@ export function composeIntro(input: ComposeInput): ComposedMessage {
   use("internal_test");
   use("business_name");
   use("recipient");
-  const verified = collisionObservation(input);
-  if (verified) used.push(verified.fact);
+  const verified = collisionObservation(input) ?? repairObservation(input);
+  if (verified?.fact) used.push(verified.fact);
 
   const body = [
     `Hi ${name} team,`,

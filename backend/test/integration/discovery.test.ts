@@ -465,15 +465,15 @@ describe("discovery service", { skip: skipReason }, () => {
       assert.deepEqual(await ids({ q: "harbor" }), ["fx-2002", "fx-2001"]);
       assert.deepEqual((await ids({ state: "ca", city: "camarillo" })), ["fx-3001"]);
       assert.deepEqual((await ids({ provider: "manual" })), []);
-      assert.equal((await listCandidates(db, { qualification: "unverified" })).total, 5, "nothing researched yet; the tire-only category is excluded");
+      assert.equal((await listCandidates(db, { qualification: "unverified" })).total, 6, "nothing researched yet; a brake and tire name is a lead, not an exclusion");
       assert.equal((await listCandidates(db, { qualification: "meets_criteria" })).total, 0);
-      assert.equal((await listCandidates(db, { band: "low" })).total, 5);
+      assert.equal((await listCandidates(db, { band: "low" })).total, 6);
       assert.equal((await listCandidates(db, { status: "nonsense", band: "nonsense", sort: "nonsense" })).total, 6);
 
       const c = await candidateByExternalId("fx-4001");
       await updateCandidate(db, c.id, form({ businessName: "Simi Valley Motor Works", website: "", phone: "", phoneSourceUrl: "", signal_no_online_booking: "unknown", signal_digital_inspections: "unknown" }));
       assert.deepEqual(await ids({ qualification: "meets_criteria" }), ["fx-4001"]);
-      assert.equal((await listCandidates(db, { qualification: "unverified" })).total, 4);
+      assert.equal((await listCandidates(db, { qualification: "unverified" })).total, 5);
       assert.deepEqual(await ids({ band: "medium" }), ["fx-4001"], "45 points");
       assert.equal((await ids({ sort: "score" }))[0], "fx-4001");
       assert.deepEqual((await ids({ sort: "name" }))[0], "fx-3001");
@@ -558,7 +558,7 @@ describe("discovery service", { skip: skipReason }, () => {
     });
 
     test("a disqualified candidate can be approved into the pipeline but can never be qualified", async () => {
-      const r = await researchedCandidate({ businessName: "Chain Store", website: "https://chain.example.com", city: "Ventura", state: "CA", signal_collision_repair_services: "no" });
+      const r = await researchedCandidate({ businessName: "Chain Store", website: "https://chain.example.com", city: "Ventura", state: "CA", signal_collision_repair_services: "no", signal_automotive_repair_services: "no" });
       const { prospect } = await approveCandidate(db, r.id);
       assert.equal(prospect.status, "new");
       await rejects(changeStatus(db, prospect.id, "qualified", null), /Disqualified/);

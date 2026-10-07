@@ -156,7 +156,10 @@ model and no network. Every personal detail comes from a fact the record
 supports: a stored field, or a signal recorded **yes** with evidence. The
 first message (`intro@t4`) uses only the business's name, its city when
 known, and that it is independent when that is evidenced; it never quotes
-excerpts. Its one link is its invitation (see [Invitations](#invitations)).
+excerpts. Its opening names one verified collision/body service when the
+evidence supports it (otherwise the approved "you handle collision and body
+repair"); a business qualified by automotive repair without collision/body
+Yes is never told that, and its opening says "you handle automotive repair". Its one link is its invitation (see [Invitations](#invitations)).
 Every message ends with the sender's name, an opt-out instruction ("reply 'no
 thanks'"), and the sender's postal address.
 
@@ -793,7 +796,7 @@ never stands in for one.
   evidence. There is one: creating it is refused while any record uses the
   mailbox. No business may use that mailbox or name.
 - **No business qualification.** It claims to be no business, so business
-  qualification (Meets criteria, sourced collision/body evidence) doesn't
+  qualification (Meets criteria, sourced automotive repair evidence) doesn't
   apply. Instead, Qualified and Ready to contact require its exact identity,
   checked by the same status rules at drafting, queueing, and sending; a
   record marked internal that doesn't match it (an earlier internal test made

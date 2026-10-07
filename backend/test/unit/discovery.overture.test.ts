@@ -91,11 +91,12 @@ describe("Overture releases", () => {
 describe("Overture categories → tiers (a discovery filter only)", () => {
   const tax = (primary: string, hierarchy = [...AUTO, primary], alternates: string[] | null = null) => ({ primary, hierarchy, alternates });
 
-  test("mechanical repair is adjacent; body repair is core", () => {
+  test("mechanical, specialist, and body repair are all core", () => {
     for (const c of ["automotive_repair", "transmission_repair", "brake_service_and_repair", "engine_repair_service", "exhaust_and_muffler_repair", "auto_electrical_repair"]) {
       const h = c === "automotive_repair" ? [...AUTO, c] : [...AUTO, "automotive_repair", c];
-      assert.deepEqual(overtureTier(tax(c, h)), { tier: "adjacent", category: c }, c);
+      assert.deepEqual(overtureTier(tax(c, h)), { tier: "core", category: c }, c);
     }
+    assert.deepEqual(overtureTier(tax("auto_body_shop")), { tier: "core", category: "auto_body_shop" });
   });
 
   test("related automotive services are adjacent", () => {
@@ -148,7 +149,7 @@ describe("mapping an Overture place", () => {
       latitude: 34.1468,
       longitude: -119.1773,
       category: "automotive_repair",
-      categoryTier: "adjacent",
+      categoryTier: "core",
       brand: null,
       confidence: 0.92,
       operatingStatus: "open",
@@ -316,7 +317,7 @@ describe("the Overture importer", () => {
     assert.equal(stats["excluded:car_wash"], 1);
     assert.equal(stats.outside_area, 1);
     assert.equal(stats.malformed, 1);
-    assert.equal(stats["tier:adjacent"], 2);
+    assert.equal(stats["tier:core"], 2);
     assert.match(String(stats.source), /^s3:\/\/overturemaps-us-west-2\/release\/2026-09-23\.1\/theme=places\/type=place\/$/);
     assert.match(String(stats.boundary), /TIGERweb county 06111/);
   });

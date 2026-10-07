@@ -27,6 +27,7 @@ import { prepareEligibleOutreach } from "../outreach/prepare.js";
 import type { OutreachSender } from "../outreach/sender.js";
 import type { Status } from "../prospectStatus.js";
 import { automaticResearchStatus } from "../research/service.js";
+import { FIT_SIGNALS } from "../scoring.js";
 import { loadSummary } from "./stats.js";
 import {
   loadSendingFacts,
@@ -600,5 +601,5 @@ export async function campaignWorkspace(db: Db) {
 /** List presentation data only; eligibility continues to be decided by the existing services. */
 export async function prospectListContext(db: Db, ids: string[]) {
   if (!ids.length) return [];
-  return db.prospect.findMany({ where: { id: { in: ids } }, select: { id: true, evidence: { where: { signalKey: "collision_repair_services" }, select: { sourceUrl: true } }, outreach: { orderBy: { statusChangedAt: "desc" }, take: 1, select: { status: true, statusChangedAt: true } } } });
+  return db.prospect.findMany({ where: { id: { in: ids } }, select: { id: true, evidence: { where: { signalKey: { in: [...FIT_SIGNALS] } }, select: { sourceUrl: true } }, outreach: { orderBy: { statusChangedAt: "desc" }, take: 1, select: { status: true, statusChangedAt: true } } } });
 }

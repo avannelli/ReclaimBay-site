@@ -32,7 +32,7 @@ export const LANE_LABELS: Record<Lane, string> = {
 
 export const LANE_HINTS: Record<Lane, string> = {
   decision: "A person has to decide before anything else can happen.",
-  ready: "Research is complete and collision/body product fit is confirmed.",
+  ready: "Research is complete and automotive repair fit is confirmed.",
   verify: "Research ran, but a required criterion is still unknown.",
   research: "Research hasn't run, is running, or found too little to go on.",
   handled: "Approved, disregarded, or closed as a duplicate.",
@@ -168,7 +168,7 @@ export function stepReason(
     case "on_hold":
       return "A person put this on hold to look at again.";
     case "ready":
-      return "Collision/body product fit is confirmed with evidence.";
+      return "Automotive repair fit is confirmed with evidence.";
     case "unverified":
       return `${names(c.unverifiedCriteria)} ${c.unverifiedCriteria.length === 1 ? "hasn't" : "haven't"} been verified yet.`;
     case "research_running":

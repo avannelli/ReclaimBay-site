@@ -52,7 +52,7 @@ export const STATUS_LABELS: Record<Status, string> = {
 
 export const STATUS_MEANINGS: Record<Status, string> = {
   new: "Added, not yet researched.",
-  qualified: "Verified collision/body product fit (Qualification: Meets criteria).",
+  qualified: "Verified automotive repair fit (Qualification: Meets criteria).",
   ready_to_contact: "Qualified, and has a public business phone or email with the URL where it was found.",
   contacted: "Reached out to at least once.",
   engaged: "Replied, visited through their referral link, or is otherwise in conversation.",

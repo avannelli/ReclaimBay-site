@@ -1,6 +1,6 @@
 import type { Db } from "../db.js";
 import type { Prisma } from "../generated/prisma/client.js";
-import { hasCollisionResearchConflict } from "../research/collisionFit.js";
+import { fitBasis, fitConflict } from "../research/repairFit.js";
 import {
   ProspectError,
   generateReferralCode,
@@ -89,7 +89,7 @@ const frozenError = () =>
 /** Upper bound on records accepted from one synchronous provider call. */
 export const MAX_RESULTS_PER_RUN = 200;
 const PROVIDER_TIMEOUT_MS = 30_000;
-export const DEFAULT_BUSINESS_TYPE = "Auto body and collision repair";
+export const DEFAULT_BUSINESS_TYPE = "Automotive repair";
 /** Tiers a run uses when none are chosen. */
 export const DEFAULT_TIERS: readonly CategoryTier[] = ["core"];
 
@@ -991,7 +991,8 @@ export async function approveCandidate(db: Db, id: string, opts: { automatic?: b
     errors.push(...researchGateErrors(c.signals, c.evidence));
     errors.push(...categoryApprovalErrors(c));
     const lastResearch = await tx.candidateResearch.findFirst({ where: { candidateId: c.id, status: "completed" }, orderBy: { queuedAt: "desc" }, select: { warnings: true } });
-    if (hasCollisionResearchConflict(lastResearch?.warnings)) errors.push("Resolve contradictory collision/body evidence before approving this business.");
+    const conflict = fitConflict(lastResearch?.warnings, fitBasis(c.signals));
+    if (conflict) errors.push(`Resolve contradictory ${conflict} evidence before approving this business.`);
     const { input, errors: inputErrors } = candidateToProspectInput(c);
     errors.push(...inputErrors);
 

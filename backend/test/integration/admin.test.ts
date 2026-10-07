@@ -113,10 +113,10 @@ describe("admin prospect workflow (HTTP)", { skip: skipReason }, () => {
   });
 
   test("a disqualified prospect keeps its score, and the page shows both separately", async () => {
-    const id = await createViaHttp(readyForm({ businessName: "Midas Downtown", signal_collision_repair_services: "no", signal_multiple_bays_or_staff: "yes" }));
+    const id = await createViaHttp(readyForm({ businessName: "Midas Downtown", signal_collision_repair_services: "no", signal_automotive_repair_services: "no", signal_multiple_bays_or_staff: "yes" }));
     const detail = (await get(`/admin/prospects/${id}`)).body;
     assert.match(detail, /class="st q-disqualified q-big">Disqualified/);
-    assert.match(detail, /Verified collision\/body repair observed as “no”/);
+    assert.match(detail, /Verified automotive repair observed as “no”/);
     assert.match(detail, />65<\/span><span class="muted">\/100<\/span> <span class="pill band-high">High/);
     const list = (await get("/admin/prospects?qualification=disqualified")).body;
     assert.match(list, /Midas Downtown/);

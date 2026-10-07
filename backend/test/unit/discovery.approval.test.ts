@@ -45,16 +45,18 @@ describe("scoring reuse", () => {
     assert.equal(scoreCandidate(facts()).qualification, "meets_criteria");
     assert.equal(scoreCandidate(facts({ signals: [{ key: "independent_shop", value: "yes" }] })).qualification, "unverified");
     assert.equal(scoreCandidate(facts({ signals: [] })).qualification, "unverified");
-    const dq = scoreCandidate(facts({ signals: [{ key: "collision_repair_services", value: "no" }, { key: "general_repair_services", value: "yes" }] }));
+    const dq = scoreCandidate(facts({ signals: [{ key: "automotive_repair_services", value: "no" }, { key: "general_repair_services", value: "yes" }] }));
     assert.equal(dq.qualification, "disqualified");
-    assert.deepEqual(dq.disqualifiedBy, ["collision_repair_services"]);
+    assert.deepEqual(dq.disqualifiedBy, ["automotive_repair_services"]);
+    // Collision/body is a segment: its No never disqualifies.
+    assert.equal(scoreCandidate(facts({ signals: [{ key: "collision_repair_services", value: "no" }] })).qualification, "unverified");
   });
 
   test("score and qualification stay independent for candidates too", () => {
     const dq = scoreCandidate(
       facts({
         signals: [
-          { key: "collision_repair_services", value: "no" },
+          { key: "automotive_repair_services", value: "no" },
           { key: "general_repair_services", value: "yes" },
           { key: "multiple_bays_or_staff", value: "yes" },
         ],
@@ -68,7 +70,7 @@ describe("scoring reuse", () => {
   test("discovery confidence can't become qualification: a bare discovered record is Unverified", () => {
     const r = scoreCandidate(facts({ signals: [], phone: null, phoneSourceUrl: null }));
     assert.equal(r.qualification, "unverified");
-    assert.deepEqual(r.unverifiedCriteria, ["collision_repair_services"]);
+    assert.deepEqual(r.unverifiedCriteria, ["automotive_repair_services"]);
   });
 
   test("there is no second scoring implementation in the discovery code", async () => {

@@ -5,10 +5,11 @@ import { OUTREACH_CLOSED } from "./outreach/lifecycle.js";
 import { cancelOpenOutreach, lockSendGate, suppressEmail } from "./outreach/records.js";
 import { INTERNAL_TEST_IDENTITY, internalTestIdentity, isInternalTestEmail, isInternalTestName } from "./internalTest.js";
 import { STATUS_LABELS, isStatus, statusRequirementErrors, transitionErrors, type Status } from "./prospectStatus.js";
-import { collisionEvidenceErrors, hasCollisionResearchConflict } from "./research/collisionFit.js";
+import { fitBasis, fitConflict, fitEvidenceErrors } from "./research/repairFit.js";
 import {
   BAND_THRESHOLDS,
   REQUIRED_CRITERIA,
+  establishedBy,
   SCORING_VERSION,
   SIGNAL_KEYS,
   hasPublicContact,
@@ -248,9 +249,12 @@ async function statusEvidenceErrors(
   evidence: readonly { signalKey: string; sourceUrl: string; excerpt: string }[],
 ): Promise<string[]> {
   if ((status !== "qualified" && status !== "ready_to_contact") || scoreProspect(input).qualification !== "meets_criteria") return [];
-  const errors = collisionEvidenceErrors(input, evidence);
+  // Fit rests on automotive repair evidence, or on collision/body evidence (collision/body repair is automotive repair).
+  const basis = fitBasis(input.signals);
+  const errors = fitEvidenceErrors(input, basis, evidence);
   const candidate = await tx.discoveryCandidate.findUnique({ where: { prospectId }, select: { research: { where: { status: "completed" }, orderBy: { queuedAt: "desc" }, take: 1, select: { warnings: true } } } });
-  if (hasCollisionResearchConflict(candidate?.research[0]?.warnings)) errors.push("Resolve contradictory collision/body research before qualification or Ready to contact.");
+  const conflict = fitConflict(candidate?.research[0]?.warnings, basis);
+  if (conflict) errors.push(`Resolve contradictory ${conflict} research before qualification or Ready to contact.`);
   return errors;
 }
 
@@ -621,12 +625,17 @@ export async function listProspects(db: Db, filters: ProspectFilters) {
   const city = filters.city?.trim();
   if (city) and.push({ city: { contains: city, mode: "insensitive" } });
 
-  // Qualification and band are independent filters, mirroring scoring.ts.
+  // Qualification and band are independent filters, mirroring scoring.ts: a criterion
+  // is Yes when recorded Yes, or when a signal that establishes it (collision/body for
+  // automotive repair) is Yes and it isn't recorded No; No only when recorded No with
+  // nothing establishing it. Both together contradict each other: unverified.
+  const recorded = (key: string, value: "yes" | "no"): Prisma.ProspectWhereInput => ({ signals: { some: { key, value } } });
+  const established = (key: string): Prisma.ProspectWhereInput => ({ signals: { some: { key: { in: establishedBy(key) }, value: "yes" } } });
   const failsCriterion: Prisma.ProspectWhereInput = {
-    signals: { some: { key: { in: [...REQUIRED_CRITERIA] }, value: "no" } },
+    OR: REQUIRED_CRITERIA.map((key) => ({ AND: [recorded(key, "no"), { NOT: established(key) }] })),
   };
   const meetsAll: Prisma.ProspectWhereInput = {
-    AND: REQUIRED_CRITERIA.map((key) => ({ signals: { some: { key, value: "yes" as const } } })),
+    AND: REQUIRED_CRITERIA.map((key) => ({ OR: [recorded(key, "yes"), { AND: [established(key), { NOT: recorded(key, "no") }] }] })),
   };
   const qualification = filters.qualification as Qualification | undefined;
   if (qualification === "disqualified") and.push(failsCriterion);

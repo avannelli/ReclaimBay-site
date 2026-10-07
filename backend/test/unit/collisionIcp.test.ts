@@ -18,10 +18,10 @@ const result = (text: string, over: Partial<Subject> = {}) => analyze({ ...subje
 const fitSignal = (r: ReturnType<typeof result>) => r.signals.find(s => s.key === "collision_repair_services");
 const qualification = (r: ReturnType<typeof result>) => scoreProspect({ website: SITE, signals: Object.fromEntries(r.signals.map(s => [s.key, s.value])) }).qualification;
 
-describe("collision/body ICP", () => {
-  test("body shops are default core; mechanical categories are adjacent leads", () => {
+describe("collision/body: one segment of the automotive repair ICP", () => {
+  test("body shops and mechanical repair are both default core discovery categories", () => {
     assert.deepEqual(overtureTier({ primary: "auto_body_shop", hierarchy: ["automotive_service", "auto_body_shop"] }), { tier: "core", category: "auto_body_shop" });
-    assert.equal(categoryTierFor("overture", "automotive_repair"), "adjacent");
+    assert.equal(categoryTierFor("overture", "automotive_repair"), "core");
     for (const primary of ["auto_glass_service", "auto_detailing", "towing_service", "car_wash", "tire_shop", "car_window_tinting", "hydrogen_refit_service"]) assert.equal(overtureTier({ primary, hierarchy: ["automotive_service", primary] }).tier, null);
   });
   for (const name of ["Harbor Collision", "Harbor Collision Repair", "Harbor Auto Body & Paint", "Harbor Auto Repair", "Performance Auto Repair", "Joe's Glass & Collision", "Unknown Business"]) {
@@ -39,9 +39,14 @@ describe("collision/body ICP", () => {
       assert.equal(r.category?.verdict, "in_target"); assert.equal(qualification(r), "meets_criteria");
     });
   }
-  for (const text of ["Brake repairs and oil changes.", "We replace windshields and auto glass.", "We detail cars and polish paint.", "We sell tires and align wheels.", "We tow vehicles.", "We wash cars.", "We install vehicle accessories and window tint.", "We work with insurance.", "We provide paint services.", "We offer automotive repairs.", ""]) {
-    test(`non-primary or missing services never create fit: ${JSON.stringify(text)}`, () => {
+  for (const text of ["We replace windshields and auto glass.", "We detail cars and polish paint.", "We sell tires and align wheels.", "We tow vehicles.", "We wash cars.", "We install vehicle accessories and window tint.", "We work with insurance.", "We provide paint services.", ""]) {
+    test(`non-repair or missing services never create fit: ${JSON.stringify(text)}`, () => {
       const r = result(text); assert.notEqual(fitSignal(r)?.value, "yes"); assert.notEqual(qualification(r), "meets_criteria");
+    });
+  }
+  for (const text of ["Brake repairs and oil changes.", "We offer automotive repairs."]) {
+    test(`mechanical repair is not collision/body, and no longer needs to be: ${JSON.stringify(text)}`, () => {
+      const r = result(text); assert.notEqual(fitSignal(r)?.value, "yes"); assert.equal(qualification(r), "meets_criteria");
     });
   }
   for (const text of ["We do not offer collision repair.", "We don't provide auto body repair.", "We no longer perform collision repair.", "We cannot perform vehicle body repair.", "Collision repair is not offered here.", "Collision repair is not provided here.", "Collision repair is not performed here.", "Collision repair is unavailable."]) {

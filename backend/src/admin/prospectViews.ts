@@ -10,6 +10,7 @@ import {
 } from "../prospectStatus.js";
 import {
   BAND_THRESHOLDS,
+  FIT_CRITERION,
   MAX_SCORE,
   QUALIFICATION_LABELS,
   REQUIRED_CRITERIA,
@@ -100,13 +101,13 @@ export function prospectListPage(opts: {
       const loc = [p.city, p.state].filter(Boolean).join(", ");
       const contact = [p.phone && '<span class="tag">Phone</span>', p.email && '<span class="tag">Email</span>'].filter(Boolean).join(" ");
       const ctx = contexts.get(p.id);
-      const collision = p.signals.find(s => s.key === "collision_repair_services")?.value ?? "unknown";
+      const repair = result.breakdown.find(s => s.key === FIT_CRITERION)?.state ?? "unknown";
       return `<tr>
   <td><a class="name" href="/admin/prospects/${esc(p.id)}">${esc(p.businessName ?? "Unnamed prospect")}</a>${p.internalTest ? ` ${INTERNAL_TEST_TAG}` : ""}${p.website ? `<div class="sub">${extLink(p.website)}</div>` : ""}<details class="row-context"><summary>Record details</summary><div>Public contact: ${contact || "None recorded"}</div><div>Updated ${fmtDay(p.updatedAt)}</div></details></td>
   <td data-label="Location">${loc ? esc(loc) : '<span class="muted">—</span>'}${p.postalCode ? `<div class="sub">${esc(p.postalCode)}</div>` : ""}</td>
   <td data-label="Status">${statusBadge(p.status)}</td>
   <td data-label="Qualification">${qualificationBadge(result.qualification)}</td>
-  <td data-label="Collision evidence"><a href="/admin/prospects/${esc(p.id)}#evidence">${ctx?.evidence.length ? `${ctx.evidence.length} source record${ctx.evidence.length === 1 ? "" : "s"}` : "No source recorded"}</a><div class="sub">Recorded ${esc(collision === "unknown" ? "Unknown" : collision === "yes" ? "Yes" : "No")}</div></td>
+  <td data-label="Repair evidence"><a href="/admin/prospects/${esc(p.id)}#evidence">${ctx?.evidence.length ? `${ctx.evidence.length} source record${ctx.evidence.length === 1 ? "" : "s"}` : "No source recorded"}</a><div class="sub">Automotive repair ${esc(repair === "unknown" ? "Unknown" : repair === "yes" ? "Yes" : "No")}</div></td>
   <td data-label="Outreach">${ctx?.outreach[0] ? `<span class="tag">${esc(ctx.outreach[0].status.replace(/_/g, " "))}</span><div class="sub">${fmtDay(ctx.outreach[0].statusChangedAt)}</div>` : '<span class="muted">Not contacted</span>'}</td>
   <td class="num" data-label="Opportunity score"><span class="score-cell"><b>${result.score}</b><span class="of">/${MAX_SCORE}</span></span><div class="sub">${bandBadge(result.band)}</div><div class="sub">${result.known}/${result.total} signals known</div>${stale ? `<div class="sub" style="color:var(--warn)">cache stale</div>` : ""}</td>
 </tr>`;
@@ -150,7 +151,7 @@ ${
   list.rows.length
     ? `<div class="scroll pipeline-table"><table class="tbl cards">
 <caption class="sr-only">Prospects</caption>
-<thead><tr><th scope="col">Business</th><th scope="col">Location</th><th scope="col">Lifecycle</th><th scope="col">Qualification<br><span class="column-hint">required criteria</span></th><th scope="col">Collision evidence</th><th scope="col">Outreach</th><th scope="col" class="num">Opportunity score<br><span class="column-hint">research ranking</span></th></tr></thead>
+<thead><tr><th scope="col">Business</th><th scope="col">Location</th><th scope="col">Lifecycle</th><th scope="col">Qualification<br><span class="column-hint">required criteria</span></th><th scope="col">Repair evidence</th><th scope="col">Outreach</th><th scope="col" class="num">Opportunity score<br><span class="column-hint">research ranking</span></th></tr></thead>
 <tbody>${rows}</tbody>
 </table></div>`
     : `<div class="card">${empty}</div>`
@@ -220,11 +221,12 @@ function signalRow(def: SignalDefinition, values: Values, fe?: FieldErrors): str
     derived ? `<span class="small muted">${effective === "yes" ? "Currently <b>Yes</b> automatically, from the fields above." : "“Yes” is set automatically from the fields above; choose No only after searching and finding none."}</span>` : "",
     def.requiresWebsite ? `<span class="small muted">Needs a website.</span>` : "",
     def.requiredCriterion ? `<span class="small muted">A “No” here disqualifies the business.</span>` : "",
+    def.establishes ? `<span class="small muted">A “Yes” here also counts as verified automotive repair; a “No” never disqualifies.</span>` : "",
   ].filter(Boolean);
 
   return `<div class="sig${def.requiredCriterion ? " req" : ""}" role="group" aria-labelledby="sig-${key}"${errs.length ? ` id="f-${name}"` : ` id="f-${name}"`}>
   <div class="sig-h">
-    <div><span class="sig-name" id="sig-${key}">${esc(def.label)}</span> ${def.requiredCriterion ? '<span class="kind req">Required criterion</span>' : '<span class="kind">Opportunity signal</span>'}</div>
+    <div><span class="sig-name" id="sig-${key}">${esc(def.label)}</span> ${signalKindTag(def)}</div>
     <span class="sig-pts" title="Points added when Yes">+${def.weight}</span>
   </div>
   <div class="sig-q">${esc(def.question)}</div>
@@ -238,16 +240,23 @@ function signalRow(def: SignalDefinition, values: Values, fe?: FieldErrors): str
 </div>`;
 }
 
-/** Steps 4-5: the required criteria, then the opportunity signals. */
+/** What a signal is for, in one tag: the required criterion, a segment that can establish it, or a ranking signal. */
+export function signalKindTag(def: SignalDefinition, derived = false): string {
+  if (def.requiredCriterion) return '<span class="kind req">Required criterion</span>';
+  if (def.establishes) return '<span class="kind">Segment · counts as repair</span>';
+  return derived ? '<span class="kind">Derived</span>' : '<span class="kind">Opportunity signal</span>';
+}
+
+/** Steps 4-5: the required criterion (with the segment that can establish it), then the opportunity signals. */
 export function signalSections(values: Values, fe?: FieldErrors): string {
-  const required = SIGNAL_DEFS.filter((d) => d.requiredCriterion);
-  const other = SIGNAL_DEFS.filter((d) => !d.requiredCriterion);
+  const required = SIGNAL_DEFS.filter((d) => d.requiredCriterion || d.establishes);
+  const other = SIGNAL_DEFS.filter((d) => !d.requiredCriterion && !d.establishes);
   return [
     fieldset(
       4,
       "Required qualification criteria",
       required.map((d) => signalRow(d, values, fe)).join(""),
-      `These two decide <b>Qualification</b>: Meets criteria needs both “Yes”; either “No” disqualifies. Leave Unknown until a public source shows it.`,
+      `<b>Verified automotive repair</b> decides <b>Qualification</b>: “Yes” meets criteria, “No” disqualifies. Collision/body repair is one segment: its “Yes” also counts as automotive repair, and its “No” never disqualifies. Leave Unknown until a public source shows it.`,
     ),
     fieldset(
       5,
@@ -301,7 +310,7 @@ function internalTestIdentityList(): string {
     <dt>Identity</dt><dd><b>${esc(businessName)}</b>: ReclaimBay's own controlled test, not a business</dd>
     <dt>Recipient</dt><dd><code>${esc(email)}</code>, a mailbox ReclaimBay controls</dd>
     <dt>Documented at</dt><dd>${extLink(emailSourceUrl)}</dd>
-    <dt>Qualification</dt><dd>Business qualification and collision/body evidence don't apply. Qualified and Ready to contact require this exact identity instead.</dd>
+    <dt>Qualification</dt><dd>Business qualification and automotive repair evidence don't apply. Qualified and Ready to contact require this exact identity instead.</dd>
   </dl>`;
 }
 
@@ -348,7 +357,7 @@ export function prospectDetailPage(opts: {
       const when = observedAt.get(s.key);
       const ev = evidenceCount.get(s.key) ?? 0;
       return `<tr>
-  <td><b>${esc(s.label)}</b><div class="sub">${def.requiredCriterion ? '<span class="kind req">Required criterion</span>' : s.derived ? '<span class="kind">Derived</span>' : '<span class="kind">Opportunity signal</span>'}</div></td>
+  <td><b>${esc(s.label)}</b><div class="sub">${signalKindTag(def, s.derived)}</div></td>
   <td data-label="Observed">${obsBadge(s.state)}${when && !s.derived ? `<div class="sub">${fmtDay(when)}</div>` : ""}</td>
   <td class="num" data-label="Points"><span class="score-cell"><b>${s.points}</b><span class="of">/${s.weight}</span></span></td>
   <td class="small" data-label="Why">${esc(s.reason)}</td>
@@ -401,7 +410,7 @@ ${pageHead({
   badges: `${statusBadge(p.status)}${p.internalTest ? INTERNAL_TEST_TAG : ""}${location ? `<span class="muted">${esc(location)}</span>` : ""}<span class="muted small">Status since ${fmtDay(p.statusChangedAt)}</span>`,
   actions: `${p.internalTest ? "" : `<a class="btn" href="/admin/prospects/${id}/edit">Edit</a>`}${allowed.length ? `<a class="btn btn-secondary" href="#status">Change status</a>` : ""}`,
 })}
-<nav class="dossier-nav" aria-label="Business dossier sections"><a href="#business">Business</a><a href="#evidence">Collision evidence</a><a href="#score">Scoring</a><a href="#status">Decisions</a><a href="#outreach">Outreach</a><a href="#notes">Research notes</a><a href="#activity">Engagement</a></nav>
+<nav class="dossier-nav" aria-label="Business dossier sections"><a href="#business">Business</a><a href="#evidence">Repair evidence</a><a href="#score">Scoring</a><a href="#status">Decisions</a><a href="#outreach">Outreach</a><a href="#notes">Research notes</a><a href="#activity">Engagement</a></nav>
 ${p.internalTest ? `<div class="callout warn" style="margin-bottom:14px"><b>Internal outreach test.</b> Not a business: ReclaimBay's own controlled test identity, which can't be edited or given evidence. It is sent through every normal sending check, and its activity is left out of the outreach funnel, the analytics summary, and prospect intent. Its own activity is shown below.</div>
 <div class="card" style="margin-bottom:14px"><div class="card-h">Internal test identity</div>${internalTestIdentityList()}</div>` : ""}
 ${stale ? `<div class="callout warn" style="margin-bottom:14px">The saved score (${p.score}, ${esc(p.scoreVersion ?? "never scored")}) differs from the current scoring ${esc(SCORING_VERSION)}. Saving the prospect or running <code>npm run prospects:rescore</code> updates it. The numbers on this page are always current.</div>` : ""}

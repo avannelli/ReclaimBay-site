@@ -22,7 +22,7 @@ import { OPTS } from "./outreachHelpers.js";
 import { TEST_DATABASE_URL, freshDb, skipReason, truncate } from "./helpers.js";
 
 /*
- * Automatic approval (approval@a2) through the real service, research, and
+ * Automatic approval (approval@a3) through the real service, research, and
  * admin, against a disposable database and fixture websites (no network).
  */
 
@@ -45,10 +45,10 @@ const business = (over: Partial<DiscoveredBusiness> = {}): DiscoveredBusiness =>
   ...over,
 });
 
-/** The clean shop, but its site no longer says it is family owned: independence unknown. */
-const noIndependence = () => {
+/** The clean shop, but its site names no repair service and no longer says it is family owned: repair fit unknown. */
+const noRepairEvidence = () => {
   const routes = independentShop(HOST);
-  routes[`https://${HOST}/services`]!.body = routes[`https://${HOST}/services`]!.body!.replace("<li>We provide collision repair.</li>", "");
+  routes[`https://${HOST}/services`]!.body = page("Services", "<h1>Our Services</h1><p>Every visit includes a digital vehicle inspection with photos.</p>");
   routes[SITE] = {
     body: page(
       "Saviers Road Auto Repair | Oxnard Auto Repair",
@@ -84,28 +84,28 @@ describe("automatic approval (service)", { skip: skipReason }, () => {
     const after = await full(c.id);
     assert.equal(after.status, "approved");
     assert.ok(after.prospectId);
-    assert.ok(after.decisionReason!.startsWith(`${AUTO_APPROVED_PREFIX} (approval@a2): target category confirmed`));
+    assert.ok(after.decisionReason!.startsWith(`${AUTO_APPROVED_PREFIX} (approval@a3): target category confirmed`));
     assert.ok(after.notes.some((n) => n.body.startsWith(AUTO_APPROVED_PREFIX)));
 
     const prospect = await db.prospect.findUniqueOrThrow({ where: { id: after.prospectId! }, include: { notes: true, signals: true, evidence: true } });
     assert.equal(prospect.status, "new", "approval doesn't qualify or contact anyone");
     assert.equal(prospect.phone, "(805) 555-0101");
-    assert.ok(prospect.notes.some((n) => /^Approved automatically \(approval@a2\) from a discovery candidate\./.test(n.body)));
+    assert.ok(prospect.notes.some((n) => /^Approved automatically \(approval@a3\) from a discovery candidate\./.test(n.body)));
     assert.ok(prospect.notes.some((n) => n.body.startsWith(AUTO_APPROVED_PREFIX)));
     const cand = await db.discoveryCandidate.findUniqueOrThrow({ where: { id: c.id }, include: { signals: true, evidence: true } });
     assert.equal(prospect.signals.length, cand.signals.length, "signals copied exactly as a person's approval would");
     assert.equal(prospect.evidence.length, cand.evidence.length);
   });
 
-  test("independence unknown: held for review, no prospect", async () => {
+  test("automotive repair fit unknown: held for review, no prospect", async () => {
     const c = await candidate();
-    await research(c.id, noIndependence());
+    await research(c.id, noRepairEvidence());
     const after = await full(c.id);
     assert.equal(after.status, "researched");
     assert.equal(await db.prospect.count(), 0);
     const r = (await autoApproveCandidate(db, c.id))!;
     assert.equal(r.assessment.decision, "review");
-    assert.ok(r.assessment.reasons.includes("Verified collision\/body repair is unknown, not yes."));
+    assert.ok(r.assessment.reasons.includes("Verified automotive repair is unknown, not yes."));
   });
 
   test("a person's 'unclear' category holds it, and research doesn't override it", async () => {
@@ -138,7 +138,7 @@ describe("automatic approval (service)", { skip: skipReason }, () => {
 
   test("a person's Needs review is never overridden by later automation", async () => {
     const c = await candidate();
-    await research(c.id, noIndependence());
+    await research(c.id, noRepairEvidence());
     await changeCandidateStatus(db, c.id, "needs_review", null);
     await research(c.id); // the site now says family owned; everything else is clean
     const after = await full(c.id);
@@ -153,7 +153,7 @@ describe("automatic approval (service)", { skip: skipReason }, () => {
 
   test("manual approval of a held candidate works exactly as before", async () => {
     const c = await candidate();
-    await research(c.id, noIndependence());
+    await research(c.id, noRepairEvidence());
     const { prospect } = await approveCandidate(db, c.id);
     const notes = await db.prospectNote.findMany({ where: { prospectId: prospect.id } });
     assert.ok(notes.some((n) => /^Approved by a human from a discovery candidate\./.test(n.body)));
@@ -162,7 +162,7 @@ describe("automatic approval (service)", { skip: skipReason }, () => {
 
   test("manual rejection works and blocks automation", async () => {
     const c = await candidate();
-    await research(c.id, noIndependence());
+    await research(c.id, noRepairEvidence());
     await assert.rejects(changeCandidateStatus(db, c.id, "rejected", ""), /requires a reason/);
     await changeCandidateStatus(db, c.id, "rejected", "Not a fit.");
     const r = (await autoApproveCandidate(db, c.id))!;
@@ -172,7 +172,7 @@ describe("automatic approval (service)", { skip: skipReason }, () => {
 
   test("repeating automation is idempotent: one prospect, ever", async () => {
     const c = await candidate();
-    await research(c.id, noIndependence()); // held
+    await research(c.id, noRepairEvidence()); // held
     await research(c.id); // now clean: approved by the research trigger
     assert.equal(await db.prospect.count(), 1);
     const again = await runAutoApproval(db, { apply: true, candidateIds: [c.id] });
@@ -201,19 +201,19 @@ describe("automatic approval (service)", { skip: skipReason }, () => {
 
   test("the approval re-checks the rule in its own transaction: a change in between stops it", async () => {
     const c = await candidate();
-    await research(c.id, noIndependence());
-    await assert.rejects(approveCandidate(db, c.id, { automatic: true }), /Verified collision\/body repair is unknown/);
+    await research(c.id, noRepairEvidence());
+    await assert.rejects(approveCandidate(db, c.id, { automatic: true }), /Verified automotive repair is unknown/);
     assert.equal(await db.prospect.count(), 0);
   });
 });
 
-/** A Midas franchise location: its own site, verified by name, phone, and address, under the chain's brand. */
+/** A Midas-branded tire and battery location: its own site, verified by name, phone, and address, says it performs no repairs. */
 const MIDAS_HOST = "midasoxnard.example.com";
 const MIDAS_SITE = `https://${MIDAS_HOST}/`;
 const midasBusiness = (): Partial<DiscoveredBusiness> => ({ businessName: "Midas (Oxnard Blvd)", website: MIDAS_SITE, phone: "+18055550202", streetAddress: "100 Oxnard Blvd" });
 const midasSite = () => {
   const routes: Record<string, Fixture> = independentShop(MIDAS_HOST, "(805) 555-0202");
-  routes[`https://${MIDAS_HOST}/services`]!.body = routes[`https://${MIDAS_HOST}/services`]!.body!.replace("We provide collision repair.", "We do not offer collision repair.");
+  routes[`https://${MIDAS_HOST}/services`]!.body = page("Services", "<h1>Our Services</h1><p>Tires and batteries while you wait.</p><p>We do not perform repairs at this location.</p>");
   routes[MIDAS_SITE] = {
     body: page(
       "Midas Oxnard | Brakes, Oil Changes and Auto Repair",
@@ -250,12 +250,12 @@ describe("automatic rejection and the re-decision pass (service)", { skip: skipR
   const full = (id: string) => db.discoveryCandidate.findUniqueOrThrow({ where: { id }, include: { notes: true } });
   const autoNotes = (notes: { body: string }[]) => notes.filter((n) => n.body.startsWith(AUTO_REJECTED_PREFIX));
 
-  test("a franchise location: research records the chain brand with its source, and it is rejected automatically; no prospect", async () => {
+  test("a location whose own site says it performs no repairs is rejected automatically, with its source; the chain brand is recorded too; no prospect", async () => {
     const c = await candidate(midasBusiness());
     await research(c.id, midasSite());
     const after = await full(c.id);
     assert.equal(after.status, "rejected");
-    assert.match(after.decisionReason!, /^Automatically rejected \(rejection@r2\): Verified collision\/body repair is No:/);
+    assert.match(after.decisionReason!, /^Automatically rejected \(rejection@r3\): Verified automotive repair is No:/);
     assert.equal(autoNotes(after.notes).length, 1, "the reason is recorded once, as a note");
     assert.equal(await db.prospect.count(), 0);
     const evidence = await db.candidateEvidence.findFirstOrThrow({ where: { candidateId: c.id, signalKey: "independent_shop" } });
@@ -302,7 +302,7 @@ describe("automatic rejection and the re-decision pass (service)", { skip: skipR
   test("the re-decision pass rejects a chain researched before automatic rejection existed, once; repeating changes nothing", async () => {
     const c = await candidate(midasBusiness());
     await research(c.id, midasSite(), false);
-    assert.equal((await full(c.id)).status, "researched", "as research left it before rejection@r2");
+    assert.equal((await full(c.id)).status, "researched", "as research left it before rejection@r3");
 
     const dry = await runAutoApproval(db, { apply: false });
     assert.deepEqual(dry.map((r) => [r.businessName, r.assessment.decision]), [["Midas (Oxnard Blvd)", "reject"]]);
@@ -382,12 +382,12 @@ describe("automatic approval (admin HTTP)", { skip: skipReason }, () => {
     const auto = await make(fixtureWeb(independentShop(HOST)));
     const autoPage = (await get(`/admin/discovery/candidates/${auto}`)).body;
     assert.match(autoPage, /✓<\/span>Approved automatically/);
-    assert.match(autoPage, /Automatically approved \(approval@a2\): target category confirmed/);
+    assert.match(autoPage, /Automatically approved \(approval@a3\): target category confirmed/);
     const list = (await get("/admin/discovery")).body;
     assert.match(list, /Approved automatically/);
     const c = await db.discoveryCandidate.findUniqueOrThrow({ where: { id: auto } });
     const prospectPage = (await get(`/admin/prospects/${c.prospectId}`)).body;
-    assert.match(prospectPage, /Approved automatically \(approval@a2\) from a discovery candidate/);
+    assert.match(prospectPage, /Approved automatically \(approval@a3\) from a discovery candidate/);
   });
 
   test("the Discovery summary shows what the automation decided; a rejection says why", async () => {
@@ -404,14 +404,14 @@ describe("automatic approval (admin HTTP)", { skip: skipReason }, () => {
     assert.match(list, /<dt>Rejected <span style="font-weight:400">\(1 automatically\)<\/span><\/dt><dd>1<\/dd>/);
     assert.match(list, /<dt>Review <span style="font-weight:400">a person decides<\/span><\/dt><dd>0<\/dd>/);
     const rejected = (await get("/admin/discovery?view=disregarded")).body;
-    assert.match(rejected, /Automatically rejected \(rejection@r2\): Verified collision\/body repair is No/);
+    assert.match(rejected, /Automatically rejected \(rejection@r3\): Verified automotive repair is No/);
   });
 
   test("an administrator sees why a candidate is held, and can still approve it", async () => {
-    const held = await make(noIndependence());
+    const held = await make(noRepairEvidence());
     const heldPage = (await get(`/admin/discovery/candidates/${held}`)).body;
-    assert.match(heldPage, /Automatic approval \(approval@a2\): Held for human review/);
-    assert.match(heldPage, /Verified collision\/body repair is unknown, not yes\./);
+    assert.match(heldPage, /Automatic approval \(approval@a3\): Held for human review/);
+    assert.match(heldPage, /Verified automotive repair is unknown, not yes\./);
     assert.match(heldPage, /Needs verification/);
     assert.match(heldPage, /Approve anyway/, "a person can still approve it");
   });

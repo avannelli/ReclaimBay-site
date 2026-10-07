@@ -46,8 +46,8 @@ describe("manual prospect collision evidence boundary (local PostgreSQL)", { ski
     await updateProspect(db, p.id, { ...formValuesOf(await row(p.id)), signal_collision_repair_services: "yes" });
     await changeStatus(db, p.id, "qualified", null);
   });
-  test("No stays disqualified even with positive evidence", async () => {
-    const p = await create({ signal_collision_repair_services: "no" }); await add(p.id);
+  test("an automotive repair No stays disqualified even with positive collision evidence", async () => {
+    const p = await create({ signal_collision_repair_services: "no", signal_automotive_repair_services: "no" }); await add(p.id);
     await assert.rejects(changeStatus(db, p.id, "qualified", null), /Disqualified/);
     assert.equal((await row(p.id)).signals.find(s => s.key === "collision_repair_services")?.value, "no");
   });

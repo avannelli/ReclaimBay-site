@@ -1059,7 +1059,7 @@ describe("category check on the business's own website", () => {
     assert.equal(r.category!.verdict, "wrong_category");
     assert.equal(r.category!.source, "website");
     assert.equal(r.category!.sourceUrl, "https://saviersauto.example.com/");
-    assert.match(r.category!.reason, /^Website describes shoe repair, boot repair, vacuum repair, lamp repair and sharpening; no collision\/body services or vocabulary on the \d pages? read\.$/);
+    assert.match(r.category!.reason, /^Website describes shoe repair, boot repair, vacuum repair, lamp repair and sharpening; no automotive repair services or vocabulary on the \d pages? read\.$/);
     const f = fact(r, "business_category")!;
     assert.deepEqual([f.value, f.state, f.sourceUrl], ["Wrong category", "verified", "https://saviersauto.example.com/"]);
     assert.equal(signal(r, "general_repair_services"), undefined, "no automotive signal is invented or changed");
@@ -1074,12 +1074,16 @@ describe("category check on the business's own website", () => {
     assert.equal(fact(r, "business_category")?.state, "uncertain");
   });
 
-  test("a mechanical-only site awaits collision product-fit evidence", async () => {
+  test("a mechanical repair site is in target on its own repair evidence: collision/body is not required", async () => {
     const s = server(goodSite());
     const r = await researchCandidate(subject(), s.fetcher(), TODAY);
-    assert.equal(r.category!.verdict, "unclear");
-    assert.match(r.category!.reason, /No verified collision/);
+    assert.equal(r.category!.verdict, "in_target");
+    assert.match(r.category!.reason, /^The website names automotive repair services \(/);
     assert.ok(r.category!.sourceUrl?.startsWith("https://saviersauto.example.com/"));
+    const repair = signal(r, "automotive_repair_services")!;
+    assert.equal(repair.value, "yes");
+    assert.ok(repair.sourceUrl.startsWith("https://saviersauto.example.com/") && repair.excerpt.startsWith("Names "));
+    assert.equal(signal(r, "collision_repair_services"), undefined, "no collision evidence is invented");
   });
 
   test("a Spanish-language repair site is not wrong category", async () => {

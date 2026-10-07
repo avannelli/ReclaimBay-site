@@ -171,7 +171,7 @@ describe("admin UI structure (HTTP)", { skip: skipReason }, () => {
       assert.match(body, /Opportunity signals/);
       assert.equal(body.match(/<span class="kind req">Required criterion<\/span>/g)?.length, 1);
       assert.equal(body.match(/<span class="kind">Opportunity signal<\/span>/g)?.length, 9);
-      assert.equal(body.match(/<span>Unknown<\/span>/g)?.length, 10, "every signal offers Unknown");
+      assert.equal(body.match(/<span>Unknown<\/span>/g)?.length, 11, "every signal offers Unknown");
       assert.match(body, /<summary>View rules<\/summary>/);
       assert.match(body, /\+20/);
     });
@@ -234,7 +234,7 @@ describe("admin UI structure (HTTP)", { skip: skipReason }, () => {
       const p = await createProspect(db, readyForm({ businessName: "Cards Auto", website: "https://cards.example.com" }));
       const body = (await get(`/admin/prospects/${p.id}`)).body;
       assert.match(body, /v-label">Qualification<\/div>/);
-      assert.match(body, /Required criteria: Verified collision\/body repair/);
+      assert.match(body, /Required criteria: Verified automotive repair/);
       assert.match(body, /v-label">Opportunity score<\/div>/);
       assert.match(body, /Opportunity score · ranking only, not a verdict/);
       assert.match(body, /A high score does not mean the business is qualified\./);

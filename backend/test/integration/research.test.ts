@@ -88,6 +88,7 @@ describe("automated research (service)", { skip: skipReason }, () => {
     assert.deepEqual(signals, {
       independent_shop: "yes/research",
       general_repair_services: "yes/research",
+      automotive_repair_services: "yes/research",
       collision_repair_services: "yes/research",
       digital_inspections: "yes/research",
       no_online_booking: "yes/research",
@@ -95,7 +96,7 @@ describe("automated research (service)", { skip: skipReason }, () => {
       website_no_recent_date: "no/research",
       multiple_bays_or_staff: "yes/research",
     });
-    assert.equal(after.evidence.length, 8, "one evidence item per signal");
+    assert.equal(after.evidence.length, 9, "one evidence item per signal");
     assert.ok(after.evidence.every((e) => e.origin === "research" && e.researchId === run.id && e.sourceUrl.startsWith("https://saviersauto.example.com/")));
     assert.ok(after.notes.some((n) => new RegExp(`Automated research \\(${RESEARCH_VERSION}\\): website verified`).test(n.body)));
 

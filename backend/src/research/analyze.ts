@@ -11,9 +11,10 @@
  */
 import { addressMatchKey, namesMatchStrongly, namesSimilar, normalizeName, phoneKey, streetWordPattern } from "../discovery/normalize.js";
 import type { SignalKey, StoredSignalValue } from "../scoring.js";
-import { CATEGORY_RULES } from "../discovery/categories.js";
+import { CATEGORY_RULES, nameOutsideTerms } from "../discovery/categories.js";
 import { CATEGORY_VERDICT_LABELS, checkWebsite, type CategoryResult } from "../discovery/categoryCheck.js";
 import { collisionFit } from "./collisionFit.js";
+import { REPAIR_SERVICES, repairFit, type RepairFit } from "./repairFit.js";
 import type { ParsedPage } from "./html.js";
 
 export type FactState = "verified" | "unverified" | "uncertain" | "not_found";
@@ -674,18 +675,43 @@ export function analyze(subject: Subject, pages: Page[], secureHttps: boolean | 
   const make = MAKES.find((m) => new RegExp(`\\b${m}\\b`, "i").test(labels) || siteHost.includes(m.replace("-", "")));
   const dealerText = dealerActivity(pages);
   const independent = independenceStatement(pages);
+  // Collision/body: a segment of automotive repair (and the AI shadow's question), recorded as before.
   const fit = ownership === "verified" ? collisionFit(subject.businessName, pages) : { status: "unknown" as const, sourceUrl: null, excerpt: null };
   const possibleBusiness = Boolean(dealerText) || /\bdealership\b/i.test(subject.businessName) || (/\b(?:dent|paint|restoration|structural|frame)\b/i.test(subject.businessName) && !/\bcollision\b|\bauto ?body\b|\bbody shop\b/i.test(subject.businessName));
   const possibleFit = fit.status === "possible" || (fit.status === "primary" && possibleBusiness);
   if (fit.status === "conflict") warnings.push("Collision/body evidence is contradictory; verify product fit manually.");
-  if (possibleFit) warnings.push("Dealership or specialty collision/body services require human verification before qualification.");
+  if (possibleFit) warnings.push("Dealership or specialty collision/body services require human verification before recording collision/body repair.");
   if (fit.status !== "unknown") facts.push({ field: "collision_repair_services", value: fit.status === "negative" ? "no" : "yes", state: fit.status === "conflict" || possibleFit ? "uncertain" : "verified", sourceUrl: fit.sourceUrl ?? undefined, excerpt: fit.excerpt ?? undefined });
   if (fit.status === "primary" && !possibleFit) signals.push({ key: "collision_repair_services", value: "yes", sourceUrl: fit.sourceUrl!, excerpt: fit.excerpt! });
   else if (fit.status === "negative") signals.push({ key: "collision_repair_services", value: "no", sourceUrl: fit.sourceUrl!, excerpt: fit.excerpt! });
 
+  // Automotive repair: the product-fit criterion. Dealership and fleet operations,
+  // maintenance/cosmetic-only evidence, and a name that says another trade with
+  // only one repair service on the site are for a person to verify.
+  const repair: RepairFit = ownership === "verified" ? repairFit(subject.businessName, pages) : { status: "unknown", sourceUrl: null, excerpt: null, services: [] };
+  const repairKinds = new Set(REPAIR_SERVICES.filter(([, kind]) => kind === "repair").map(([label]) => label));
+  const otherTrade = nameOutsideTerms(subject.businessName);
+  const verifyWhy =
+    repair.status === "possible"
+      ? "Only maintenance or cosmetic specialty services were found"
+      : repair.status !== "primary"
+        ? null
+        : dealerText || /\bdealership\b/i.test(subject.businessName)
+          ? "A dealership service department"
+          : /\bfleet\b/i.test(subject.businessName)
+            ? "A fleet operation"
+            : otherTrade.length && repair.services.filter((s) => repairKinds.has(s)).length < 2
+              ? `The name indicates ${otherTrade.join(" and ")}, and the website names only one repair service`
+              : null;
+  if (repair.status === "conflict") warnings.push("Automotive repair evidence is contradictory; verify product fit manually.");
+  if (verifyWhy) warnings.push(`${verifyWhy}; a person must verify its automotive repair work before qualification.`);
+  if (repair.status !== "unknown") facts.push({ field: "automotive_repair_services", value: repair.status === "negative" ? "no" : "yes", state: repair.status === "conflict" || verifyWhy ? "uncertain" : "verified", sourceUrl: repair.sourceUrl ?? undefined, excerpt: repair.excerpt ?? undefined });
+  if (repair.status === "primary" && !verifyWhy) signals.push({ key: "automotive_repair_services", value: "yes", sourceUrl: repair.sourceUrl!, excerpt: repair.excerpt! });
+  else if (repair.status === "negative") signals.push({ key: "automotive_repair_services", value: "no", sourceUrl: repair.sourceUrl!, excerpt: repair.excerpt! });
+
   // ----- signals (only from the business's own, verified website) -----
   if (ownership === "verified") {
-    // Independent shop (required criterion).
+    // Independent shop (prioritization only).
     if (chainOnSite) {
       const label = [chainOnSite.parsed.title, chainOnSite.parsed.siteName, ...chainOnSite.parsed.headings].find((l) => l?.toLowerCase().includes(chain!))!;
       signals.push({ key: "independent_shop", value: "no", sourceUrl: chainOnSite.url, excerpt: clip(`Franchise or chain brand "${chain}": ${label}`) });
@@ -718,7 +744,7 @@ export function analyze(subject: Subject, pages: Page[], secureHttps: boolean | 
       });
     }
 
-    // Offers general repair (required criterion).
+    // Offers general repair (prioritization only; never converted into verified automotive repair).
     if (general.length >= 2) {
       const g = general[0]!;
       signals.push({
@@ -803,13 +829,28 @@ export function analyze(subject: Subject, pages: Page[], secureHttps: boolean | 
   // ----- category check (separate from qualification; never on someone else's website) -----
   let category: CategoryResult | null = null;
   if (ownership === "verified") {
-    const confirmed = fit.status === "primary" && !possibleFit ? { url: fit.sourceUrl!, what: "automotive collision/body repair services" } : null;
+    const confirmed = repair.status === "primary" && !verifyWhy ? { url: repair.sourceUrl!, what: `automotive repair services (${repair.services.filter((s) => repairKinds.has(s)).join(", ")})` } : null;
     category = checkWebsite(
       CATEGORY_RULES,
       pages.map((p) => ({ url: p.url, text: p.parsed.text })),
       confirmed,
     );
-    if (!confirmed && (!category || category.verdict !== "wrong_category")) category = { verdict: "unclear", source: "website", reason: fit.status === "conflict" ? "Collision/body evidence is contradictory; inspect the source pages." : possibleFit ? "Possible dealership/specialty target; a person must verify collision/body fit." : "No verified collision/body service offering was established; verify product fit.", sourceUrl: fit.sourceUrl ?? home.url, rules: CATEGORY_RULES.id };
+    if (repair.status === "negative") {
+      category = { verdict: "wrong_category", source: "website", reason: "The website says this business performs no automotive repair.", sourceUrl: repair.sourceUrl, rules: CATEGORY_RULES.id };
+    } else if (!confirmed && (!category || category.verdict !== "wrong_category")) {
+      category = {
+        verdict: "unclear",
+        source: "website",
+        reason:
+          repair.status === "conflict"
+            ? "Automotive repair evidence is contradictory; inspect the source pages."
+            : verifyWhy
+              ? `${verifyWhy}; a person must verify its repair work.`
+              : "No verified automotive repair service offering was established; verify what the business does.",
+        sourceUrl: repair.sourceUrl ?? home.url,
+        rules: CATEGORY_RULES.id,
+      };
+    }
     if (category) {
       facts.push({
         field: "business_category",

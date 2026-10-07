@@ -14,14 +14,14 @@ import {
 
 const verdict = (name: string) => nameCategory({ businessName: name, category: "automotive_repair", categoryTier: "core" }).verdict;
 
-describe("category check: collision/body discovery leads", () => {
+describe("category check: automotive repair discovery leads", () => {
  for (const name of ["Mario's Auto Body", "Caliber Collision", "Harbor Auto Body & Paint", "Harbor Collision Repair", "Bill Hahn's Automotive", "Pops One Stop Repair Shop", "Taller Mec?nico Ortiz"]) test(name + " requires verification", () => assert.equal(verdict(name), "unclear"));
- for (const name of ["Able Auto Glass", "URO Parts", "Streamline Garage Doors", "Larry Dudley Yacht Sales", "Intoxalock Ignition Interlock", "Wrap Labs"]) test(name + " lacks collision evidence", () => assert.equal(verdict(name), "wrong_category"));
+ for (const name of ["Able Auto Glass", "URO Parts", "Streamline Garage Doors", "Larry Dudley Yacht Sales", "Intoxalock Ignition Interlock", "Wrap Labs"]) test(name + " is outside automotive repair", () => assert.equal(verdict(name), "wrong_category"));
  test("categories are provisional leads", () => { const r = nameCategory({businessName:"Harbor",category:"auto_body_shop",categoryTier:"core"}); assert.equal(r.verdict,"unclear"); assert.equal(r.source,"provider"); assert.match(r.reason,/Provider categories are leads/); });
- test("policy is versioned", () => assert.equal(nameCategory({businessName:"Harbor"}).rules,"collision@c2"));
+ test("policy is versioned", () => assert.equal(nameCategory({businessName:"Harbor"}).rules,"automotive@c3"));
 });
 
-describe("category check: websites (collision@c2)", () => {
+describe("category check: websites (automotive@c3)", () => {
   const POPS = [
     { url: "http://popsonestoprepairshop.com/", text: "HOME SHOE REPAIR BOOT REPAIR VACUUM REPAIR LAMP REPAIR SHARPENING SERVICE Pop's Camarillo 805 388 - 0700 Pop's Floorcare 805 504 - 9565" },
     { url: "http://popsonestoprepairshop.com/LUGGAGE_REPAIR.html", text: "Luggage repair: zippers, wheels and handles. Sewing machine service." },
@@ -32,7 +32,7 @@ describe("category check: websites (collision@c2)", () => {
     assert.equal(r.verdict, "wrong_category");
     assert.equal(r.source, "website");
     assert.equal(r.sourceUrl, "http://popsonestoprepairshop.com/");
-    assert.match(r.reason, /^Website describes shoe repair, boot repair, vacuum repair, lamp repair, sharpening, luggage repair and sewing machines; no collision\/body services or vocabulary on the 2 pages read\.$/);
+    assert.match(r.reason, /^Website describes shoe repair, boot repair, vacuum repair, lamp repair, sharpening, luggage repair and sewing machines; no automotive repair services or vocabulary on the 2 pages read\.$/);
   });
 
   test("absence of automotive words alone is never wrong", () => {

@@ -58,7 +58,7 @@ function attentionRow(i: AttentionItem): string {
 
 function needsMe(d: OverviewData): string {
   const gaps = d.attentionGaps.length ? `<p class="unavailable" role="status">Attention may be incomplete: ${esc(d.attentionGaps.join(", "))} unavailable.</p>` : "";
-  const clear = `<div class="all-clear"><span class="all-clear-mark" aria-hidden="true">&#10003;</span><h3>ALL CLEAR</h3><p>No recorded decisions are waiting. Start with one collision/body shop and establish its sourced evidence.</p><a class="btn btn-secondary" href="/admin/discovery">Open Discovery</a></div>`;
+  const clear = `<div class="all-clear"><span class="all-clear-mark" aria-hidden="true">&#10003;</span><h3>ALL CLEAR</h3><p>No recorded decisions are waiting. Start with one automotive repair business and establish its sourced evidence.</p><a class="btn btn-secondary" href="/admin/discovery">Open Discovery</a></div>`;
   const tiers = [{ tier: 1, label: "Safety first" }, { tier: 2, label: "Inbound" }, { tier: 3, label: "Pipeline decisions" }, { tier: 4, label: "Outreach work" }, { tier: 5, label: "Engagement signals" }];
   const work = tiers.map(t => {
     const items = d.attention.filter(i => i.tier === t.tier);
@@ -70,8 +70,8 @@ function needsMe(d: OverviewData): string {
 function nextAction(d: OverviewData): string {
   const i = d.attention[0];
   const missing = d.attentionGaps.length > 0;
-  const title = missing ? "Verify the unavailable sources" : i?.title ?? "Research one collision/body shop";
-  const why = missing ? "Some attention sources did not load. Resolve that uncertainty before relying on this overview." : i?.why ?? "Legitimate sourced collision evidence comes before qualification and outreach.";
+  const title = missing ? "Verify the unavailable sources" : i?.title ?? "Research one automotive repair business";
+  const why = missing ? "Some attention sources did not load. Resolve that uncertainty before relying on this overview." : i?.why ?? "Legitimate sourced repair evidence comes before qualification and outreach.";
   const href = missing ? "/admin/outreach" : i?.href ?? "/admin/discovery";
   return `<section class="card lv2 nba" aria-labelledby="next-h"><p class="nba-eyebrow">Next best action</p><p class="nba-intro">Start here</p><h2 class="nba-title" id="next-h">${esc(title)}</h2><p class="nba-what">${missing ? "Check the sources marked unavailable." : i ? `${i.count} ${i.count === 1 ? "item" : "items"} waiting.` : "Choose one business to understand."}</p><dl><div><dt>Why this next</dt><dd>${esc(why)}</dd></div><div class="nba-where"><dt>Where</dt><dd>${missing ? "Sending and the unavailable sections" : esc(i?.where ?? "Discovery")}</dd></div></dl><a class="btn" href="${esc(href)}">${missing ? "Review Sending" : esc(i?.action ?? "Open Discovery")} &rarr;</a></section>`;
 }

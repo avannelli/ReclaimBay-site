@@ -32,8 +32,8 @@ describe("signal definitions", () => {
     assert.equal(new Set(SIGNAL_KEYS).size, SIGNAL_KEYS.length);
   });
 
-  test("weights are positive integers summing to 100", () => {
-    for (const s of SIGNALS) assert.ok(Number.isInteger(s.weight) && s.weight > 0, s.key);
+  test("weights are non-negative integers summing to 100; only a segment that establishes a criterion weighs 0", () => {
+    for (const s of SIGNALS as readonly SignalDefinition[]) assert.ok(Number.isInteger(s.weight) && (s.weight > 0 || Boolean(s.establishes)), s.key);
     assert.equal(MAX_SCORE, 100);
   });
 
@@ -48,7 +48,7 @@ describe("signal definitions", () => {
   test("required criteria are plain observations (the list's SQL qualification filter relies on this)", () => {
     const required: SignalDefinition[] = SIGNALS.filter((s: SignalDefinition) => s.requiredCriterion);
     assert.deepEqual(required.map((s) => s.key), [...REQUIRED_CRITERIA]);
-    assert.deepEqual([...REQUIRED_CRITERIA], ["collision_repair_services"]);
+    assert.deepEqual([...REQUIRED_CRITERIA], ["automotive_repair_services"]);
     for (const s of required) assert.ok(s.kind === "observation" && !s.requiresWebsite, s.key);
   });
 
@@ -63,7 +63,7 @@ describe("scoreProspect", () => {
     assert.equal(r.score, 0);
     assert.equal(r.band, "low");
     assert.equal(r.qualification, "unverified");
-    assert.deepEqual(r.unverifiedCriteria, ["collision_repair_services"]);
+    assert.deepEqual(r.unverifiedCriteria, ["automotive_repair_services"]);
     assert.equal(r.known, 0);
     assert.equal(r.total, SIGNALS.length);
     assert.ok(r.breakdown.every((s) => s.state === "unknown" && s.points === 0));
@@ -87,9 +87,9 @@ describe("scoreProspect", () => {
   });
 
   test("qualification and score are independent: disqualified with a high score", () => {
-    const r = scoreProspect({ ...full, signals: { ...allObservationsYes, collision_repair_services: "no" } });
+    const r = scoreProspect({ ...full, signals: { ...allObservationsYes, automotive_repair_services: "no", collision_repair_services: undefined } });
     assert.equal(r.qualification, "disqualified");
-    assert.deepEqual(r.disqualifiedBy, ["collision_repair_services"]);
+    assert.deepEqual(r.disqualifiedBy, ["automotive_repair_services"]);
     assert.equal(r.score, 80);
     assert.equal(r.band, "high", "band reflects the score only");
   });
@@ -102,9 +102,9 @@ describe("scoreProspect", () => {
   });
 
   test("one required criterion unknown means unverified", () => {
-    const r = scoreProspect({ ...full, signals: { ...allObservationsYes, collision_repair_services: undefined } });
+    const r = scoreProspect({ ...full, signals: { ...allObservationsYes, automotive_repair_services: undefined, collision_repair_services: undefined } });
     assert.equal(r.qualification, "unverified");
-    assert.deepEqual(r.unverifiedCriteria, ["collision_repair_services"]);
+    assert.deepEqual(r.unverifiedCriteria, ["automotive_repair_services"]);
     assert.equal(r.band, "high");
   });
 

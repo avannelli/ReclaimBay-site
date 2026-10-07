@@ -73,7 +73,7 @@ describe("category check (service)", { skip: skipReason }, () => {
     const { b, counters, c } = await ingest({ businessName: "Able Auto Glass", website: "https://ventura-autoglass.example.com/" });
     assert.equal(counters.created, 1);
     assert.ok(c, "stored for auditability");
-    assert.deepEqual([c!.categoryVerdict, c!.categorySource, c!.categoryRules, c!.status], ["wrong_category", "name", "collision@c2", "discovered"]);
+    assert.deepEqual([c!.categoryVerdict, c!.categorySource, c!.categoryRules, c!.status], ["wrong_category", "name", "automotive@c3", "discovered"]);
     assert.match(c!.categoryReason!, /glass/);
     const again = await ingestBusinesses(db, { runId: null, provider: "overture", query: null }, [b]);
     assert.deepEqual([again.created, again.duplicates], [0, 1], "the duplicate index is unchanged");
@@ -116,15 +116,15 @@ describe("category check (service)", { skip: skipReason }, () => {
     assert.equal(c.categoryVerdict, "unclear", "names require service evidence");
     const [q] = (await enqueueResearch(db, [c.id], "admin")).queued;
     const run = (await processResearch(db, q!.researchId, { makeFetcher: popsWeb().makeFetcher, today: TODAY }))!;
-    assert.equal(run.version, "r12");
+    assert.equal(run.version, "r13");
     const after = await db.discoveryCandidate.findUniqueOrThrow({ where: { id: c.id } });
     assert.deepEqual([after.categoryVerdict, after.categorySource, after.categorySourceUrl], ["wrong_category", "website", POPS_SITE]);
-    assert.match(after.categoryReason!, /^Website describes shoe repair, boot repair, vacuum repair, lamp repair and sharpening; no collision\/body services or vocabulary/);
+    assert.match(after.categoryReason!, /^Website describes shoe repair, boot repair, vacuum repair, lamp repair and sharpening; no automotive repair services or vocabulary/);
     const fact = await db.researchFact.findFirst({ where: { researchId: run.id, field: "business_category" } });
     assert.equal(fact?.value, "Wrong category");
     // The website's sourced verdict, with no person involved yet: rejected automatically (rejection@r1).
     assert.equal(after.status, "rejected");
-    assert.match(after.decisionReason!, /^Automatically rejected \(rejection@r2\): Outside the target category: Website describes shoe repair/);
+    assert.match(after.decisionReason!, /^Automatically rejected \(rejection@r3\): Outside the target category: Website describes shoe repair/);
 
     // A person decides otherwise, and reopens it; research keeps the person's decision and says so.
     await setCandidateCategory(db, c.id, "in_target", "Owner confirmed they also repair cars.");
@@ -247,10 +247,10 @@ describe("category check (admin HTTP)", { skip: skipReason }, () => {
     const html = (await get(`/admin/discovery/candidates/${id}`)).body;
     assert.match(html, /Category check/);
     assert.match(html, /✕ Wrong category/);
-    assert.match(html, /The name indicates glass/);
+    assert.match(html, /The name indicates auto glass/);
     assert.match(html, /not qualification/);
     assert.match(html, /Not scored: outside the target category/);
-    assert.match(html, /Not assessed/);
+    assert.match(html, /Not qualified/);
     assert.match(html, /<b>Automated<\/b>/);
     assert.doesNotMatch(html, /class="rv-score">\d+<\/b>/, "no raw score is shown");
 

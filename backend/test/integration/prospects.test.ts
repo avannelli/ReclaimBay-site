@@ -130,7 +130,7 @@ describe("prospect service", { skip: skipReason }, () => {
         updateProspect(db, p.id, readyForm({ phone: "", phoneSourceUrl: "" })),
         /public business phone or email.*Move the prospect out of Ready to contact/,
       );
-      await rejects(updateProspect(db, p.id, readyForm({ signal_collision_repair_services: "no" })), /this prospect is Disqualified/);
+      await rejects(updateProspect(db, p.id, readyForm({ signal_collision_repair_services: "no", signal_automotive_repair_services: "no" })), /this prospect is Disqualified/);
       await rejects(
         updateProspect(db, p.id, readyForm({ signal_general_repair_services: "unknown", signal_collision_repair_services: "unknown" })),
         /this prospect is Unverified/,
@@ -168,7 +168,7 @@ describe("prospect service", { skip: skipReason }, () => {
       await changeStatus(db, noContact.id, "qualified", null);
       await rejects(changeStatus(db, noContact.id, "ready_to_contact", null), /public business phone or email/);
 
-      const chain = await createProspect(db, readyForm({ signal_collision_repair_services: "no" }));
+      const chain = await createProspect(db, readyForm({ signal_collision_repair_services: "no", signal_automotive_repair_services: "no" }));
       await rejects(changeStatus(db, chain.id, "qualified", null), /this prospect is Disqualified/);
 
       // Unverified (a required criterion unknown) is blocked however high the score.
@@ -274,7 +274,7 @@ describe("prospect service", { skip: skipReason }, () => {
       const medium = await createProspect(db, { businessName: "Ace Automotive", city: "Riverton", state: "WY", signal_independent_shop: "yes", signal_general_repair_services: "yes", signal_multiple_bays_or_staff: "yes" }); // 40
       const low = await createProspect(db, { businessName: "Valley Motors", city: "Fresno", state: "CA" }); // 0
       // Disqualified, yet scores 60: qualification and band are independent.
-      const dq = await createProspect(db, readyForm({ businessName: "Midas Downtown", signal_collision_repair_services: "no", signal_multiple_bays_or_staff: "yes" }));
+      const dq = await createProspect(db, readyForm({ businessName: "Midas Downtown", signal_collision_repair_services: "no", signal_automotive_repair_services: "no", signal_multiple_bays_or_staff: "yes" }));
       assert.equal(dq.score, 65);
       await changeStatus(db, high.id, "qualified", null);
 

@@ -52,9 +52,9 @@ describe("Acquisition Command Center (read-only pages)", { skip: skipReason }, (
       const html = (await get(url)).body; assert.doesNotMatch(html, /<script>bad/); assert.match(html, /&#60;script&#62;bad/);
     }
   });
-  test("current inventory and sourced collision records remain separate from score", async () => {
+  test("current inventory and sourced repair records remain separate from score", async () => {
     const p = await prospect(); const html = (await get("/admin/prospects")).body;
-    assert.match(html, /Collision evidence/); assert.match(html, /1 source record/); assert.match(html, /Not contacted/);
+    assert.match(html, /Repair evidence/); assert.match(html, /1 source record/); assert.match(html, /Not contacted/);
     assert.equal((await db.prospect.findUniqueOrThrow({ where: { id: p.id } })).status, "new");
   });
   test("campaigns use stored version/counts without creating a cohort engine", async () => {

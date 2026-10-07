@@ -203,10 +203,10 @@ describe("discovery admin (HTTP)", { skip: skipReason }, () => {
       assert.match(page, /What we know/);
       assert.match(page, /What we don&#39;t know|What we don't know/);
       assert.match(page, /Where each fact came from/);
-      assert.match(page, /class="vd vd-warn lg"><span aria-hidden="true">⚠<\/span>Needs verification/);
+      assert.match(page, /class="vd vd-warn lg"><span aria-hidden="true">\?<\/span>Needs verification/);
       assert.match(page, /Opportunity score · ranking only, not a verdict/);
       assert.match(page, /directory\.example\.com\/listing\/fx-1001/);
-      assert.match(page, /9 of 10 signals are unknown/, "only 'has a website' is known; the provider phone is unverified");
+      assert.match(page, /10 of 11 signals are unknown/, "only 'has a website' is known; the provider phone is unverified");
       assert.match(page, /Provider phone/);
       assert.match(page, /Unverified/);
       assert.match(page, /Can&#39;t approve yet/);

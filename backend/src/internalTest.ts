@@ -5,7 +5,7 @@
  * else: no website, phone, location, signals, or evidence.
  *
  * Because it claims to be no business, business qualification (sourced
- * collision/body evidence, Meets criteria) doesn't apply to it. In its place,
+ * automotive repair evidence, Meets criteria) doesn't apply to it. In its place,
  * Qualified and Ready to contact require the identity below, checked by the
  * same status rules at every step (prospectStatus.ts), so preparing,
  * queueing, and sending decide it alike. Every sending control (the arm, the

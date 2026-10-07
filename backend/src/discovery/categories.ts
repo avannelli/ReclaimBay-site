@@ -1,15 +1,15 @@
 /*
  * Provider category -> provider-neutral tier. A DISCOVERY FILTER ONLY:
- * "core" means the provider calls it automotive body repair, "adjacent"
- * means a related automotive service worth a look. Neither establishes
- * collision/body product fit; that is still a researched, evidence-backed
- * signal (src/scoring.ts).
+ * "core" means the provider calls it automotive repair (mechanical,
+ * specialist or collision/body), "adjacent" means a related automotive
+ * service worth a look. Neither establishes product fit; that is still a
+ * researched, evidence-backed signal (src/scoring.ts).
  *
  * The lists come from the Ventura County bake-off and were re-checked
  * against Overture release 2026-09-23.1 (schema v2: `taxonomy`, no
  * `categories`). Anything unlisted has no tier and is not discovered.
  */
-import { checkName, type CategoryResult, type CategoryRules } from "./categoryCheck.js";
+import { checkName, type CategoryResult, type CategoryRules, type OutOfScopeTerm } from "./categoryCheck.js";
 import type { CategoryTier } from "./types.js";
 
 const TIERS: Record<string, { core: readonly string[]; adjacent: readonly string[] }> = {
@@ -18,15 +18,15 @@ const TIERS: Record<string, { core: readonly string[]; adjacent: readonly string
   // overtureTier() for the hierarchy check and the deliberate exclusions.
   overture: {
     core: [
-      "auto_body_shop",
-    ],
-    adjacent: [
       "automotive_repair",
+      "auto_body_shop",
       "brake_service_and_repair",
       "engine_repair_service",
       "transmission_repair",
       "exhaust_and_muffler_repair",
       "auto_electrical_repair",
+    ],
+    adjacent: [
       "automotive_service",
       "tire_dealer_and_repair",
       "oil_change_station",
@@ -37,8 +37,8 @@ const TIERS: Record<string, { core: readonly string[]; adjacent: readonly string
   },
   // OpenStreetMap tags, written key=value.
   osm: {
-    core: [], // No OSM discovery provider is registered; no unverified body-category alias.
-    adjacent: ["shop=car_repair", "craft=car_repair", "shop=tyres", "amenity=vehicle_inspection"],
+    core: ["shop=car_repair", "craft=car_repair"],
+    adjacent: ["shop=tyres", "amenity=vehicle_inspection"],
   },
 };
 
@@ -55,8 +55,8 @@ export function categoryTierFor(provider: string, category: string | null | unde
 
 /*
  * Automotive categories Overture uses that are deliberately NOT discovered,
- * because they do not establish collision/body repair: glass work,
- * cosmetic and accessory services, washing, towing, retail, trailers.
+ * because they are not automotive repair: glass work, cosmetic and accessory
+ * services, washing, towing, retail, trailers, tire-only shops.
  * Handled conservatively: excluded, and counted on the import so an
  * operator can see them.
  */
@@ -126,34 +126,93 @@ export const TIER_LABELS: Record<CategoryTier, string> = {
   adjacent: "Adjacent category",
 };
 
-/* Collision/body ICP. Names are leads; only sourced repair evidence establishes fit. */
+/*
+ * Category check rules for ReclaimBay: businesses that perform automotive
+ * repair/service work (src/discovery/categoryCheck.ts runs them). Policy, c3:
+ *   - in scope: general, mechanical, specialist (engine, transmission,
+ *     brakes, electrical, diesel...) and collision/body repair;
+ *   - names are leads only (provisional): an in-scope name is "unclear" until
+ *     the business's own website or a person establishes its repair work;
+ *   - out: glass, detailing, washing, towing, tint/wraps/audio/interlocks,
+ *     sales, parts, rentals, driving schools, insurance, parking/storage,
+ *     test-only smog, and other trades, unless the name also names repair;
+ *   - a name alone can't prove tire-only, smog-only, RV or specialty paint
+ *     work: those are "unclear" (weak), never wrong on the name alone.
+ * "Auto", "automotive", "car", "vehicle" or "service" alone is not in-scope
+ * evidence.
+ */
 const t = (label: string, pattern: RegExp) => ({ label, pattern });
 
 export const AUTOMOTIVE_CATEGORY_RULES: CategoryRules = {
-  id: "collision@c2",
-  target: "automotive collision/body repair",
+  id: "automotive@c3",
+  target: "automotive repair/service",
   name: {
     provisional: true,
     inScope: [
+      t("repair", /\brepairs?\b|\breparaci[oó]n\b/),
+      t("a mechanic", /\bmechanics?\b|\bmechanical\b|\bmec[aá]nic[oa]s?\b|\btaller\b/),
+      t("auto care", /\b(?:auto|car) ?care\b/),
+      t("brakes", /\bbrakes?\b/),
+      t("transmissions", /\btransmissions?\b/),
+      t("engines", /\bengines?\b/),
+      t("tune-ups", /\btune[- ]?ups?\b/),
+      t("maintenance", /\bmaintenance\b/),
+      t("diagnostics", /\bdiagnostics?\b/),
+      t("mufflers and exhaust", /\bmufflers?\b|\bexhaust\b/),
+      t("radiators", /\bradiators?\b/),
       t("collision repair", /\bcollision\b|\baccident repair\b/),
-      t("auto body repair", /\bauto ?body\b|\bbody ?shop\b/),
+      t("auto body repair", /\bauto ?body\b|\bbody ?shop\b|\bbody (?:and|&) paint\b|\bpaint (?:and|&) body\b/),
     ],
     outOfScope: [
-      { label: "glass", pattern: /\bglass\b|\bwindshields?\b/, strength: "strong" },
-      { label: "tires", pattern: /\btires?\b|\btyres?\b/, strength: "strong" },
+      { label: "a test-only smog station", pattern: /\btest[- ]only\b/, strength: "exclusive" },
+      { label: "other trades", pattern: /\bgarage doors?\b|\byachts?\b|\bboats?\b|\bmarine\b|\bshoe repair\b/, strength: "exclusive" },
+      { label: "auto glass", pattern: /\bglass\b|\bwindshields?\b/, strength: "strong" },
       { label: "detailing", pattern: /\bdetail\w*/, strength: "strong" },
-      { label: "washing", pattern: /\bcar ?wash\b/, strength: "strong" },
+      { label: "a car wash", pattern: /\bcar ?wash\b/, strength: "strong" },
       { label: "towing", pattern: /\btow(?:ing)?\b/, strength: "strong" },
-      { label: "accessories", pattern: /\btint\w*|\bwraps?\b|\bstereos?\b|\bcar audio\b|\binterlocks?\b/, strength: "strong" },
-      { label: "other trades", pattern: /\bgarage doors?\b|\byachts?\b|\bboats?\b|\bshoe repair\b/, strength: "exclusive" },
+      { label: "accessories", pattern: /\btint\w*|\bwraps?\b|\bstereos?\b|\bcar audio\b|\binterlocks?\b|\baccessor(?:y|ies)\b/, strength: "strong" },
+      { label: "upholstery", pattern: /\bupholster\w*/, strength: "strong" },
+      { label: "vehicle sales", pattern: /\bsales\b/, strength: "strong" },
       { label: "parts or equipment", pattern: /\bparts\b|\bsuppl(?:y|ies|iers?)\b|\bequipment\b/, strength: "strong" },
-      { label: "specialty repair", pattern: /\bdents?\b|\bpaint\w*|\brestoration\b|\bstructural\b/, strength: "weak" },
+      { label: "rentals", pattern: /\brentals?\b|\brent[- ]a[- ]car\b/, strength: "strong" },
+      { label: "a driving school", pattern: /\bdriving (?:school|academy)\b/, strength: "strong" },
+      { label: "insurance", pattern: /\binsurance\b/, strength: "strong" },
+      { label: "parking or storage", pattern: /\bparking\b|\bstorage\b/, strength: "strong" },
+      { label: "a locksmith", pattern: /\blocksmith\w*/, strength: "strong" },
+      { label: "tires", pattern: /\btires?\b|\btyres?\b/, strength: "weak" },
+      { label: "wheels", pattern: /\bwheels?\b|\brims?\b/, strength: "weak" },
+      { label: "smog or inspection", pattern: /\bsmog\b|\bemissions?\b|\binspections?\b/, strength: "weak" },
+      { label: "RVs", pattern: /\brvs?\b/, strength: "weak" },
+      { label: "specialty paint or restoration", pattern: /\bdents?\b|\bpaint\w*|\brestoration\b/, strength: "weak" },
     ],
   },
   website: {
-    targetNoun: "collision/body",
-    vocabulary: [t("collision/body context", /\bcollision\b|\baccident\b|\bauto ?body\b|\bbody repair\b|\bvehicle.*structural repair\b/)],
+    targetNoun: "automotive repair",
+    vocabulary: [
+      t("automotive repair", /\b(?:auto(?:motive)?|car|vehicle|truck) repairs?\b|\bmechanics?\b|\bmechanical\b|\bcollision\b|\bauto ?body\b|\bbody (?:repair|shop|work)\b/),
+      t("repair services", /\bbrakes?\b|\bengines?\b|\btransmissions?\b|\bdiagnostics?\b|\boil changes?\b|\btune[- ]?ups?\b|\bsuspension\b|\bmufflers?\b|\bexhaust\b|\bradiators?\b|\bsmog repairs?\b/),
+      t("Spanish", /\btaller\b|\bmec[aá]nic[oa]s?\b|\bfrenos\b|\breparaci[oó]n de autos\b/),
+    ],
     otherTrades: [
+      // Automotive businesses that aren't repair: never wrong while the site also uses repair vocabulary.
+      t("auto glass", /\bauto glass\b|\bwindshields?\b/),
+      t("detailing", /\bdetailing\b|\bceramic coatings?\b|\bpaint correction\b/),
+      t("car washes", /\bcar ?wash(?:es)?\b/),
+      t("towing", /\btowing\b|\btow trucks?\b|\broadside assistance\b/),
+      t("window tint and wraps", /\bwindow tint(?:ing)?\b|\bvehicle wraps?\b|\bpaint protection film\b/),
+      t("car audio", /\bcar audio\b|\bcar stereos?\b|\bremote starts?\b/),
+      t("tires", /\btires?\b|\btyres?\b/),
+      t("tire services", /\btire rotations?\b|\bflat (?:tire )?repairs?\b|\btpms\b|\bwheel balanc\w*/),
+      t("wheels", /\brims?\b|\b(?:custom|alloy|aftermarket) wheels?\b|\bwheels? (?:and|&) tires?\b|\btires? (?:and|&) wheels?\b/),
+      t("vehicle sales", /\b(?:new|used|pre-owned) (?:cars|vehicles|inventory)\b|\bauto sales\b/),
+      t("auto parts", /\bauto parts\b|\bparts store\b/),
+      t("vehicle rentals", /\bcar rentals?\b|\brent a car\b/),
+      t("driving lessons", /\bdriving (?:school|lessons)\b/),
+      t("insurance", /\binsurance (?:quotes?|agency|agents?|policies)\b/),
+      t("smog testing", /\bsmog (?:checks?|tests?)\b|\bemissions? test(?:ing|s)?\b/),
+      t("locksmiths", /\blocksmith\w*|\bkey (?:fob|programming|replacement)\b/),
+      t("vehicle storage", /\b(?:vehicle|car|rv|boat) storage\b/),
+      // Other trades entirely.
       t("shoe repair", /\bshoes?\b|\bcobbler/),
       t("boot repair", /\bboots?\b/),
       t("vacuum repair", /\bvacuums?\b/),
@@ -180,3 +239,14 @@ export const AUTOMOTIVE_CATEGORY_RULES: CategoryRules = {
 export const CATEGORY_RULES = AUTOMOTIVE_CATEGORY_RULES;
 export const nameCategory = (c: { businessName: string; category?: string | null; categoryTier?: string | null }): CategoryResult =>
   checkName(CATEGORY_RULES, { name: c.businessName, providerCategory: c.category ?? null, providerTier: c.categoryTier ?? null });
+
+/**
+ * What the name says the business is besides repair: the out-of-scope labels
+ * ("tires", "auto glass") of a name that names no repair service. Empty when
+ * the name also names repair, or names nothing outside the target.
+ */
+export function nameOutsideTerms(name: string): string[] {
+  const has = (p: RegExp) => new RegExp(p.source, "i").test(name);
+  if (CATEGORY_RULES.name.inScope.some((t) => has(t.pattern))) return [];
+  return [...new Set((CATEGORY_RULES.name.outOfScope as readonly OutOfScopeTerm[]).filter((t) => has(t.pattern)).map((t) => t.label))];
+}

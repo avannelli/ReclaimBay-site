@@ -55,7 +55,7 @@ const midas = (): Partial<DiscoveredBusiness> => ({ businessName: "Midas (Oxnard
 /** Both fixture sites; any other website answers 404 everywhere (unreachable). */
 const web = () => {
   const routes: Record<string, Fixture> = { ...independentShop(CLEAN_HOST), ...independentShop(MIDAS_HOST, "(805) 555-0202") };
-  routes[`https://${MIDAS_HOST}/services`]!.body = routes[`https://${MIDAS_HOST}/services`]!.body!.replace("We provide collision repair.", "We do not offer collision repair.");
+  routes[`https://${MIDAS_HOST}/services`]!.body = page("Services", "<h1>Our Services</h1><p>Tires and batteries while you wait.</p><p>We do not perform repairs at this location.</p>");
   routes[`https://${MIDAS_HOST}/`] = {
     body: page(
       "Midas Oxnard | Brakes, Oil Changes and Auto Repair",
@@ -273,7 +273,7 @@ describe("automatic research worker (real PostgreSQL)", { skip: skipReason }, ()
     await lock.release();
   });
 
-  test("research is followed by the automatic decision: approval@a2 and rejection@r2; nothing is sent", async () => {
+  test("research is followed by the automatic decision: approval@a3 and rejection@r3; nothing is sent", async () => {
     const shop = await candidate(clean());
     const chain = await candidate(midas());
     const dead = await candidate({ website: "https://gone.example.com/" });

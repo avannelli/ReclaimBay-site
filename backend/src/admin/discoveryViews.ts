@@ -1,7 +1,8 @@
 import type { AiDecisionRow } from "../ai/records.js";
 import { aiShadowSection, aiShadowSummary } from "./aiViews.js";
 import type { getCandidateDetail, queuePosition, recentRuns, reviewQueue, QueueItem, QueueView } from "../discovery/service.js";
-import { ACTION_LABELS, ACTIVE_LANES, LANE_HINTS, LANE_LABELS, STEP_GLYPHS, STEP_LABELS, STEP_TONE, stepReason, type Lane } from "../discovery/workQueue.js";
+import { ACTION_LABELS, ACTIVE_LANES, LANE_HINTS, LANE_LABELS, STEP_GLYPHS, STEP_LABELS, STEP_TONE, stepReason, type Lane, type StepKind } from "../discovery/workQueue.js";
+import { TARGET_FIT_LABELS, businessTypeOf, targetFit, type BusinessType, type TargetFit } from "../discovery/targetFit.js";
 import type { recentImports } from "../discovery/staging.js";
 import { OUTCOME_LABELS, type ResearchOutcome } from "../research/researcher.js";
 import type { automaticResearchStatus, candidateResearch, researchQueue } from "../research/service.js";
@@ -20,10 +21,10 @@ import {
 import { distanceMeters } from "../discovery/dedupe.js";
 import { DUPLICATE_STATE_LABELS, duplicatePending, duplicateState, matchReasons } from "../discovery/duplicateReview.js";
 import { FIELD_LIMITS } from "../prospects.js";
-import { MAX_SCORE, QUALIFICATION_LABELS, REQUIRED_CRITERIA, SIGNALS, type Qualification, type SignalDefinition, type SignalState } from "../scoring.js";
+import { MAX_SCORE, QUALIFICATION_LABELS, REQUIRED_CRITERIA, SIGNALS, establishedBy, type SignalDefinition, type SignalKey, type SignalState } from "../scoring.js";
 import { TIER_LABELS } from "../discovery/categories.js";
 import type { CategoryTier } from "../discovery/types.js";
-import { businessSections, criteriaNames, signalSections } from "./prospectViews.js";
+import { businessSections, criteriaNames, signalKindTag, signalSections } from "./prospectViews.js";
 import { appPage } from "./views.js";
 import {
   candidateBadge,
@@ -238,11 +239,14 @@ const VIEW_CHIPS: [QueueView, string][] = [
 const LANE_TONE: Record<Lane, "warn" | "pos" | "info" | "quiet"> = { decision: "warn", ready: "pos", verify: "warn", research: "info", handled: "quiet" };
 const LANE_GLYPH: Record<Lane, string> = { decision: "⚠", ready: "✓", verify: "?", research: "◔", handled: "—" };
 
-const QUAL_SHORT: Record<Qualification, [Tone, string, string]> = {
-  meets_criteria: ["pos", "✓", "Qualified"],
-  unverified: ["warn", "⚠", "Needs verification"],
-  disqualified: ["neg", "✕", "Does not qualify"],
+const FIT_SHORT: Record<TargetFit, [Tone, string, string]> = {
+  qualified: ["pos", "✓", TARGET_FIT_LABELS.qualified],
+  needs_verification: ["warn", "?", TARGET_FIT_LABELS.needs_verification],
+  not_qualified: ["neg", "✕", TARGET_FIT_LABELS.not_qualified],
 };
+
+/** Steps whose reason is the target-fit reason already shown on the row. */
+const FIT_EXPLAINS = new Set<StepKind>(["outside_target", "disqualified", "category_unclear", "unverified", "ready"]);
 
 /** The one primary action of a queue row, sized by what it does. */
 function queueAction(item: QueueItem, view: QueueView): string {
@@ -297,18 +301,24 @@ function autoResearchLine(a: AutoResearchStatus): string {
     : `<section aria-label="Automatic research" class="small muted" style="margin:-8px 0 16px">${line}</section>`;
 }
 
+/** Business type in a few words, and whether it is verified or only a lead from the name or provider. */
+function businessTypeLine(type: BusinessType): string {
+  const from = type.from === "evidence" ? "verified" : type.from === "name" ? "from the name" : type.from === "provider" ? "from the provider category" : "not identified";
+  return `<div class="q-type"><span class="q-k">Business type</span> ${esc(type.label)} <span class="muted">· ${esc(from)}</span></div>`;
+}
+
+/** Target fit as a verdict: glyph, words and tone together. */
+const fitVerdict = (fit: TargetFit, size: "lg" | "sub" | "" = "") => verdict(...FIT_SHORT[fit], size);
+
 function queueRow(item: QueueItem, view: QueueView): string {
   const { candidate: c, result, outsideTarget, step } = item;
   const tone = STEP_TONE[step.kind];
   // City and state are provider or user text: escaped like everything else (extLink escapes the website).
   const where = [esc([c.city, c.state].filter(Boolean).join(", ")), c.website ? extLink(c.website) : ""].filter(Boolean).join(" · ");
-  const [qt, qg, ql] = QUAL_SHORT[result.qualification];
-  // Before research, unknown criteria are expected: say so quietly instead of warning on every row.
-  const qualification = outsideTarget
-    ? verdict("quiet", "—", "Not assessed", "sub")
-    : step.lane === "research" && result.qualification === "unverified"
-      ? verdict("quiet", "?", "Not checked yet", "sub")
-      : verdict(qt, qg, ql, "sub");
+  // What the business does, whether that is ReclaimBay's market, and why: the operator's first questions.
+  const fitInput = { ...c, qualification: result.qualification };
+  const type = businessTypeOf(fitInput);
+  const target = targetFit(fitInput, type);
   const why = stepReason(step, {
     duplicateReasonText: matchReasons(c.duplicateReason).map((r) => r.text).join("; ") || null,
     categoryReason: c.categoryReason,
@@ -319,8 +329,9 @@ function queueRow(item: QueueItem, view: QueueView): string {
     automatic: isAutoApproved(c),
   });
   // Ready to approve: a person approves it because the automatic rule held it. Say why.
-  const reason = step.kind === "ready" && item.held ? `Automatic approval held it: ${item.held.replace(/\.$/, "")}.` : why;
-  // Recorded research and evidence remain distinct from qualification and ranking.
+  // The fit reason already explains category, qualification and verification steps; other steps say their own.
+  const reason = step.kind === "ready" && item.held ? `Automatic approval held it: ${item.held.replace(/\.$/, "")}.` : FIT_EXPLAINS.has(step.kind) ? "" : why;
+  // Recorded research and evidence remain distinct from target fit and ranking.
   const latest = c.research[0];
   const meta = [
     outsideTarget ? `<span>${NOT_SCORED}</span>` : `<span>Opportunity ${result.score}/${MAX_SCORE} <span class="muted">(ranking only)</span></span>`,
@@ -333,9 +344,9 @@ function queueRow(item: QueueItem, view: QueueView): string {
     c.status === "approved" ? `<span class="tag">${isAutoApproved(c) ? "Approved automatically" : "Approved by a person"}</span>` : "",
   ].filter(Boolean);
   return `<li class="q-row t-${tone}" id="c-${esc(c.id)}">
-  <div class="q-id"><h3 class="q-name"><a href="/admin/discovery/candidates/${esc(c.id)}">${esc(c.businessName)}</a></h3>${where ? `<div class="q-where">${where}</div>` : ""}</div>
-  <div class="q-state">${verdict(tone, STEP_GLYPHS[step.kind], STEP_LABELS[step.kind])}<p class="q-why">${esc(reason)}</p></div>
-  <div class="q-qual"><span class="q-k">Qualification</span>${qualification}</div>
+  <div class="q-id"><h3 class="q-name"><a href="/admin/discovery/candidates/${esc(c.id)}">${esc(c.businessName)}</a></h3>${where ? `<div class="q-where">${where}</div>` : ""}${businessTypeLine(type)}</div>
+  <div class="q-state"><span class="q-k">Target fit</span>${step.lane === "research" && target.fit === "needs_verification" ? verdict("quiet", "?", TARGET_FIT_LABELS.needs_verification) : fitVerdict(target.fit)}<p class="q-why">${esc(target.why)}</p></div>
+  <div class="q-qual"><span class="q-k">Next</span>${verdict(tone, STEP_GLYPHS[step.kind], STEP_LABELS[step.kind], "sub")}${reason ? `<p class="q-why">${esc(reason)}</p>` : ""}</div>
   <div class="q-act">${queueAction(item, view)}</div>
   <div class="q-meta">${meta.join('<span class="q-dot" aria-hidden="true">·</span>')}</div>
 </li>`;
@@ -623,12 +634,6 @@ type Tone = "pos" | "warn" | "neg" | "info" | "quiet";
 const verdict = (tone: Tone, glyph: string, text: string, size: "lg" | "sub" | "" = "") =>
   `<span class="vd vd-${tone}${size ? ` ${size}` : ""}"><span aria-hidden="true">${glyph}</span>${esc(text)}</span>`;
 
-const QUALIFICATION_RESULT: Record<Qualification, [Tone, string, string]> = {
-  meets_criteria: ["pos", "✓", "Qualified"],
-  unverified: ["warn", "⚠", "Needs verification"],
-  disqualified: ["neg", "✕", "Does not qualify"],
-};
-
 const ANSWER: Record<SignalState, [Tone, string, string]> = {
   yes: ["pos", "✓", "Yes"],
   no: ["neg", "✕", "No"],
@@ -777,18 +782,25 @@ function duplicatePanel(d: Detail): string {
 
 function qualificationCard(d: Detail): string {
   const { candidate: c, result, outsideTarget } = d;
+  const fitInput = { ...c, qualification: result.qualification };
+  const type = businessTypeOf(fitInput);
+  const target = targetFit(fitInput, type);
+  const from = type.from === "evidence" ? "verified with sourced evidence" : type.from === "name" ? "from the business name only" : type.from === "provider" ? "from the provider category only" : "not identified yet";
+  const head = `<h2 class="rv-h" id="qual-h">Target fit</h2><p class="rv-q">Does this business perform automotive repair or service work that fits ReclaimBay?</p>
+  <p class="rv-type"><span class="rv-k">Business type</span> <b>${esc(type.label)}</b> <span class="small muted">· ${esc(from)}</span></p>`;
   if (outsideTarget) {
-    return `<section class="rv-card t-quiet" aria-labelledby="qual-h">
-  <h2 class="rv-h" id="qual-h">Qualification</h2><p class="rv-q">Does it meet the required criteria?</p>
-  <div class="rv-result">${verdict("quiet", "—", "Not assessed", "lg")}</div>
-  <p class="rv-why">Qualification applies only to businesses in the target category. Override the <a href="#category">category check</a> if this is one.</p>
+    return `<section class="rv-card t-neg" aria-labelledby="qual-h">
+  ${head}
+  <div class="rv-result">${fitVerdict(target.fit, "lg")}</div>
+  <p class="rv-why">${esc(target.why)} Override the <a href="#category">category check</a> if this is an automotive repair business.</p>
 </section>`;
   }
   const crit = result.breakdown
     .filter((s) => (REQUIRED_CRITERIA as readonly string[]).includes(s.key))
     .map((s) => {
       const [tone, glyph, word] = ANSWER[s.state];
-      const ev = c.evidence.find((e) => e.signalKey === s.key);
+      // A collision/body Yes establishes automotive repair: its evidence is the support.
+      const ev = c.evidence.find((e) => e.signalKey === s.key) ?? (s.state === "yes" ? c.evidence.find((e) => establishedBy(s.key).includes(e.signalKey as SignalKey)) : undefined);
       const support = ev
         ? `“${esc(ev.excerpt.length > 140 ? `${ev.excerpt.slice(0, 137)}…` : ev.excerpt)}” <span class="src">${extLink(ev.sourceUrl)}</span>`
         : s.state === "unknown"
@@ -797,19 +809,13 @@ function qualificationCard(d: Detail): string {
       return `<li><span class="cname">${esc(s.label)}</span>${verdict(tone, glyph, word)}<span class="cev">${support}</span></li>`;
     })
     .join("");
-  const [tone, glyph, label] = QUALIFICATION_RESULT[result.qualification];
-  const names = (keys: readonly string[]) => keys.map(signalLabel).join(" and ");
-  const why =
-    result.qualification === "meets_criteria"
-      ? "Both required criteria are confirmed."
-      : result.qualification === "unverified"
-        ? `${names(result.unverifiedCriteria)} ${result.unverifiedCriteria.length === 1 ? "hasn't" : "haven't"} been verified yet.`
-        : `${names(result.disqualifiedBy)} ${result.disqualifiedBy.length === 1 ? "is" : "are"} No.`;
+  const [tone] = FIT_SHORT[target.fit];
   return `<section class="rv-card t-${tone}" aria-labelledby="qual-h">
-  <h2 class="rv-h" id="qual-h">Qualification</h2><p class="rv-q">Required criteria: ${esc(criteriaNames)}</p>
+  ${head}
   <ul class="crit">${crit}</ul>
-  <div class="rv-result">${verdict(tone, glyph, label, "lg")}</div>
-  <p class="rv-why">${esc(why)}</p>
+  <div class="rv-result">${fitVerdict(target.fit, "lg")}</div>
+  <p class="rv-why">${esc(target.why)}</p>
+  <p class="small muted" style="margin:6px 0 0">Required criterion: ${esc(criteriaNames)}. The opportunity score never decides fit.</p>
 </section>`;
 }
 
@@ -911,7 +917,7 @@ function decisionCard(d: Detail, research: ResearchView | undefined, values: Val
       "warn",
       "Is this ready to approve?",
       verdict("warn", "⚠", "Verify before approving", "lg"),
-      `<p class="rv-why">${esc(missing)} ${result.unverifiedCriteria.length === 1 ? "hasn't" : "haven't"} been verified. You can still approve it; it enters as New and can't be marked Qualified until the required collision criterion is Yes.</p>`,
+      `<p class="rv-why">${esc(missing)} ${result.unverifiedCriteria.length === 1 ? "hasn't" : "haven't"} been verified. You can still approve it; it enters as New and can't be marked Qualified until verified automotive repair is Yes with a source.</p>`,
       `<a class="btn" href="/admin/discovery/candidates/${id}/edit#sig-${esc(first)}">Verify ${esc(signalLabel(first))}</a>${approve("Approve anyway", "btn-secondary")}${keep}${disregard("Not a business to pursue.")}`,
     );
   }
@@ -1018,7 +1024,7 @@ export function candidateDetailPage(opts: {
           : n
             ? `<a href="#evidence">${n} evidence item${n === 1 ? "" : "s"}</a>`
             : `<span class="tag" style="border-color:var(--amber);color:var(--warn)">! No evidence yet</span>`;
-      return `<tr><td><b>${esc(s.label)}</b><div class="sub">${def.requiredCriterion ? '<span class="kind req">Required criterion</span>' : '<span class="kind">Opportunity signal</span>'}</div></td>
+      return `<tr><td><b>${esc(s.label)}</b><div class="sub">${signalKindTag(def)}</div></td>
 <td data-label="Observed">${obsBadge(s.state)}${byResearch ? '<div class="sub"><span class="tag">Set by research</span></div>' : ""}</td><td class="num" data-label="Points"><span class="score-cell"><b>${s.points}</b><span class="of">/${s.weight}</span></span></td><td data-label="Source">${source}</td></tr>`;
     })
     .join("");
