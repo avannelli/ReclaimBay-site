@@ -93,6 +93,7 @@ async function planDraft(tx: Tx | Db, prospectId: string, opts: DraftOptions, in
       emailSourceUrl: p.emailSourceUrl!,
       signals: p.signals,
       evidence: p.evidence,
+      internalTest: p.internalTest,
       link,
       sender: { name: opts.sender.name, postalAddress: opts.sender.postalAddress },
     };

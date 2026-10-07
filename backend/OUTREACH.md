@@ -770,30 +770,54 @@ Revenue isn't recorded yet; billing comes later.
 ## Internal outreach test
 
 To prove the whole path once (prepare, queue, the sender job, Gmail, the
-invitation link, a reply, the inbox job) before any real business is emailed,
-a prospect can be created as an **internal outreach test**: ReclaimBay's own
-mailbox standing in for a business.
+invitation link, a reply, the inbox job, classification) before any real
+business is emailed, a prospect can be created as an **internal outreach
+test**: ReclaimBay's own controlled test identity. It is not a business and
+never stands in for one.
 
 - **One explicit mark, in the database.** `Prospect.internalTest`, set only by
   its own admin form (Prospects, **Internal outreach test**), which requires
-  confirming "This is ReclaimBay's own internal outreach test, not a
+  confirming "This is ReclaimBay's own internal outreach test identity, not a
   business". It is permanent: no edit, status change, import, or approval
   reads or writes it, so a real prospect can never become a test and a test
-  can never become real. No name, address, or campaign convention is involved.
-- **No exceptions.** It is drafted, queued (by a person), and sent by the same
-  code as any prospect: the same qualification and published-email rules, the
+  can never become real.
+- **A fixed, synthetic identity** (`src/internalTest.ts`): the name
+  **ReclaimBay Internal Test**, the recipient `reclaimbay.test@gmail.com`
+  (a mailbox ReclaimBay controls, which is not the outreach account or one of
+  its aliases, so the inbox reader records its replies), and, as the
+  recipient's source, <https://reclaimbay.com/internal-test-contact>, the
+  public page that says the address is ReclaimBay's internal testing address.
+  The form takes only the confirmation; it refuses any other name, recipient,
+  source, website, phone, location, or signal. An internal test carries no
+  business details, signals, or evidence, can't be edited, and can't be given
+  evidence. There is one: creating it is refused while any record uses the
+  mailbox. No business may use that mailbox or name.
+- **No business qualification.** It claims to be no business, so business
+  qualification (Meets criteria, sourced collision/body evidence) doesn't
+  apply. Instead, Qualified and Ready to contact require its exact identity,
+  checked by the same status rules at drafting, queueing, and sending; a
+  record marked internal that doesn't match it (an earlier internal test made
+  with other details, for example) isn't eligible, and nothing rewrites it.
+  Real prospects keep every qualification and evidence requirement unchanged.
+- **Truthful facts.** Its message is the production template, addressed to
+  "ReclaimBay Internal Test". The facts stored with it are only "This is
+  ReclaimBay's internal outreach test, not a business. Its recipient,
+  reclaimbay.test@gmail.com, is a mailbox ReclaimBay controls, documented at
+  https://reclaimbay.com/internal-test-contact", sourced to that page: never
+  that a business is called something or publishes the address.
+- **Every sending control applies.** Preparing (by a person), queueing, and
+  sending use the same code as for any prospect: the published-email rule, the
   deployment arm, the switch, the provider's checks, the daily limit (a test
-  send uses it), recipient ownership, suppression, the send gate, and the
-  inbox reader's usual matching. A unit test enforces that no sending or inbox
-  module mentions it.
+  send uses it), recipient ownership, suppression, the send gate, provider
+  uncertainty handling, the inbox reader's usual matching, and reply
+  classification. A unit test enforces that only the status rules (through
+  eligibility) and composition treat it differently, and that no queueing,
+  sending, recording, or inbox module mentions it.
 - **Left out of the business numbers:** the outreach funnel (above), and the
   analytics summary and prospect intent on the admin dashboard. Operations
   still show it, labelled **Internal test**: the Outreach page's counts and
   needs-attention list, the messages, replies, and activity views, and its own
-  prospect page with its activity.
-- **Use a mailbox you control that isn't the outreach account or any of its
-  aliases.** The inbox reader ignores mail from those addresses (its own), so
-  a reply from them would never be recorded.
+  page, which shows its identity instead of a business qualification verdict.
 
 ## Safety checklist before the first real email
 

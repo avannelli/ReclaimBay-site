@@ -90,10 +90,11 @@ describe("manual prospect collision evidence boundary (local PostgreSQL)", { ski
     await assert.rejects(changeStatus(db, p.id, "ready_to_contact", null), /contradictory collision\/body research/);
     assert.equal((await db.discoveryCandidate.findUniqueOrThrow({ where: { id: c.id } })).categorySource, "manual");
   });
-  test("internal manual test prospects obey the same evidence requirement", async () => {
-    const p = await createInternalTestProspect(db, readyForm({ confirmInternalTest: "yes" }));
-    await assert.rejects(changeStatus(db, p.id, "qualified", null), /sourced collision\/body evidence/);
-    await add(p.id); await changeStatus(db, p.id, "qualified", null);
+  test("the internal outreach test carries no business evidence: its controlled identity stands in for qualification", async () => {
+    const p = await createInternalTestProspect(db, { confirmInternalTest: "yes" });
+    await assert.rejects(add(p.id), /controlled identity is fixed/);
+    await changeStatus(db, p.id, "qualified", null);
+    assert.equal(await db.prospectEvidence.count({ where: { prospectId: p.id } }), 0);
   });
   test("manual candidate approval cannot bypass evidence; valid evidence survives transfer", async () => {
     const c = await addManualCandidate(db, { businessName: "Smith Auto", website: WEBSITE });

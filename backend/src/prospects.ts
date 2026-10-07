@@ -3,6 +3,7 @@ import type { Db } from "./db.js";
 import type { Prisma } from "./generated/prisma/client.js";
 import { OUTREACH_CLOSED } from "./outreach/lifecycle.js";
 import { cancelOpenOutreach, lockSendGate, suppressEmail } from "./outreach/records.js";
+import { INTERNAL_TEST_IDENTITY, internalTestIdentity, isInternalTestEmail, isInternalTestName } from "./internalTest.js";
 import { STATUS_LABELS, isStatus, statusRequirementErrors, transitionErrors, type Status } from "./prospectStatus.js";
 import { collisionEvidenceErrors, hasCollisionResearchConflict } from "./research/collisionFit.js";
 import {
@@ -173,6 +174,8 @@ export function parseProspectInput(raw: Raw): { input: ProspectInput; errors: st
   const emailSourceUrl = url("Email source URL", text(raw, "emailSourceUrl"));
   if (email && !emailSourceUrl) errors.push("Email needs the public URL where it is listed.");
   if (!email && emailSourceUrl) errors.push("Email source URL is set without an email address.");
+  // The internal test's controlled identity belongs to it alone (internalTest.ts).
+  if (isInternalTestEmail(email)) errors.push(`${INTERNAL_TEST_IDENTITY.email} is ReclaimBay's internal-test mailbox; only the internal outreach test uses it.`);
 
   const signals = {} as Record<SignalKey, SignalState>;
   for (const key of SIGNAL_KEYS) {
@@ -181,9 +184,12 @@ export function parseProspectInput(raw: Raw): { input: ProspectInput; errors: st
     signals[key] = v === "yes" || v === "no" ? v : "unknown";
   }
 
+  const businessName = limit("Business name", text(raw, "businessName"), FIELD_LIMITS.businessName);
+  if (isInternalTestName(businessName)) errors.push(`"${INTERNAL_TEST_IDENTITY.businessName}" is the internal outreach test's name; a business can't use it.`);
+
   const input: ProspectInput = {
     fields: {
-      businessName: limit("Business name", text(raw, "businessName"), FIELD_LIMITS.businessName),
+      businessName,
       website,
       city: limit("City", text(raw, "city"), FIELD_LIMITS.city),
       state,
@@ -304,32 +310,86 @@ export async function createProspect(db: Db, raw: Raw) {
   return insertWithFreshCode(db, input);
 }
 
-/** The note an internal test prospect carries from creation. */
+/** The note an internal test prospect carries from creation. Stored once: earlier notes keep their wording. */
 export const INTERNAL_TEST_NOTE =
-  "Internal outreach test: ReclaimBay's own mailbox standing in for a business. Every sending check applies as for any prospect; it is left out of the outreach funnel, the analytics summary, and prospect intent.";
+  `Internal outreach test: ReclaimBay's own controlled identity, not a business. Its recipient, ${INTERNAL_TEST_IDENTITY.email}, is a mailbox ReclaimBay controls, documented at ${INTERNAL_TEST_IDENTITY.emailSourceUrl}. Business qualification doesn't apply; every sending check does. It is left out of the outreach funnel, the analytics summary, and prospect intent.`;
 
-/**
- * Creates an internal outreach test prospect: the only way a prospect is ever
- * marked internalTest, and only with the explicit confirmation from its own
- * admin form. Otherwise exactly createProspect: the same validation,
- * qualification, and (later) the same drafting, queueing, and sending checks.
- * The mark is never changed afterwards: no edit, status change, or import
- * reads or writes it.
- */
-export async function createInternalTestProspect(db: Db, raw: Raw) {
-  const { input, errors } = parseProspectInput(raw);
-  if (raw.confirmInternalTest !== "yes") {
-    errors.push("Confirm that this is ReclaimBay's own internal outreach test, not a business.");
+/** Why an internal test can't be edited or given evidence. */
+const INTERNAL_TEST_FIXED = "An internal outreach test isn't a business: its controlled identity is fixed, and it carries no business details or evidence.";
+
+/** Form fields an internal test never carries: anything submitted must be blank or its controlled identity. */
+const INTERNAL_TEST_FIELDS: Record<string, string> = {
+  businessName: "Business name",
+  website: "Website",
+  city: "City",
+  state: "State",
+  postalCode: "Postal code",
+  phone: "Phone",
+  phoneSourceUrl: "Phone source URL",
+  email: "Email",
+  emailSourceUrl: "Email source URL",
+};
+
+/** Why this submission can't create the internal test (empty when it can). */
+export function internalTestFormErrors(raw: Raw): string[] {
+  const errors: string[] = [];
+  const fixed: Record<string, string> = INTERNAL_TEST_IDENTITY;
+  for (const [name, label] of Object.entries(INTERNAL_TEST_FIELDS)) {
+    const v = text(raw, name);
+    if (v === null || (name in fixed && v.toLowerCase() === fixed[name]!.toLowerCase())) continue;
+    errors.push(
+      name in fixed
+        ? `${label} of an internal test is always ${fixed[name]}; it can't be ${v}.`
+        : `An internal test isn't a business: it has no ${label[0]!.toLowerCase()}${label.slice(1)}.`,
+    );
   }
-  if (errors.length) throw new ProspectError(errors);
-  return insertWithFreshCode(db, input, { internalTest: true, notes: [INTERNAL_TEST_NOTE] });
+  if (SIGNAL_KEYS.some((k) => (text(raw, signalFieldName(k)) ?? "unknown") !== "unknown")) {
+    errors.push("An internal test isn't a business: it records no business signals.");
+  }
+  if (raw.confirmInternalTest !== "yes") {
+    errors.push("Confirm that this is ReclaimBay's own internal outreach test identity, not a business.");
+  }
+  return errors;
 }
 
-async function insertWithFreshCode(db: Db, input: ProspectInput, details: ProspectDetails = {}) {
-  // A code collision is astronomically unlikely, but retry rather than fail.
+/**
+ * Creates the internal outreach test: the only way a prospect is ever marked
+ * internalTest, and only with the explicit confirmation from its own admin
+ * form. It always carries exactly the controlled identity (internalTest.ts):
+ * its name, ReclaimBay's own test mailbox, and the public page documenting
+ * that mailbox; no business details, signals, or evidence. There is one: it
+ * is refused while any record uses the mailbox. Business qualification
+ * doesn't apply to it; drafting, queueing, and sending check everything else
+ * exactly as for any prospect. The mark is never changed afterwards: no
+ * edit, status change, or import reads or writes it.
+ */
+export async function createInternalTestProspect(db: Db, raw: Raw) {
+  const errors = internalTestFormErrors(raw);
+  if (errors.length) throw new ProspectError(errors);
+  const input: ProspectInput = {
+    fields: { ...INTERNAL_TEST_IDENTITY, website: null, city: null, state: null, postalCode: null, country: "US", phone: null, phoneSourceUrl: null },
+    signals: Object.fromEntries(SIGNAL_KEYS.map((k) => [k, "unknown"])) as Record<SignalKey, SignalState>,
+  };
+  return withFreshCode((code) =>
+    db.$transaction(async (tx) => {
+      await lockSendGate(tx);
+      // One internal test: its mailbox is on no other record.
+      const existing = await tx.prospect.findFirst({ where: { email: { equals: INTERNAL_TEST_IDENTITY.email, mode: "insensitive" } }, select: { id: true } });
+      if (existing) throw new ProspectError([`The internal outreach test already exists: ${INTERNAL_TEST_IDENTITY.email} is on another record.`], "conflict");
+      return insertProspect(tx, input, code, { internalTest: true, notes: [INTERNAL_TEST_NOTE] });
+    }),
+  );
+}
+
+function insertWithFreshCode(db: Db, input: ProspectInput, details: ProspectDetails = {}) {
+  return withFreshCode((code) => db.$transaction((tx) => insertProspect(tx, input, code, details)));
+}
+
+/** Runs an insert with a new referral code. A code collision is astronomically unlikely, but retry rather than fail. */
+async function withFreshCode<T>(insert: (code: string) => Promise<T>): Promise<T> {
   for (let attempt = 0; ; attempt++) {
     try {
-      return await db.$transaction((tx) => insertProspect(tx, input, generateReferralCode(), details));
+      return await insert(generateReferralCode());
     } catch (err) {
       const target = (err as { meta?: { target?: unknown } }).meta?.target;
       const isCodeClash = (err as { code?: string }).code === "P2002" && String(target ?? "").includes("referralCode");
@@ -349,6 +409,7 @@ export async function updateProspect(db: Db, id: string, raw: Raw) {
     await lockSendGate(tx);
     const current = await tx.prospect.findUnique({ where: { id }, include: { signals: true, evidence: true } });
     if (!current) throw notFound();
+    if (current.internalTest) throw new ProspectError([INTERNAL_TEST_FIXED]);
 
     // An edit can't leave the prospect in a status whose requirements fail.
     const blocked = statusRequirementErrors(current.status, {
@@ -406,7 +467,7 @@ export async function changeStatusInTx(tx: Tx, id: string, to: Status, reason: s
   if (!current) throw notFound();
   const from = current.status;
   const input = scoringInputFromRecord(current);
-  const errors = transitionErrors(from, to, { businessName: current.businessName, ...statusContext(input) }, reason);
+  const errors = transitionErrors(from, to, { businessName: current.businessName, ...statusContext(input), internalTestIdentity: internalTestIdentity(current) }, reason);
   errors.push(...await statusEvidenceErrors(tx, id, to, { ...input, businessName: current.businessName, website: current.website }, current.evidence));
   if (errors.length) throw new ProspectError(errors);
 
@@ -463,6 +524,7 @@ export async function addEvidence(db: Db, prospectId: string, raw: Raw) {
     await lockSendGate(tx);
     const current = await tx.prospect.findUnique({ where: { id: prospectId }, include: { signals: true, evidence: true } });
     if (!current) throw notFound();
+    if (current.internalTest) throw new ProspectError([INTERNAL_TEST_FIXED]);
     const blocked = await statusEvidenceErrors(tx, prospectId, current.status, { ...scoringInputFromRecord(current), businessName: current.businessName, website: current.website }, [...current.evidence, evidence]);
     if (blocked.length) throw new ProspectError([...blocked, `Move the prospect out of ${STATUS_LABELS[current.status]} first, or keep the supporting evidence.`]);
     return tx.prospectEvidence.create({ data: { prospectId, ...evidence } });

@@ -22,7 +22,7 @@ const GATED: Record<string, Record<string, number>> = {
   "outreach/reconcile.ts": { reconcileSent: 1 },
   "outreach/emailedUnsubscribe.ts": { ingestEmailedUnsubscribe: 1, resolveUnsubscribeReview: 1 },
   "outreach/service.ts": { discardOutreach: 1, queueOutreach: 1, applyProviderEvent: 1, recordReply: 1, classifyReply: 1, recordInboundReply: 1, unsubscribeOutreach: 1 },
-  "prospects.ts": { updateProspect: 1, changeStatus: 1, addEvidence: 1, deleteEvidence: 1 },
+  "prospects.ts": { updateProspect: 1, changeStatus: 1, addEvidence: 1, deleteEvidence: 1, createInternalTestProspect: 1 },
   "invitations/service.ts": { revokeInvitation: 1, revokeInvitationForOutreach: 1 },
 };
 
@@ -32,7 +32,7 @@ const UNGATED: Record<string, string[]> = {
   "outreach/reconcile.ts": [],
   "outreach/emailedUnsubscribe.ts": [],
   "outreach/service.ts": ["createOutreachDraft"],
-  // Creating a prospect (createProspect, createInternalTestProspect): a New prospect with no messages.
+  // Creating a prospect (createProspect): a New prospect with no messages. createInternalTestProspect takes the gate to keep its mailbox on one record.
   "prospects.ts": ["insertWithFreshCode"],
   "invitations/service.ts": ["createInvitationForOutreach", "openInvitation"],
 };

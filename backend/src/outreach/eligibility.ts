@@ -23,6 +23,7 @@
  */
 import type { Db } from "../db.js";
 import type { Outreach, Prisma } from "../generated/prisma/client.js";
+import { internalTestIdentity } from "../internalTest.js";
 import { STATUS_LABELS } from "../prospectStatus.js";
 import { scoringInputFromRecord } from "../prospects.js";
 import { hasPublicContact, scoreProspect } from "../scoring.js";
@@ -161,6 +162,8 @@ export async function outreachEligibility(tx: Tx | Db, r: EligibilityRequest): P
       businessName: p.businessName,
       hasPublicContact: hasPublicContact(input),
       qualification: scoreProspect(input).qualification,
+      // An internal outreach test is held to its controlled identity instead of business qualification.
+      internalTestIdentity: internalTestIdentity(p),
       email: p.email,
       emailSourceUrl: p.emailSourceUrl,
     },

@@ -9,8 +9,11 @@
  *   - a signal recorded as "yes" that has at least one evidence excerpt.
  *
  * Unknown, "no", and unevidenced signals produce no fact, so the message
- * can't mention them. Excerpts are kept as references, never quoted into
- * the message. What the message says about ReclaimBay itself is fixed text.
+ * can't mention them. The internal outreach test isn't a business: its only
+ * fact is what it is, ReclaimBay's own test, and where its recipient is
+ * documented, never that a business publishes that address. Excerpts are
+ * kept as references, never quoted into the message. What the message says
+ * about ReclaimBay itself is fixed text.
  *
  * Links: a first message links its invitation (/invite#<token>); a follow-up
  * reuses the link its first message carried. A follow-up to a message made
@@ -38,6 +41,12 @@ export interface ComposeInput {
   emailSourceUrl: string;
   signals: readonly { key: string; value: string }[];
   evidence: readonly { signalKey: string; sourceUrl: string; excerpt: string }[];
+  /**
+   * The internal outreach test (internalTest.ts): no business facts. Its
+   * eligibility guarantees the recipient is the controlled test mailbox and
+   * emailSourceUrl the public page documenting it.
+   */
+  internalTest?: boolean;
   /**
    * The one link the message carries: for a first message, its invitation
    * (/invite#<token>); for a follow-up, the link its first message carried,
@@ -109,6 +118,15 @@ const list = (items: readonly string[]) =>
 
 /** Every fact the record supports, whether or not a template uses it. */
 export function outreachFacts(input: ComposeInput): OutreachFact[] {
+  if (input.internalTest) {
+    return [{
+      key: "internal_test",
+      statement: `This is ReclaimBay's internal outreach test, not a business. Its recipient, ${input.email}, is a mailbox ReclaimBay controls, documented at ${input.emailSourceUrl}.`,
+      signalKey: null,
+      sourceUrl: input.emailSourceUrl,
+      excerpt: null,
+    }];
+  }
   const facts: OutreachFact[] = [
     { key: "business_name", statement: `The business is called ${input.businessName}.`, signalKey: null, sourceUrl: null, excerpt: null },
   ];
@@ -150,6 +168,7 @@ function signOff(input: ComposeInput): string {
 
 /** Fixed phrases only: stored excerpts establish a service, never supply email copy. */
 function collisionObservation(input: ComposeInput): { observation: string; fact: OutreachFact } | undefined {
+  if (input.internalTest) return;
   if (!input.signals.some(s => s.key === "collision_repair_services" && s.value === "yes") ||
       collisionEvidenceErrors(input, input.evidence).length) return;
   const services: readonly [RegExp, string][] = [
@@ -181,6 +200,7 @@ export function composeIntro(input: ComposeInput): ComposedMessage {
     return f;
   };
   const name = input.businessName;
+  use("internal_test");
   use("business_name");
   use("recipient");
   const verified = collisionObservation(input);
@@ -225,7 +245,7 @@ export function composeIntro(input: ComposeInput): ComposedMessage {
  */
 export function composeFollowUp(input: ComposeInput, original: { subject: string; sentAt: Date }, opts: { reusesInvitation: boolean }): ComposedMessage {
   const facts = new Map(outreachFacts(input).map((f) => [f.key, f]));
-  const used = ["business_name", "recipient"].map((k) => facts.get(k)!);
+  const used = (input.internalTest ? ["internal_test"] : ["business_name", "recipient"]).map((k) => facts.get(k)!);
   const day = original.sentAt.toISOString().slice(0, 10);
   const body = [
     `Hi ${input.businessName} team,`,

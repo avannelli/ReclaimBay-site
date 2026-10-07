@@ -20,6 +20,7 @@ import {
   type SignalDefinition,
   type SignalKey,
 } from "../scoring.js";
+import { INTERNAL_TEST_IDENTITY } from "../internalTest.js";
 import { outreachSection } from "./outreachViews.js";
 import type { prospectListContext } from "./commandCenter.js";
 import { appPage } from "./views.js";
@@ -279,18 +280,29 @@ export function prospectFormPage(
     `${title} · ReclaimBay admin`,
     "prospects",
     `${crumbs([{ label: "Prospects", href: "/admin/prospects" }, ...(editing ? [{ label: opts.name ?? "Prospect", href: action }, { label: "Edit" }] : [{ label: title }])])}
-${pageHead({ title, lede: editing ? "Same steps as adding a prospect. Every rule is checked when you save." : internal ? "A stand-in business whose email is a mailbox ReclaimBay controls, to prove outreach end to end." : "Record what public sources show. Qualification and the opportunity score are worked out from what you enter." })}
+${pageHead({ title, lede: editing ? "Same steps as adding a prospect. Every rule is checked when you save." : internal ? "ReclaimBay's own controlled test identity, not a business, to prove outreach end to end." : "Record what public sources show. Qualification and the opportunity score are worked out from what you enter." })}
 ${errorSummary(errors, fe)}
-${internal ? `<div class="callout warn" style="margin-bottom:14px"><b>Internal test, not a business.</b> It is marked as an internal test permanently, from creation: that can't be changed later, and a real prospect can never be marked this way. It is drafted, queued, and sent exactly like any prospect, through every check (the deployment arm, the switch, the provider, the daily limit, recipient and suppression rules, the send gate), and needs the same qualification. Its activity is left out of the outreach funnel, the analytics summary, and prospect intent. Use a mailbox you control that is <b>not</b> the outreach account or its aliases, so replies from it reach the inbox reader.</div>` : ""}
+${internal ? `<div class="callout warn" style="margin-bottom:14px"><b>Internal test, not a business.</b> It is marked as an internal test permanently, from creation: that can't be changed later, and a real prospect can never be marked this way. It always carries the fixed identity below and no business details, signals, or evidence, so business qualification doesn't apply: Qualified and Ready to contact require this exact identity instead. Every sending check still applies (the deployment arm, the switch, the provider, the daily limit, recipient and suppression rules, the send gate). There is only one: creating it is refused while any record uses its mailbox. Its activity is left out of the outreach funnel, the analytics summary, and prospect intent.</div>` : ""}
 ${gate ? `<div class="callout warn" style="margin-bottom:14px">${gate}</div>` : ""}
 <form method="post" action="${action}" class="stack" novalidate>
-  ${businessSections(values, fe)}
-  ${signalSections(values, fe)}
-  ${fieldset(6, "Review and save", `<p class="fs-note" style="margin:0 0 12px">${editing ? "Saving recalculates the score and re-checks the status requirements." : "The prospect starts as <b>New</b>. You can move it through the pipeline after creating it."}</p>
-  ${internal ? `<label class="check" style="margin:0 0 12px;display:flex;gap:8px;align-items:flex-start"><input type="checkbox" name="confirmInternalTest" value="yes"${values.confirmInternalTest === "yes" ? " checked" : ""}${(fe.byField.get("confirmInternalTest") ?? []).length ? ' aria-invalid="true"' : ""}> <span>This is ReclaimBay's own internal outreach test, not a business. It stays marked as one permanently.</span></label>` : ""}
+  ${internal ? `<div class="card">${internalTestIdentityList()}</div>` : `${businessSections(values, fe)}
+  ${signalSections(values, fe)}`}
+  ${fieldset(internal ? 1 : 6, internal ? "Confirm and create" : "Review and save", `<p class="fs-note" style="margin:0 0 12px">${editing ? "Saving recalculates the score and re-checks the status requirements." : internal ? "It starts as <b>New</b>. Prepare, review, and queue its message like any other." : "The prospect starts as <b>New</b>. You can move it through the pipeline after creating it."}</p>
+  ${internal ? `<label class="check" style="margin:0 0 12px;display:flex;gap:8px;align-items:flex-start"><input type="checkbox" name="confirmInternalTest" value="yes"${values.confirmInternalTest === "yes" ? " checked" : ""}${(fe.byField.get("confirmInternalTest") ?? []).length ? ' aria-invalid="true"' : ""}> <span>This is ReclaimBay's own internal outreach test identity, not a business. It stays marked as one permanently.</span></label>` : ""}
   <div class="form-foot"><button type="submit" class="btn-primary-lg">${editing ? "Save changes" : internal ? "Create internal test" : "Create prospect"}</button><a class="btn btn-secondary btn-primary-lg" href="${editing ? action : "/admin/prospects"}">Cancel</a></div>`)}
 </form>`,
   );
+}
+
+/** The internal outreach test's fixed identity, as the form and its page show it. */
+function internalTestIdentityList(): string {
+  const { businessName, email, emailSourceUrl } = INTERNAL_TEST_IDENTITY;
+  return `<dl class="kv">
+    <dt>Identity</dt><dd><b>${esc(businessName)}</b>: ReclaimBay's own controlled test, not a business</dd>
+    <dt>Recipient</dt><dd><code>${esc(email)}</code>, a mailbox ReclaimBay controls</dd>
+    <dt>Documented at</dt><dd>${extLink(emailSourceUrl)}</dd>
+    <dt>Qualification</dt><dd>Business qualification and collision/body evidence don't apply. Qualified and Ready to contact require this exact identity instead.</dd>
+  </dl>`;
 }
 
 // ---------- detail ----------
@@ -387,13 +399,14 @@ ${notice(opts.notice)}${errorSummary(opts.errors, fe, "Not done")}
 ${pageHead({
   title: p.businessName ?? "Unnamed prospect",
   badges: `${statusBadge(p.status)}${p.internalTest ? INTERNAL_TEST_TAG : ""}${location ? `<span class="muted">${esc(location)}</span>` : ""}<span class="muted small">Status since ${fmtDay(p.statusChangedAt)}</span>`,
-  actions: `<a class="btn" href="/admin/prospects/${id}/edit">Edit</a>${allowed.length ? `<a class="btn btn-secondary" href="#status">Change status</a>` : ""}`,
+  actions: `${p.internalTest ? "" : `<a class="btn" href="/admin/prospects/${id}/edit">Edit</a>`}${allowed.length ? `<a class="btn btn-secondary" href="#status">Change status</a>` : ""}`,
 })}
 <nav class="dossier-nav" aria-label="Business dossier sections"><a href="#business">Business</a><a href="#evidence">Collision evidence</a><a href="#score">Scoring</a><a href="#status">Decisions</a><a href="#outreach">Outreach</a><a href="#notes">Research notes</a><a href="#activity">Engagement</a></nav>
-${p.internalTest ? `<div class="callout warn" style="margin-bottom:14px"><b>Internal outreach test.</b> Not a business: ReclaimBay's own mailbox. It is sent through every normal check, and its activity is left out of the outreach funnel, the analytics summary, and prospect intent. Its own activity is shown below.</div>` : ""}
+${p.internalTest ? `<div class="callout warn" style="margin-bottom:14px"><b>Internal outreach test.</b> Not a business: ReclaimBay's own controlled test identity, which can't be edited or given evidence. It is sent through every normal sending check, and its activity is left out of the outreach funnel, the analytics summary, and prospect intent. Its own activity is shown below.</div>
+<div class="card" style="margin-bottom:14px"><div class="card-h">Internal test identity</div>${internalTestIdentityList()}</div>` : ""}
 ${stale ? `<div class="callout warn" style="margin-bottom:14px">The saved score (${p.score}, ${esc(p.scoreVersion ?? "never scored")}) differs from the current scoring ${esc(SCORING_VERSION)}. Saving the prospect or running <code>npm run prospects:rescore</code> updates it. The numbers on this page are always current.</div>` : ""}
 
-<div class="grid-2">
+${p.internalTest ? "" : `<div class="grid-2">
   <div class="card verdict v-${result.qualification}">
     <div class="v-label">Qualification</div>
     <div class="v-sub">Required criteria: ${esc(criteriaNames)}</div>
@@ -406,7 +419,7 @@ ${stale ? `<div class="callout warn" style="margin-bottom:14px">The saved score 
     <div class="v-big"><span><span class="big">${result.score}</span><span class="muted">/${MAX_SCORE}</span> ${bandBadge(result.band)}</span></div>
     <div class="small">${result.known} of ${result.total} signals known. A high score does not mean the business is qualified.</div>
   </div>
-</div>
+</div>`}
 
 ${section(
   "business",
@@ -465,7 +478,7 @@ ${section(
   "evidence",
   "Evidence",
   `${evidence}
-<form method="post" action="/admin/prospects/${id}/evidence" class="card stack" style="margin-top:14px" novalidate>
+${p.internalTest ? "" : `<form method="post" action="/admin/prospects/${id}/evidence" class="card stack" style="margin-top:14px" novalidate>
   <div class="card-h" style="margin:0">Add evidence</div>
   <div class="fields">
     <div class="field"><label for="f-signalKey">Supports signal</label><select id="f-signalKey" name="signalKey"${fe.byField.has("signalKey") ? ' aria-invalid="true"' : ""}>${options([["", "Choose…"], ...SIGNAL_DEFS.map((d): [string, string] => [d.key, d.label])], values.signalKey)}</select>${(fe.byField.get("signalKey") ?? []).map((e) => `<div class="ferr">${esc(e)}</div>`).join("")}</div>
@@ -473,7 +486,7 @@ ${section(
   </div>
   <div class="field"><label for="f-excerpt">Short excerpt</label><textarea id="f-excerpt" name="excerpt" maxlength="${FIELD_LIMITS.excerpt}"${fe.byField.has("excerpt") ? ' aria-invalid="true"' : ""}>${esc(values.excerpt)}</textarea><div class="hint">Up to ${FIELD_LIMITS.excerpt} characters: a short quote, not a copied page.</div>${(fe.byField.get("excerpt") ?? []).map((e) => `<div class="ferr">${esc(e)}</div>`).join("")}</div>
   <div><button type="submit">Add evidence</button></div>
-</form>`,
+</form>`}`,
 )}
 
 ${section(

@@ -303,6 +303,8 @@ export async function adminRoutes(app: FastifyInstance, opts: { config: Config; 
     if (!validId(req.params.id, reply)) return reply;
     const p = await db.prospect.findUnique({ where: { id: req.params.id }, include: { signals: true } });
     if (!p) return reply.code(404).type("text/plain").send("Not found");
+    // The internal outreach test's identity is fixed: there is nothing to edit.
+    if (p.internalTest) return reply.redirect(`/admin/prospects/${p.id}`, 303);
     return html(reply, prospectFormPage({ mode: "edit", id: p.id, name: p.businessName, status: p.status }, formValuesOf(p)));
   });
 

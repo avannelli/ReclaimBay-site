@@ -232,11 +232,12 @@ model Prospect {
   createdAt       DateTime       @default(now())
   updatedAt       DateTime       @updatedAt
 
-  // An internal outreach test: ReclaimBay's own mailbox standing in for a
-  // business, to prove the sending path end to end. Set only when created
-  // through the internal-test form, never changed afterwards. It goes through
-  // every sending check like any prospect, and is left out of the business
-  // metrics (the outreach funnel, the analytics summary, prospect intent).
+  // An internal outreach test: ReclaimBay's own controlled test identity
+  // (src/internalTest.ts), not a business, to prove the sending path end to
+  // end. Set only when created through the internal-test form, never changed
+  // afterwards. It needs its fixed identity instead of business qualification,
+  // goes through every sending check like any prospect, and is left out of the
+  // business metrics (the outreach funnel, the analytics summary, prospect intent).
   internalTest Boolean @default(false)
 
   candidate     DiscoveryCandidate?

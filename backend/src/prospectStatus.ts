@@ -93,6 +93,13 @@ export interface StatusContext {
   hasPublicContact: boolean;
   /** From the required criteria only. The score never affects status rules. */
   qualification: Qualification;
+  /**
+   * Only for a prospect marked as an internal outreach test (internalTest.ts):
+   * why it isn't the controlled internal-test identity, empty when it is.
+   * It claims to be no business, so this replaces qualification and the
+   * public-contact rule. Absent or null for every business.
+   */
+  internalTestIdentity?: readonly string[] | null;
 }
 
 /**
@@ -101,6 +108,12 @@ export interface StatusContext {
  */
 export function statusRequirementErrors(status: Status, ctx: StatusContext): string[] {
   const errors: string[] = [];
+  if (ctx.internalTestIdentity) {
+    if (status === "qualified" || status === "ready_to_contact") {
+      errors.push(...ctx.internalTestIdentity.map((e) => `${STATUS_LABELS[status]} requires the controlled internal-test identity: ${e}`));
+    }
+    return errors;
+  }
   if (status === "qualified" || status === "ready_to_contact") {
     if (!ctx.businessName?.trim()) errors.push(`${STATUS_LABELS[status]} requires a business name.`);
     if (ctx.qualification === "disqualified") {
