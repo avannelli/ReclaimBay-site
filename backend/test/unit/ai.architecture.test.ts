@@ -6,6 +6,7 @@ import { describe, test } from "node:test";
 import type { GoldDb } from "../../src/ai/goldSet.js";
 import { AUTO_APPROVED_REASON, AUTO_REJECTED_REASON } from "../../src/ai/goldSet.js";
 import type { ShadowDb } from "../../src/ai/shadow.js";
+import type { SmokeDb } from "../../src/ai/smoke.js";
 import { AUTO_APPROVED_PREFIX, AUTO_REJECTED_PREFIX } from "../../src/discovery/autoApproval.js";
 
 /*
@@ -65,10 +66,11 @@ describe("AI shadow layer: isolation", () => {
     for (const f of AI) for (const i of runtimeImports(f)) assert.ok(allowed.has(i), `${f} imports ${i}`);
     for (const i of runtimeImports("scripts/aiShadow.ts")) assert.ok(["node:util", "config.ts", "db.ts", "research/fetcher.ts", ...AI].includes(i), `scripts/aiShadow.ts imports ${i}`);
     for (const i of runtimeImports("scripts/aiCohort.ts")) assert.ok(["node:fs", "node:util", "config.ts", "db.ts", ...AI].includes(i), `scripts/aiCohort.ts imports ${i}`);
+    for (const i of runtimeImports("scripts/aiSmoke.ts")) assert.ok(["config.ts", "db.ts", "research/fetcher.ts", "ai/provider.ts", "ai/smoke.ts"].includes(i), `scripts/aiSmoke.ts imports ${i}`);
   });
 
   test("nothing that sends, dispatches, queues, suppresses, or decides is reachable from the AI layer", () => {
-    const reach = closure([...AI, "scripts/aiShadow.ts", "scripts/aiCohort.ts"]);
+    const reach = closure([...AI, "scripts/aiShadow.ts", "scripts/aiCohort.ts", "scripts/aiSmoke.ts"]);
     const forbidden = [
       "outreach/dispatch.ts", "outreach/sender.ts", "outreach/gmail.ts", "outreach/gmailAuth.ts", "outreach/gmailInbox.ts", "outreach/service.ts",
       "outreach/prepare.ts", "outreach/eligibility.ts", "outreach/emailedUnsubscribe.ts", "outreach/reconcile.ts", "outreach/inboxAttribution.ts",
@@ -96,7 +98,7 @@ describe("AI shadow layer: isolation", () => {
 
   test("nothing that decides anything imports the AI layer; only read-only admin views do", () => {
     const importers = files("").filter((f) => !f.startsWith("ai/") && /from ["'][./]+(?:\.\.\/)?ai\//.test(read(f)));
-    assert.deepEqual(importers.sort(), ["admin/aiLabelViews.ts", "admin/aiViews.ts", "admin/discoveryViews.ts", "routes/adminAi.ts", "routes/adminDiscovery.ts", "scripts/aiCohort.ts", "scripts/aiShadow.ts"]);
+    assert.deepEqual(importers.sort(), ["admin/aiLabelViews.ts", "admin/aiViews.ts", "admin/discoveryViews.ts", "routes/adminAi.ts", "routes/adminDiscovery.ts", "scripts/aiCohort.ts", "scripts/aiShadow.ts", "scripts/aiSmoke.ts"]);
     // The AI-output views have no forms or buttons; the only POST routes write gold-set cohorts and human labels.
     assert.doesNotMatch(read("admin/aiViews.ts"), /<form|<button|method="post"/i);
     const posts = [...read("routes/adminAi.ts").matchAll(/app\.(post|put|patch|delete)<[^>]*>\("([^"]+)"/g)].map((m) => `${m[1]} ${m[2]}`);
@@ -132,6 +134,35 @@ describe("AI shadow layer: isolation", () => {
       void db.aiEvalCase.create;
       // @ts-expect-error no prospects
       void db.prospect;
+    };
+    assert.equal(typeof unreachable, "function");
+  });
+
+  test("the smoke test writes nothing: no write in its source, and a handle that can't write (compile-time)", () => {
+    const src = read("ai/smoke.ts");
+    assert.equal(/\.(create|createMany|update|updateMany|upsert|delete|deleteMany)\(|\$executeRaw|\$transaction|\$queryRaw/.exec(src)?.[0], undefined, "ai/smoke.ts must not write");
+    assert.doesNotMatch(read("scripts/aiSmoke.ts"), /\.(create|update|upsert|delete)\w*\(/);
+    const unreachable = (db: SmokeDb) => {
+      // @ts-expect-error no AI decision is ever recorded by the smoke test
+      void db.aiDecision.create;
+      // @ts-expect-error nor read beyond the spend sum
+      void db.aiDecision.findMany;
+      // @ts-expect-error a candidate can't be updated
+      void db.discoveryCandidate.update;
+      // @ts-expect-error only one candidate is read
+      void db.discoveryCandidate.findMany;
+      // @ts-expect-error no cohorts
+      void db.aiEvalCase;
+      // @ts-expect-error no labels
+      void db.aiLabel;
+      // @ts-expect-error no prospects
+      void db.prospect;
+      // @ts-expect-error no outreach
+      void db.outreach;
+      // @ts-expect-error no suppression
+      void db.emailSuppression;
+      // @ts-expect-error no transactions
+      void db.$transaction;
     };
     assert.equal(typeof unreachable, "function");
   });

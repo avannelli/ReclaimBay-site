@@ -31,7 +31,8 @@
     "outreach:send": "node --env-file-if-exists=.env dist/scripts/sendOutreach.js",
     "outreach:inbox": "node --env-file-if-exists=.env dist/scripts/readOutreachInbox.js",
     "ai:shadow": "node --env-file-if-exists=.env dist/scripts/aiShadow.js",
-    "ai:cohort": "node --env-file-if-exists=.env dist/scripts/aiCohort.js"
+    "ai:cohort": "node --env-file-if-exists=.env dist/scripts/aiCohort.js",
+    "ai:smoke": "node --env-file-if-exists=.env dist/scripts/aiSmoke.js"
   },
   "dependencies": {
     "@duckdb/node-api": "1.5.6-r.1",

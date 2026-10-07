@@ -60,11 +60,11 @@ export const SHADOW_TIME_BUDGET_MS = 10 * 60 * 1000;
 export const ERROR_RETRY_MS = 24 * 60 * 60 * 1000;
 const DAY_MS = 24 * 60 * 60 * 1000;
 /** A conservative input-token estimate: about 2 characters per token. */
-const estimateTokens = (chars: number) => Math.ceil(chars / 2);
+export const estimateTokens = (chars: number) => Math.ceil(chars / 2);
 
 const COLLISION = "collision_repair_services";
 
-const CANDIDATE_SELECT = {
+export const CANDIDATE_SELECT = {
   id: true,
   businessName: true,
   website: true,
@@ -86,7 +86,26 @@ const CANDIDATE_SELECT = {
   },
 } satisfies Prisma.DiscoveryCandidateSelect;
 
-type Selected = Prisma.DiscoveryCandidateGetPayload<{ select: typeof CANDIDATE_SELECT }>;
+export type Selected = Prisma.DiscoveryCandidateGetPayload<{ select: typeof CANDIDATE_SELECT }>;
+
+/**
+ * The judge's input for a candidate, from its research's own stored evidence
+ * and facts and the pages just read. The one place it is assembled: the
+ * shadow runner and the smoke test (smoke.ts) both use it.
+ */
+export function judgeInput(c: Selected, run: Selected["research"][number], website: string, pages: readonly FetchedPage[]) {
+  const stored: StoredExcerpt[] = [
+    ...c.evidence.map((e) => ({ kind: "research_evidence" as const, sourceUrl: e.sourceUrl, excerpt: e.excerpt })),
+    ...run.facts.filter((f) => f.excerpt && f.source?.url).map((f) => ({ kind: "research_fact" as const, sourceUrl: f.source!.url, excerpt: f.excerpt! })),
+  ];
+  const businessType = run.facts.find((f) => f.field === "business_type")?.value ?? null;
+  return buildCollisionFitInput({
+    business: { name: c.businessName, website, city: c.city, state: c.state },
+    research: { version: run.version, outcome: run.outcome, businessType, warnings: run.warnings },
+    pages,
+    stored,
+  });
+}
 
 /** Candidates the shadow layer may judge, by mode. All need a verified own website. */
 export function shadowWhere(mode: ShadowMode, cohortCandidateIds: readonly string[] = []): Prisma.DiscoveryCandidateWhereInput {
@@ -207,17 +226,7 @@ export async function runAiShadow(db: ShadowDb, o: ShadowOptions): Promise<Shado
         report.errors++;
         continue;
       }
-      const stored: StoredExcerpt[] = [
-        ...c.evidence.map((e) => ({ kind: "research_evidence" as const, sourceUrl: e.sourceUrl, excerpt: e.excerpt })),
-        ...run.facts.filter((f) => f.excerpt && f.source?.url).map((f) => ({ kind: "research_fact" as const, sourceUrl: f.source!.url, excerpt: f.excerpt! })),
-      ];
-      const businessType = run.facts.find((f) => f.field === "business_type")?.value ?? null;
-      const input = buildCollisionFitInput({
-        business: { name: c.businessName, website: c.website, city: c.city, state: c.state },
-        research: { version: run.version, outcome: run.outcome, businessType, warnings: run.warnings },
-        pages,
-        stored,
-      });
+      const input = judgeInput(c, run, c.website, pages);
       const hash = inputHash(COLLISION_FIT_KIND, COLLISION_FIT_PROMPT_VERSION, provider.model, input);
       const rule = ruleVerdict(c.businessName, pages);
 

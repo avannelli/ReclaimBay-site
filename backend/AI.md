@@ -344,6 +344,36 @@ their `CandidateSignal` rows for `collision_repair_services`, their newest
 and research-origin `CandidateEvidence`. An exported id list can become a
 cohort with `npm run ai:cohort -- --candidates <file>`.
 
+## Provider smoke test
+
+`AI_SMOKE_ENABLED=1 npm run ai:smoke -- --candidate <id>` (`src/ai/smoke.ts`)
+is a provider integration test, nothing more: one real call for one
+candidate, to prove the key, the model, structured output, parsing, and the
+validator work end to end. It says nothing about accuracy.
+
+- **One candidate, one call.** Exactly one `--candidate <uuid>`; no other
+  arguments. It builds the shadow judge's exact input (the same
+  `judgeInput` and page reader the runner uses, re-reading the website with
+  the research fetcher), calls the same provider adapter once with no retry,
+  and applies the same validator.
+- **No database write.** It records no `AiDecision` and writes nothing else:
+  its database handle can read one candidate and sum recent AI spend, and
+  architecture tests fail if it ever writes. Smoke answers are kept out of the
+  gold-set evaluation deliberately: a recorded decision would be reused as the
+  candidate's evaluation answer if it later joined a gold set, before its
+  blind label. Its own spend is therefore not recorded either.
+- **Explicitly armed and bounded.** It needs `AI_SMOKE_ENABLED=1` (separate
+  from `AI_SHADOW_ENABLED`, which it never needs), `AI_PROVIDER`,
+  `AI_API_KEY`, a model with a known price, and `AI_SHADOW_DAILY_BUDGET`. It
+  refuses a call whose worst case (a conservative input estimate plus the full
+  output limit) exceeds a fixed $0.25 ceiling, which nothing can override, or
+  the configured daily budget given recent recorded spend.
+- **Output.** A short summary: candidate, provider and model, the call's
+  result, decision, confidence, validation result and errors, tokens,
+  estimated cost, and latency; never the key, other secrets, or website text.
+  The last line is always `SMOKE TEST: NO DATABASE WRITE`. It exits 0 only for
+  a valid answer.
+
 ## Before any autonomy
 
 Autonomy is a separate, later decision; nothing here enables it, and nothing

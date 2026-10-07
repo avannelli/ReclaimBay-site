@@ -68,6 +68,8 @@ export interface Config {
     model: string;
     /** Arm for `ai:shadow` (AI_SHADOW_ENABLED=1): without it the job exits at once. */
     shadowEnabled: boolean;
+    /** Arm for the one-candidate provider smoke test, `ai:smoke` (AI_SMOKE_ENABLED=1). Separate from the shadow arm. */
+    smokeEnabled: boolean;
     /** Provider calls per `ai:shadow` run (AI_SHADOW_BATCH_LIMIT, 1-25; default 5). */
     shadowBatchLimit: number;
     /** Estimated spend allowed per rolling 24 hours, in US dollars (AI_SHADOW_DAILY_BUDGET; default 0: nothing runs). */
@@ -125,6 +127,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       apiKey: env.AI_API_KEY?.trim() || null,
       model: env.AI_MODEL?.trim() || "claude-opus-5-5",
       shadowEnabled: env.AI_SHADOW_ENABLED === "1",
+      smokeEnabled: env.AI_SMOKE_ENABLED === "1",
       shadowBatchLimit: Math.min(25, Math.max(1, Number.parseInt(env.AI_SHADOW_BATCH_LIMIT ?? "5", 10) || 5)),
       shadowDailyBudgetUsd: budget(env.AI_SHADOW_DAILY_BUDGET),
     },

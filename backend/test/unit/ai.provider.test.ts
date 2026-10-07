@@ -67,13 +67,13 @@ describe("AI configuration", () => {
   const base = { DATABASE_URL: "postgresql://localhost/x" };
   test("off by default: no provider, shadow disarmed, no budget", () => {
     const c = loadConfig(base);
-    assert.deepEqual(c.ai, { provider: null, apiKey: null, model: "claude-opus-5-5", shadowEnabled: false, shadowBatchLimit: 5, shadowDailyBudgetUsd: 0 });
+    assert.deepEqual(c.ai, { provider: null, apiKey: null, model: "claude-opus-5-5", shadowEnabled: false, smokeEnabled: false, shadowBatchLimit: 5, shadowDailyBudgetUsd: 0 });
     assert.equal(providerFromConfig(c.ai), null);
   });
 
   test("bounded values; a provider needs a key", () => {
     const c = loadConfig({ ...base, AI_PROVIDER: "Anthropic", AI_API_KEY: KEY, AI_MODEL: "claude-sonnet-5-5", AI_SHADOW_ENABLED: "1", AI_SHADOW_BATCH_LIMIT: "999", AI_SHADOW_DAILY_BUDGET: "2.5" });
-    assert.deepEqual({ ...c.ai, apiKey: c.ai.apiKey ? "set" : null }, { provider: "anthropic", apiKey: "set", model: "claude-sonnet-5-5", shadowEnabled: true, shadowBatchLimit: 25, shadowDailyBudgetUsd: 2.5 });
+    assert.deepEqual({ ...c.ai, apiKey: c.ai.apiKey ? "set" : null }, { provider: "anthropic", apiKey: "set", model: "claude-sonnet-5-5", shadowEnabled: true, smokeEnabled: false, shadowBatchLimit: 25, shadowDailyBudgetUsd: 2.5 });
     assert.equal(providerFromConfig(c.ai)?.model, "claude-sonnet-5-5");
     assert.equal(providerFromConfig({ ...c.ai, apiKey: null }), null);
     assert.equal(providerFromConfig({ ...c.ai, provider: "other" }), null);
