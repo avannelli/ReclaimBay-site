@@ -149,6 +149,8 @@ local site through.
 | `npm test`                | Unit tests for scoring and status rules (no database)      |
 | `npm run test:integration`| Service and admin tests against `TEST_DATABASE_URL` (see [PROSPECTS.md](PROSPECTS.md#tests)) |
 | `npm run typecheck`       | Type-checks `src` and `test`                               |
+| `npm run ai:shadow`       | AI shadow verification of collision/body fit: records AI decisions for evaluation, acts on none (see [AI.md](AI.md)); off unless armed |
+| `npm run ai:cohort`       | Builds a blind gold-set cohort for AI evaluation: a dry run unless `--apply` (see [AI.md](AI.md#blind-gold-sets)) |
 
 ## Environment variables
 
@@ -171,6 +173,11 @@ local site through.
 | `GMAIL_TOKEN_ENCRYPTION_KEY` | with gmail | 32 random bytes, base64: seals the mailbox's refresh token. A secret |
 | `GMAIL_REFRESH_TOKEN_SEALED` | with gmail | The sealed refresh token from the admin's Gmail authorization (see [OUTREACH.md](OUTREACH.md#google-workspace-gmail)). A secret |
 | `OUTREACH_DAILY_LIMIT` | no | New outreach sends per rolling 24 hours (default 20, at most 500) |
+| `AI_SHADOW_ENABLED` | no | `1` arms `npm run ai:shadow` ([AI.md](AI.md)). Shadow only: nothing acts on its decisions |
+| `AI_PROVIDER`, `AI_API_KEY` | with AI | `anthropic` and its API key (a secret). Unset (default): no AI |
+| `AI_MODEL` | no | Default `claude-opus-5-5`; only models with a known price run |
+| `AI_SHADOW_DAILY_BUDGET` | with AI | Estimated US dollars per rolling 24 hours (default 0: nothing runs; at most 100) |
+| `AI_SHADOW_BATCH_LIMIT` | no | Provider calls per shadow run (default 5, at most 25) |
 
 Generate an admin secret:
 

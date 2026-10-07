@@ -1,0 +1,35 @@
+CREATE TABLE "AiDecision" (
+    "id" UUID NOT NULL,
+    "kind" VARCHAR(40) NOT NULL,
+    "subjectType" VARCHAR(40) NOT NULL,
+    "subjectId" UUID NOT NULL,
+    "researchId" UUID,
+    "inputHash" CHAR(64) NOT NULL,
+    "mode" VARCHAR(20) NOT NULL,
+    "model" VARCHAR(80) NOT NULL,
+    "promptVersion" VARCHAR(40) NOT NULL,
+    "status" VARCHAR(20) NOT NULL,
+    "decision" VARCHAR(40),
+    "confidence" DOUBLE PRECISION,
+    "evidence" JSONB,
+    "reasons" JSONB,
+    "concerns" JSONB,
+    "nextAction" VARCHAR(60),
+    "validationErrors" JSONB,
+    "ruleDecision" VARCHAR(40),
+    "agreement" VARCHAR(20),
+    "humanDecision" VARCHAR(40),
+    "inputTokens" INTEGER,
+    "outputTokens" INTEGER,
+    "costMicroUsd" INTEGER,
+    "latencyMs" INTEGER,
+    "error" VARCHAR(300),
+    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT "AiDecision_pkey" PRIMARY KEY ("id"),
+    CONSTRAINT "AiDecision_mode" CHECK ("mode" IN ('shadow')),
+    CONSTRAINT "AiDecision_status" CHECK ("status" IN ('valid', 'invalid', 'error')),
+    CONSTRAINT "AiDecision_confidence" CHECK ("confidence" IS NULL OR ("confidence" >= 0 AND "confidence" <= 1))
+);
+
+CREATE INDEX "AiDecision_kind_subjectId_createdAt_idx" ON "AiDecision"("kind", "subjectId", "createdAt");
+CREATE INDEX "AiDecision_kind_createdAt_idx" ON "AiDecision"("kind", "createdAt");

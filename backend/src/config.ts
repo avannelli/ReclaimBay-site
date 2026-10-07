@@ -55,6 +55,24 @@ export interface Config {
     /** GMAIL_REFRESH_TOKEN_SEALED: the encrypted refresh token from the admin's authorization. */
     sealedRefreshToken: string | null;
   };
+  /**
+   * The AI shadow layer (src/ai). Shadow only: decisions are recorded for
+   * evaluation and never acted on. The API key is a secret: never logged or
+   * rendered.
+   */
+  ai: {
+    /** AI_PROVIDER: "anthropic", or null (no AI provider). */
+    provider: string | null;
+    apiKey: string | null;
+    /** AI_MODEL (default claude-opus-5-5). */
+    model: string;
+    /** Arm for `ai:shadow` (AI_SHADOW_ENABLED=1): without it the job exits at once. */
+    shadowEnabled: boolean;
+    /** Provider calls per `ai:shadow` run (AI_SHADOW_BATCH_LIMIT, 1-25; default 5). */
+    shadowBatchLimit: number;
+    /** Estimated spend allowed per rolling 24 hours, in US dollars (AI_SHADOW_DAILY_BUDGET; default 0: nothing runs). */
+    shadowDailyBudgetUsd: number;
+  };
 }
 
 /** Shorter admin secrets are refused so a weak value can't be deployed by accident. */
@@ -102,5 +120,19 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       tokenKey: env.GMAIL_TOKEN_ENCRYPTION_KEY?.trim() || null,
       sealedRefreshToken: env.GMAIL_REFRESH_TOKEN_SEALED?.trim() || null,
     },
+    ai: {
+      provider: env.AI_PROVIDER?.trim().toLowerCase() || null,
+      apiKey: env.AI_API_KEY?.trim() || null,
+      model: env.AI_MODEL?.trim() || "claude-opus-5-5",
+      shadowEnabled: env.AI_SHADOW_ENABLED === "1",
+      shadowBatchLimit: Math.min(25, Math.max(1, Number.parseInt(env.AI_SHADOW_BATCH_LIMIT ?? "5", 10) || 5)),
+      shadowDailyBudgetUsd: budget(env.AI_SHADOW_DAILY_BUDGET),
+    },
   };
+}
+
+/** A non-negative dollar amount, at most $100 a day; anything else is 0 (nothing runs). */
+function budget(raw: string | undefined): number {
+  const n = Number(raw?.trim() ?? "");
+  return Number.isFinite(n) && n > 0 ? Math.min(100, n) : 0;
 }

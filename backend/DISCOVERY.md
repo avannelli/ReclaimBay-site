@@ -1039,6 +1039,10 @@ Discovery sends nothing to analytics, and no customer report data is involved.
 
 ## Not automated yet
 
+An AI shadow layer judges collision/body fit for candidates waiting for a
+person to verify it, and records its answers for evaluation only; it changes
+nothing here. See [AI.md](AI.md).
+
 - Imports beyond one county at a time, or of other providers (OpenStreetMap).
 - Finding a website for a candidate that has none (no free, terms-compatible
   search API), and reading sources other than the business's own website

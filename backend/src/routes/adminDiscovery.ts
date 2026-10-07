@@ -1,3 +1,5 @@
+import { blindedCandidateIds } from "../ai/goldSet.js";
+import { candidateAiDecisions } from "../ai/records.js";
 import type { FastifyInstance, FastifyReply } from "fastify";
 import { candidateDetailPage, candidateFormPage, discoveryPage } from "../admin/discoveryViews.js";
 import type { Config } from "../config.js";
@@ -120,12 +122,14 @@ export async function discoveryRoutes(app: FastifyInstance, opts: { config: Conf
   const renderDetail = async (reply: FastifyReply, id: string, extra: { notice?: string; done?: string; errors?: string[]; values?: Values } = {}) => {
     const detail = await getCandidateDetail(db, id);
     if (!detail) return notFound(reply);
-    const [research, position] = await Promise.all([candidateResearch(db, id), queuePosition(db, id)]);
+    const [research, position, decisions, blinded] = await Promise.all([candidateResearch(db, id), queuePosition(db, id), candidateAiDecisions(db, id), blindedCandidateIds(db, [id])]);
+    // A candidate waiting for its blind gold-set label never shows the AI's answer.
+    const aiShadow = blinded.has(id) ? ("blinded" as const) : decisions;
     const { done, ...rest } = extra;
     const decided = done ? DECISION_NOTICES[done] : undefined;
     const match = detail.dupCandidate?.businessName ?? detail.dupProspect?.businessName ?? "the flagged record";
     const notice = rest.notice ?? (decided ? decided(detail.candidate.businessName, match) : done ? NOTICES[done] : undefined);
-    return html(reply, candidateDetailPage({ detail, research, position, ...rest, notice, decided: Boolean(decided) }));
+    return html(reply, candidateDetailPage({ detail, research, position, aiShadow, ...rest, notice, decided: Boolean(decided) }));
   };
 
   // ---------- overview and runs ----------

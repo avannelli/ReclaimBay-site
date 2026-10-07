@@ -1,3 +1,4 @@
+import { aiRoutes } from "./adminAi.js";
 import rateLimit from "@fastify/rate-limit";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import {
@@ -390,6 +391,7 @@ export async function adminRoutes(app: FastifyInstance, opts: { config: Config; 
   await app.register(discoveryRoutes, { config, db, research: opts.research });
   await app.register(outreachRoutes, { config, db, sender: opts.sender, googleFetch: opts.googleFetch, providerChecks });
   await app.register(commandCenterRoutes, { config, db, sender: opts.sender, providerChecks });
+  await app.register(aiRoutes, { db });
 }
 
 const pick = (body: Form | undefined, keys: string[]): Values =>

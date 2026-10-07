@@ -1,3 +1,5 @@
+import type { AiDecisionRow } from "../ai/records.js";
+import { aiShadowSection, aiShadowSummary } from "./aiViews.js";
 import type { getCandidateDetail, queuePosition, recentRuns, reviewQueue, QueueItem, QueueView } from "../discovery/service.js";
 import { ACTION_LABELS, ACTIVE_LANES, LANE_HINTS, LANE_LABELS, STEP_GLYPHS, STEP_LABELS, STEP_TONE, stepReason, type Lane } from "../discovery/workQueue.js";
 import type { recentImports } from "../discovery/staging.js";
@@ -936,6 +938,8 @@ export function candidateDetailPage(opts: {
   position?: Position;
   errors?: string[];
   values?: Values;
+  /** Recorded AI shadow decisions, newest first: shown read-only, never as the decision. */
+  aiShadow?: readonly AiDecisionRow[] | "blinded";
 }): string {
   const { detail, values = {}, research, position } = opts;
   const { candidate: c, result, outsideTarget, relCandidate, relProspect } = detail;
@@ -1231,6 +1235,7 @@ ${disclosure(
     ${c.providerSources ? fact("Upstream sources", `${esc(c.providerSources)}${c.provider === "overture" ? `<div class="src">Data: Overture Maps Foundation, overturemaps.org</div>` : ""}`) : ""}
   </dl></div>`,
 )}
+${opts.aiShadow ? disclosure("ai", "AI shadow verdict (evaluation only)", aiShadowSummary(opts.aiShadow), aiShadowSection(opts.aiShadow)) : ""}
 ${disclosure("approval", "Automatic approval", esc(frozen ? (isAutoApproved(c) ? "Approved automatically" : "Approved by a person") : AUTO_APPROVAL_LABELS[auto.decision]), autoCard)}
 ${disclosure(
   "state",

@@ -872,3 +872,105 @@ model Invitation {
   @@index([prospectId])
   @@index([campaign])
 }
+
+// One AI judgment, recorded for evaluation (src/ai). Append-only: a new
+// input, prompt, or model makes a new row; nothing updates or deletes one.
+// In shadow mode it changes nothing else: no candidate, prospect, signal,
+// evidence, status, or outreach record reads it to decide anything.
+model AiDecision {
+  id            String   @id @default(uuid()) @db.Uuid
+  // What was judged, e.g. "collision_fit", and on what ("candidate" + its id).
+  kind          String   @db.VarChar(40)
+  subjectType   String   @db.VarChar(40)
+  subjectId     String   @db.Uuid
+  // The research run whose website the input was built from, if any.
+  researchId    String?  @db.Uuid
+  // SHA-256 of the kind, prompt version, model, and the exact input sent.
+  inputHash     String   @db.Char(64)
+  // "shadow": recorded only, never acted on.
+  mode          String   @db.VarChar(20)
+  model         String   @db.VarChar(80)
+  promptVersion String   @db.VarChar(40)
+  // "valid" (passed every deterministic check), "invalid" (failed one: unusable), or "error" (no usable answer).
+  status        String   @db.VarChar(20)
+  decision      String?  @db.VarChar(40)
+  confidence    Float?
+  // [{ sourceUrl, quote }]: word-for-word quotes from the supplied first-party excerpts.
+  evidence      Json?
+  reasons       Json?
+  concerns      Json?
+  nextAction    String?  @db.VarChar(60)
+  validationErrors Json?
+  // The deterministic verdict on the same pages at the time, and how the AI compares.
+  ruleDecision  String?  @db.VarChar(40)
+  agreement     String?  @db.VarChar(20)
+  // A person's recorded decision at the time, when one existed.
+  humanDecision String?  @db.VarChar(40)
+  inputTokens   Int?
+  outputTokens  Int?
+  // Estimated from the model's published per-token price, in millionths of a US dollar.
+  costMicroUsd  Int?
+  latencyMs     Int?
+  error         String?  @db.VarChar(300)
+  createdAt     DateTime @default(now())
+
+  @@index([kind, subjectId, createdAt])
+  @@index([kind, createdAt])
+}
+
+// A frozen gold-set sample for evaluating an AI decision kind against blind
+// human labels (src/ai/goldSet.ts). Chosen without any AI output, reproducible
+// from its seed and sampling version, and never changed after creation.
+model AiEvalCohort {
+  id              String   @id @default(uuid()) @db.Uuid
+  name            String   @unique @db.VarChar(80)
+  kind            String   @db.VarChar(40)
+  // How the cases were chosen, e.g. "stratified@s1", or "manual" for an explicit list.
+  samplingVersion String   @db.VarChar(40)
+  seed            String   @db.VarChar(80)
+  // Per stratum: the quota, how many were available, and how many were chosen.
+  strata          Json
+  createdAt       DateTime @default(now())
+
+  cases AiEvalCase[]
+}
+
+// One candidate in a cohort. Its stratum is never shown to the labeler.
+model AiEvalCase {
+  id          String   @id @default(uuid()) @db.Uuid
+  cohortId    String   @db.Uuid
+  candidateId String   @db.Uuid
+  stratum     String   @db.VarChar(40)
+  // The labeling order: a seeded shuffle, so strata are interleaved.
+  position    Int
+  createdAt   DateTime @default(now())
+
+  cohort AiEvalCohort @relation(fields: [cohortId], references: [id], onDelete: Cascade)
+  labels AiLabel[]
+
+  @@unique([cohortId, candidateId])
+  @@unique([cohortId, position])
+  @@index([candidateId])
+}
+
+// A person's label for a case. Append-only: revision 1 is the blind label,
+// given before any AI output for the case can be seen; a later revision is an
+// adjudication after review, with its reason. Nothing derives a label from AI.
+model AiLabel {
+  id          String   @id @default(uuid()) @db.Uuid
+  caseId      String   @db.Uuid
+  candidateId String   @db.Uuid
+  revision    Int
+  // "blind" (revision 1) or "adjudicated" (later revisions).
+  source      String   @db.VarChar(20)
+  label       String   @db.VarChar(40)
+  note        String?  @db.VarChar(500)
+  // The admin session has no personal identity; a labeler may give a name.
+  labeledBy   String?  @db.VarChar(80)
+  createdAt   DateTime @default(now())
+
+  case AiEvalCase @relation(fields: [caseId], references: [id], onDelete: Cascade)
+
+  @@unique([caseId, revision])
+  @@index([candidateId])
+}
