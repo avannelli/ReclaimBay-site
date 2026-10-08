@@ -2,7 +2,7 @@
  * Behavior changes require a version bump and an explicit cache-refresh decision.
  * This extraction preserves v3 and never initiates a rescore.
  */
-import type { Qualification, ScoreBand, ScoringPolicy, SignalState, StoredSignalValue } from "aos/qualification";
+import type { Qualification, ScoreBand, ScoringPolicy, SignalState, StoredSignalValue } from "@avannelli/aos/qualification";
 
 export const POLICY_ID = "reclaimbay.qualification";
 export const SCORING_VERSION = "v3";

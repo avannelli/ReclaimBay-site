@@ -1,6 +1,6 @@
 # Qualification/scoring policy boundary
 
-The generic engine is the standalone AOS package (`aos/qualification`); it contains
+The generic engine is the standalone AOS package (`@avannelli/aos/qualification`); it contains
 the pure, business-independent contract and execution.
 `ScoringPolicy<Input, Key>` supplies identity, criterion definitions,
 thresholds, labels, observation resolution, explanations and consistency checks.
@@ -47,8 +47,8 @@ Tests:
 
 Engine isolation (consumed from the standalone AOS repository):
 
-- The generic engine is AOS's `aos/qualification`, installed from the packed
-  tarball `vendor/aos-0.1.0.tgz` (AOS commit `74d5f32`, pinned by lockfile
+- The generic engine is AOS's `@avannelli/aos/qualification`, installed from the packed
+  tarball `vendor/avannelli-aos-0.1.0.tgz` (AOS commit `f4d6f4e`, pinned by lockfile
   integrity). ReclaimBay has no local copy. To update it, re-pack AOS into
   `vendor/` and reinstall. It imports nothing outside itself and has no business
   vocabulary; tests scan the installed package, and another checks the direction

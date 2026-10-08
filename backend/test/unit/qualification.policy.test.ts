@@ -4,7 +4,7 @@ import { describe, test } from "node:test";
 import {
   evaluatePolicy, validatePolicyInput, validateQualificationEvidence,
   type QualificationPolicy, type StoredSignalValue,
-} from "aos/qualification";
+} from "@avannelli/aos/qualification";
 
 // A deliberately small, unrelated policy. No website, contact, prospect, or repair fields.
 interface LibraryInput { publicAccess?: StoredSignalValue; seats: number }
@@ -87,7 +87,7 @@ describe("generic policy execution with an unrelated library policy", () => {
   });
 
   // The engine is consumed from the standalone AOS package; these guards scan what is installed.
-  const engineDir = new URL("../../node_modules/aos/dist/qualification/", import.meta.url);
+  const engineDir = new URL("../../node_modules/@avannelli/aos/dist/qualification/", import.meta.url);
 
   test("every file in the consumed generic layer imports nothing outside it and carries no business vocabulary", () => {
     const files = readdirSync(engineDir).filter((f) => f.endsWith(".js") || f.endsWith(".d.ts"));
