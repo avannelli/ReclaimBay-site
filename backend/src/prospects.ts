@@ -5,7 +5,8 @@ import { OUTREACH_CLOSED } from "./outreach/lifecycle.js";
 import { cancelOpenOutreach, lockSendGate, suppressEmail } from "./outreach/records.js";
 import { INTERNAL_TEST_IDENTITY, internalTestIdentity, isInternalTestEmail, isInternalTestName } from "./internalTest.js";
 import { STATUS_LABELS, isStatus, statusRequirementErrors, transitionErrors, type Status } from "./prospectStatus.js";
-import { fitBasis, fitConflict, fitEvidenceErrors } from "./research/repairFit.js";
+import { validateQualificationEvidence } from "./qualification/policy.js";
+import { reclaimBayQualificationPolicy } from "./policies/reclaimbay/qualification.js";
 import {
   BAND_THRESHOLDS,
   REQUIRED_CRITERIA,
@@ -249,13 +250,10 @@ async function statusEvidenceErrors(
   evidence: readonly { signalKey: string; sourceUrl: string; excerpt: string }[],
 ): Promise<string[]> {
   if ((status !== "qualified" && status !== "ready_to_contact") || scoreProspect(input).qualification !== "meets_criteria") return [];
-  // Fit rests on automotive repair evidence, or on collision/body evidence (collision/body repair is automotive repair).
-  const basis = fitBasis(input.signals);
-  const errors = fitEvidenceErrors(input, basis, evidence);
   const candidate = await tx.discoveryCandidate.findUnique({ where: { prospectId }, select: { research: { where: { status: "completed" }, orderBy: { queuedAt: "desc" }, take: 1, select: { warnings: true } } } });
-  const conflict = fitConflict(candidate?.research[0]?.warnings, basis);
-  if (conflict) errors.push(`Resolve contradictory ${conflict} research before qualification or Ready to contact.`);
-  return errors;
+  return validateQualificationEvidence(reclaimBayQualificationPolicy, {
+    ...input, evidence, researchWarnings: candidate?.research[0]?.warnings,
+  }).errors;
 }
 
 // ---------- writes ----------
