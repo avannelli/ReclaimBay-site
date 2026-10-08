@@ -78,7 +78,9 @@ export function qualificationFor(failed: number, unknown: number): Qualification
 export function evaluatePolicy<Input, Key extends string>(policy: ScoringPolicy<Input, Key>, input: Input): ScoreResult<Key> {
   const states = policy.resolveSignals(input);
   const breakdown: SignalResult<Key>[] = policy.signals.map((def) => {
-    const state = states[def.key];
+    // Fail closed: an observation the policy omits or can't state is unknown, never satisfied.
+    const resolved: unknown = states[def.key];
+    const state: SignalState = resolved === "yes" || resolved === "no" ? resolved : "unknown";
     return {
       key: def.key,
       label: def.label,

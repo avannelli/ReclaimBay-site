@@ -44,6 +44,25 @@ Tests:
   excluding only the additive `policyId`. Existing workflow/evidence tests remain
   the regression authority for write and sending behavior.
 
+Engine isolation (reusable by an external AOS, still in this repository):
+
+- `src/qualification/` is the generic engine. It imports nothing outside itself
+  and has no business vocabulary; a test scans every file in the directory, and
+  another checks the direction (ReclaimBay imports the engine, never the reverse).
+- The engine fails closed: an observation a policy omits or can't state as
+  yes/no is `unknown`, so it can never satisfy a required criterion. ReclaimBay's
+  resolver always returns every key, so its results are unchanged (the 177,147
+  combination digest is unchanged).
+- Intentional ReclaimBay dependencies stay in `src/policies/reclaimbay/`:
+  criteria, weights, labels and explanations (`scoring.ts`), and the evidence
+  check, which delegates to `research/repairFit.ts` (`qualification.ts`). Those
+  classifiers are shared with research, approval and outreach copy, so moving
+  them would change those workflows; tests compare the evidence gate input for
+  input with the pre-extraction prospect composition.
+- Application-level bindings are the callers, not the engine: `src/scoring.ts`
+  (compatibility exports, tested equal to the engine running the ReclaimBay
+  policy) and `src/prospects.ts` (the Qualified/Ready-to-contact gate).
+
 Remaining business coupling (outside this milestone): provider selection,
 research strategy, approval heuristics, lifecycle display text, messaging,
 analytics and SQL qualification filters. The filters continue consuming the

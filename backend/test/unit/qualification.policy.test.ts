@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { describe, test } from "node:test";
 import {
   evaluatePolicy, validatePolicyInput, validateQualificationEvidence,
@@ -72,6 +72,32 @@ describe("generic policy execution with an unrelated library policy", () => {
     const input = Object.freeze({ publicAccess: "yes" as const, seats: 25 });
     assert.deepEqual(evaluatePolicy(libraryPolicy, input), evaluatePolicy(libraryPolicy, input));
     assert.deepEqual(input, { publicAccess: "yes", seats: 25 });
+  });
+
+  test("fails closed: an observation a policy omits or can't state is unknown, never satisfied", () => {
+    const omits = { ...libraryPolicy, resolveSignals: () => ({ capacity: "yes" }) as unknown as Record<"public_access" | "capacity", "yes" | "no" | "unknown"> };
+    const missing = evaluatePolicy(omits, { seats: 25 });
+    assert.equal(missing.qualification, "unverified");
+    assert.deepEqual(missing.unverifiedCriteria, ["public_access"]);
+    assert.equal(missing.breakdown[0]?.state, "unknown");
+    assert.equal(missing.breakdown[0]?.reason, "public_access: unknown");
+    const garbled = { ...libraryPolicy, resolveSignals: () => ({ public_access: "maybe", capacity: "yes" }) as unknown as Record<"public_access" | "capacity", "yes" | "no" | "unknown"> };
+    assert.equal(evaluatePolicy(garbled, { seats: 25 }).qualification, "unverified");
+    assert.equal(evaluatePolicy(garbled, { seats: 25 }).known, 1);
+  });
+
+  test("every file in the generic layer imports nothing outside it and carries no business vocabulary", () => {
+    const dir = new URL("../../src/qualification/", import.meta.url);
+    const files = readdirSync(dir).filter((f) => f.endsWith(".ts"));
+    assert.ok(files.includes("policy.ts"));
+    for (const file of files) {
+      const source = readFileSync(new URL(file, dir), "utf8");
+      for (const m of source.matchAll(/\bfrom\s+["']([^"']+)["']|\bimport\s*\(\s*["']([^"']+)["']/g)) {
+        const target = m[1] ?? m[2]!;
+        assert.match(target, /^\.\/[\w.-]+$/, `${file} imports ${target}: the generic layer depends only on itself`);
+      }
+      assert.doesNotMatch(source, /reclaimbay|automotive|collision|revenue recovery|repair|prospect|outreach|prisma/i, file);
+    }
   });
 
   test("core has no business imports, identifiers, database, or process access", () => {

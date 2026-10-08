@@ -1,12 +1,15 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { describe, test } from "node:test";
+import { readFileSync } from "node:fs";
 import {
   SIGNALS, SIGNAL_KEYS, BAND_THRESHOLDS, BAND_LABELS, QUALIFICATION_LABELS,
-  POLICY_ID, SCORING_VERSION, scoreProspect, resolveSignals, signalConsistencyErrors, type ScoringInput,
+  POLICY_ID, SCORING_VERSION, bandFor, scoreProspect, resolveSignals, signalConsistencyErrors, type ScoringInput,
 } from "../../src/scoring.js";
-import { validateQualificationEvidence } from "../../src/qualification/policy.js";
+import { bandFor as engineBandFor, evaluatePolicy, validatePolicyInput, validateQualificationEvidence } from "../../src/qualification/policy.js";
 import { reclaimBayQualificationPolicy } from "../../src/policies/reclaimbay/qualification.js";
+import { reclaimBayScoringPolicy } from "../../src/policies/reclaimbay/scoring.js";
+import { fitBasis, fitConflict, fitEvidenceErrors } from "../../src/research/repairFit.js";
 
 describe("ReclaimBay policy compatibility", () => {
   test("all 177,147 observation combinations match the pre-extraction v3 baseline", () => {
@@ -49,6 +52,57 @@ describe("ReclaimBay policy compatibility", () => {
     const result = scoreProspect({ signals: {} });
     assert.equal(result.policyId, reclaimBayQualificationPolicy.policyId);
     assert.equal(result.version, reclaimBayQualificationPolicy.version);
+  });
+
+  test("existing scoring callers get exactly what the generic engine computes with the ReclaimBay policy", () => {
+    const inputs: ScoringInput[] = [
+      { signals: {} },
+      { signals: { automotive_repair_services: "yes" } },
+      { signals: { collision_repair_services: "yes", automotive_repair_services: "no" }, website: "https://x.example" },
+      { signals: { automotive_repair_services: "no", independent_shop: "yes", has_website: "no" }, website: "https://x.example" },
+      { signals: { public_business_contact: "no", digital_inspections: "yes" }, phone: "555", phoneSourceUrl: "https://x.example/c" },
+      { signals: { made_up: "yes" as never } },
+    ];
+    for (const input of inputs) {
+      assert.deepEqual(scoreProspect(input), evaluatePolicy(reclaimBayScoringPolicy, input));
+      assert.deepEqual(signalConsistencyErrors(input), validatePolicyInput(reclaimBayScoringPolicy, input).errors);
+    }
+    for (const score of [0, 34, 35, 59, 60, 100]) assert.equal(bandFor(score), engineBandFor(score, BAND_THRESHOLDS));
+  });
+
+  test("the evidence gate equals the pre-extraction prospect composition, input for input", () => {
+    // ccf651e prospects.ts: basis = fitBasis(signals); errors = fitEvidenceErrors(...); conflict = fitConflict(warnings, basis).
+    const before = (input: Parameters<typeof reclaimBayQualificationPolicy.evidenceErrors>[0]) => {
+      const basis = fitBasis(input.signals);
+      const errors = fitEvidenceErrors(input, basis, input.evidence);
+      const conflict = fitConflict(input.researchWarnings, basis);
+      if (conflict) errors.push(`Resolve contradictory ${conflict} research before qualification or Ready to contact.`);
+      return errors;
+    };
+    const site = "https://harbor.example";
+    const evidences = [
+      [],
+      [{ signalKey: "automotive_repair_services", sourceUrl: `${site}/services`, excerpt: "We offer automotive brake repair." }],
+      [{ signalKey: "automotive_repair_services", sourceUrl: "https://elsewhere.example/x", excerpt: "We offer automotive brake repair." }],
+      [{ signalKey: "collision_repair_services", sourceUrl: `${site}/services`, excerpt: "We offer collision repair." }],
+      [{ signalKey: "automotive_repair_services", sourceUrl: `${site}/services`, excerpt: "We do not perform repairs." }],
+    ];
+    const signalSets: ScoringInput["signals"][] = [{}, { automotive_repair_services: "yes" }, { collision_repair_services: "yes" }, { automotive_repair_services: "yes", collision_repair_services: "yes" }];
+    const warnings = [undefined, [], ["Collision/body evidence is contradictory; verify product fit manually."], ["Automotive repair evidence is contradictory; verify product fit manually."], "not a list"];
+    let compared = 0;
+    for (const businessName of ["Harbor", null]) for (const website of [site, null]) for (const evidence of evidences) for (const signals of signalSets) for (const researchWarnings of warnings) {
+      const input = { businessName, website, signals, evidence, researchWarnings };
+      assert.deepEqual(validateQualificationEvidence(reclaimBayQualificationPolicy, input).errors, before(input));
+      compared++;
+    }
+    assert.equal(compared, 400);
+  });
+
+  test("ReclaimBay depends on the generic engine, never the reverse", () => {
+    const read = (path: string) => readFileSync(new URL(`../../src/${path}`, import.meta.url), "utf8");
+    assert.doesNotMatch(read("qualification/policy.ts"), /policies\/|reclaimbay|scoring\.js/i);
+    assert.match(read("policies/reclaimbay/scoring.ts"), /from "\.\.\/\.\.\/qualification\/policy\.js"/);
+    assert.match(read("policies/reclaimbay/qualification.ts"), /from "\.\.\/\.\.\/qualification\/policy\.js"/);
   });
 
   const subject = { businessName: "Harbor", website: "https://harbor.example" };
