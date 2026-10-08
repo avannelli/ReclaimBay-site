@@ -1,10 +1,12 @@
 import { BRAND } from "@/lib/brand";
 import { BrandLogo } from "./Brand";
+import ContactLink from "./ContactLink";
 
 export function SiteHeader() {
   return (
-    <header className="border-b border-line bg-surface">
-      <div className="mx-auto flex h-20 max-w-300 items-center px-4 sm:h-24 sm:px-6 lg:px-8">
+    <header className="site-header">
+      <a href="#main" className="skip-link">Skip to content</a>
+      <div className="site-header-inner">
         {/*
          * A full page load on purpose: a report lives in this page's state,
          * so returning home must reset it (a client-side Link to "/" would not).
@@ -14,8 +16,16 @@ export function SiteHeader() {
           href="/"
           className="rounded-md focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-navy"
         >
-          <BrandLogo variant="full" className="h-12 sm:h-14" eager />
+          <BrandLogo variant="lockup" className="h-9 sm:h-10" eager />
         </a>
+        <nav aria-label="Main navigation">
+          {/* A full navigation establishes a fresh homepage, clearing report state. */}
+          {/* eslint-disable-next-line @next/next/no-html-link-for-pages */}
+          <a href="/#how-it-works" className="home-nav">How it works</a>
+          {/* eslint-disable-next-line @next/next/no-html-link-for-pages */}
+          <a href="/#privacy" className="home-nav">Privacy</a>
+          <ContactLink className="nav-contact" label="Talk to ReclaimBay" />
+        </nav>
       </div>
     </header>
   );
@@ -24,14 +34,14 @@ export function SiteHeader() {
 /** Rendered at build time (static export), so the year is the build year. */
 export function SiteFooter() {
   return (
-    <footer className="border-t border-line bg-surface">
-      <div className="mx-auto flex max-w-300 flex-col items-center gap-3 px-4 py-6 text-center text-xs text-ink-3 sm:flex-row sm:justify-between sm:px-6 sm:text-left lg:px-8">
+    <footer className="site-footer">
+      <div className="site-footer-inner">
         <div className="flex flex-col items-center gap-2 sm:flex-row sm:gap-3">
           <BrandLogo variant="lockup" className="h-6" />
           <p>{BRAND.tagline}</p>
         </div>
         <p>
-          Reports are analyzed in your browser and never uploaded. © {new Date().getFullYear()}{" "}
+          Browser-only report analysis. © {new Date().getFullYear()}{" "}
           {BRAND.name}
         </p>
       </div>

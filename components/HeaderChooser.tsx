@@ -13,9 +13,10 @@ export default function HeaderChooser({ table, onConfirm, onCancel }: {
   const [choice, setChoice] = useState("");
   const rows = table.pendingHeaderRows ?? [];
   return (
-    <div className="mx-auto max-w-3xl">
+    <div className="mapping-sheet mx-auto max-w-3xl">
       <PrivacyBadge />
-      <h1 className="mt-4 text-3xl font-semibold tracking-tight text-navy">Choose the header row</h1>
+      <p className="eyebrow mt-6 text-ink-3">Read your report</p>
+      <h1 className="mt-3 text-3xl tracking-tight text-navy">Choose the header row</h1>
       <p className="mt-3 text-ink-2">
         We couldn&apos;t safely identify the headers. All {rows.length} nonblank rows are still here.
         Choose the row containing column names, or keep every row if your file has no header.
@@ -32,7 +33,7 @@ export default function HeaderChooser({ table, onConfirm, onCancel }: {
           </option>
         ))}
       </select>
-      <div className="mt-6 flex justify-between gap-3">
+      <div className="mt-6 flex flex-col-reverse justify-between gap-3 sm:flex-row">
         <button type="button" onClick={onCancel} className={`${button.secondaryStrong} ${size.lg}`}>Upload a different file</button>
         <button type="button" disabled={!choice} onClick={() => onConfirm(choice === "none" ? null : Number(choice))}
           className={`${button.primary} ${size.lg}`}>Confirm header and map columns</button>

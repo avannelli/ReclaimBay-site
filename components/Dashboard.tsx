@@ -12,7 +12,7 @@ import { trackEvent, trackExport } from "@/lib/analytics";
 import { CONTACT_EMAIL, contactMailto } from "@/lib/contact";
 import { buildOpportunitiesCsv, exportFileName } from "@/lib/exportCsv";
 import { downloadSummaryPdf } from "@/lib/pdfReport";
-import { readTourState, saveTourState, type TourState } from "@/lib/prefs";
+import { saveTourState, type TourState } from "@/lib/prefs";
 import { scrollPageTo } from "@/lib/scroll";
 import { buildSummaryText } from "@/lib/summaryText";
 import type { Analysis } from "@/lib/types";
@@ -96,10 +96,9 @@ function Card({
     <section
       id={id}
       data-tour={tour}
-      className={`scroll-mt-20 overflow-hidden rounded-2xl border border-line bg-surface shadow-card ${className}`}
+      className={`report-section scroll-mt-20 ${className}`}
     >
-      <header className="flex items-start gap-3 border-b border-line/80 bg-linear-to-b from-canvas to-surface px-5 py-4 sm:px-6">
-        <span aria-hidden className="mt-1 h-4 w-1 shrink-0 rounded-full bg-navy" />
+      <header className="flex items-start gap-3">
         <div className="min-w-0">
           <h2 className="text-base font-semibold tracking-tight text-navy">
             {title}
@@ -193,12 +192,7 @@ function Stat({
         ? "text-xl sm:text-3xl"
         : "text-base sm:text-2xl";
   return (
-    <div className="relative h-full overflow-hidden rounded-2xl border border-line bg-surface p-4 shadow-card transition duration-200 hover:-translate-y-0.5 hover:shadow-lift sm:p-5">
-      <span aria-hidden className={`absolute inset-x-0 top-0 h-[3px] ${t.accent}`} />
-      <span
-        aria-hidden
-        className={`pointer-events-none absolute inset-x-0 top-0 h-20 bg-linear-to-b to-transparent ${t.wash}`}
-      />
+    <div className="report-stat relative h-full">
       <div className="relative flex flex-col-reverse items-start gap-2 sm:flex-row sm:justify-between sm:gap-3">
         <p className="text-[10px] font-semibold uppercase leading-4 tracking-[0.08em] text-ink-3 sm:pt-1 sm:text-[11px] sm:tracking-[0.12em]">
           {label}
@@ -342,9 +336,9 @@ function ContactCard({ isSample }: { isSample: boolean }) {
           Want help acting on this?
         </h2>
         <p className="mt-1.5 text-sm leading-relaxed text-pretty text-ink-2">
-          We&rsquo;re working with a small group of independent shops on turning
-          declined work into booked jobs. Tell us about your shop. Your report
-          stays on this device; we never see it.
+          Tell us about your shop and how you handle declined work. We can
+          talk through the next step. Your report stays on this device;
+          nothing from it is included in the contact link.
         </p>
       </div>
       <div className="flex flex-col gap-2.5 sm:flex-row sm:items-center sm:gap-4 lg:shrink-0 lg:flex-col lg:items-end lg:gap-2">
@@ -394,13 +388,8 @@ export default function Dashboard({
   const [confirmReplace, setConfirmReplace] = useState(false);
   const requestReset = () => (isSample ? onReset() : setConfirmReplace(true));
 
-  // Offer the tour once, after the headline total has landed.
-  const [tour, setTour] = useState<"prompt" | "running" | null>(null);
-  useEffect(() => {
-    if (readTourState() !== null) return;
-    const id = window.setTimeout(() => setTour((t) => t ?? "prompt"), 1600);
-    return () => window.clearTimeout(id);
-  }, []);
+  // The optional tour is available on request, without interrupting the report.
+  const [tour, setTour] = useState<"running" | null>(null);
   const finishTour = (state: TourState) => {
     saveTourState(state);
     setTour(null);
@@ -530,7 +519,7 @@ export default function Dashboard({
   );
 
   return (
-    <div className="space-y-5">
+    <div className="report-layout space-y-6">
       <SummaryBar
         watchRef={heroRef}
         total={a.total}
@@ -546,10 +535,11 @@ export default function Dashboard({
       />
       <Reveal className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
         <div className="min-w-0">
-          <p className="eyebrow text-ink-2">ReclaimBay report</p>
-          <h1 className="mt-1 wrap-anywhere text-lg font-semibold tracking-tight text-ink">
-            {fileName}
+          <p className="eyebrow text-ink-2">Declined-work review</p>
+          <h1 className="mt-2 text-3xl font-medium tracking-tight text-ink sm:text-4xl">
+            Your opportunity, in view.
           </h1>
+          <p className="mt-2 wrap-anywhere text-sm text-ink-2">{fileName}</p>
           <p className="mt-0.5 text-sm text-ink-3">
             Analyzed {formatDateTime(analyzedAt)}
           </p>
@@ -625,28 +615,12 @@ export default function Dashboard({
         <section
           ref={heroRef}
           data-tour="total"
-          className="relative overflow-hidden rounded-2xl bg-navy-deep px-6 py-9 text-white shadow-xl shadow-navy-deep/15 ring-1 ring-white/5 break-inside-avoid sm:px-10 sm:py-11 lg:px-12"
+          className="report-hero relative overflow-hidden break-inside-avoid"
         >
-          <div
-            aria-hidden
-            className="pointer-events-none absolute inset-0 bg-[radial-gradient(120%_90%_at_0%_0%,var(--color-navy)_0%,transparent_65%)]"
-          />
-          <div
-            aria-hidden
-            className="pointer-events-none absolute inset-0 bg-[radial-gradient(rgb(255_255_255/0.06)_1px,transparent_1px)] bg-size-[22px_22px] mask-[linear-gradient(to_right,transparent,black_75%)]"
-          />
-          <div
-            aria-hidden
-            className="pointer-events-none absolute -right-24 -top-32 h-96 w-96 rounded-full bg-slate-400/10 blur-3xl"
-          />
-          <div
-            aria-hidden
-            className="pointer-events-none absolute inset-x-0 bottom-0 h-0.5 bg-linear-to-r from-transparent via-opportunity/70 to-transparent"
-          />
           <div className="relative grid gap-8 lg:grid-cols-12 lg:items-end lg:gap-10">
             <div className={`min-w-0 ${showLead ? "lg:col-span-7" : "lg:col-span-12"}`}>
               <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
-                <p className="eyebrow text-opportunity">Declined work identified</p>
+                <p className="eyebrow text-opportunity">Reported declined value to review</p>
                 {isSample && (
                   <span className="rounded-full bg-white/10 px-2.5 py-0.5 text-[11px] font-medium uppercase tracking-wider text-slate-200 ring-1 ring-inset ring-white/15">
                     Sample report
@@ -659,9 +633,10 @@ export default function Dashboard({
                 <CountUp
                   value={a.total}
                   format={money}
-                  settleClassName="origin-left animate-settle motion-reduce:animate-none"
+                  durationMs={600}
                 />
               </p>
+              <p className="mt-4 max-w-lg text-sm leading-relaxed text-slate-300">The value of included declined jobs, as reported in your file. Current job status and any recovery need your review.</p>
               <div className="mt-7 flex flex-col gap-2 border-t border-white/10 pt-5 text-base text-slate-300 sm:flex-row sm:flex-wrap sm:items-center sm:gap-x-8">
                 <p>
                   <span className="font-semibold text-white">
@@ -688,7 +663,7 @@ export default function Dashboard({
             </div>
 
             {showLead && (
-              <div className="min-w-0 rounded-2xl bg-navy p-5 shadow-lg shadow-navy-deep/40 ring-1 ring-inset ring-white/10 sm:p-6 lg:col-span-5">
+              <div className="min-w-0 border-t border-white/20 pt-5 lg:border-t-0 lg:border-l lg:pl-8 lg:col-span-5">
                 <p className="eyebrow text-slate-400">
                   Largest {LEAD_N} opportunities
                 </p>
@@ -779,6 +754,11 @@ export default function Dashboard({
           </Reveal>
         )}
       </div>
+
+      <section className="report-guidance" aria-label="How to use this review">
+        <div><h2>Start with a job worth revisiting.</h2><p>Open its report details below. Confirm the work is still needed, check whether it was completed elsewhere, and choose a suitable follow-up.</p></div>
+        <div><h2>Know what the numbers mean.</h2><p>These are reported estimates, not independently verified findings or recovered revenue. File-quality notes explain what was included and left out.</p></div>
+      </section>
 
       <Reveal delay={200}>
         <Card
@@ -987,34 +967,6 @@ export default function Dashboard({
         </Dialog>
       )}
 
-      {tour === "prompt" && (
-        <Dialog
-          title="Want a 30-second tour of your report?"
-          onClose={() => finishTour("dismissed")}
-          actions={
-            <>
-              <button
-                type="button"
-                onClick={() => finishTour("dismissed")}
-                className={dialogSecondary}
-              >
-                Not now
-              </button>
-              <button
-                type="button"
-                data-autofocus
-                onClick={() => setTour("running")}
-                className={dialogPrimary}
-              >
-                Show me
-              </button>
-            </>
-          }
-        >
-          I&apos;ll show you where the most important insights are and what
-          they mean.
-        </Dialog>
-      )}
       {tour === "running" && <ReportTour onFinish={finishTour} />}
     </div>
   );

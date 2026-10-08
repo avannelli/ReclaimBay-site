@@ -8,14 +8,14 @@ import { contactMailto } from "@/lib/contact";
  * (nothing from the report or invitation in it), recorded as contact_clicked.
  * The caller sets the colors for its background.
  */
-export default function ContactLink({ isSample = false, className = "" }: { isSample?: boolean; className?: string }) {
+export default function ContactLink({ isSample = false, className = "", label = "Questions? Talk to ReclaimBay" }: { isSample?: boolean; className?: string; label?: string }) {
   return (
     <a
       href={contactMailto()}
       onClick={() => trackEvent("contact_clicked", isSample)}
       className={`rounded-md text-sm underline decoration-1 underline-offset-4 transition-colors focus-visible:outline-2 focus-visible:outline-offset-4 print:hidden ${className}`}
     >
-      Questions? Talk to ReclaimBay
+      {label}
     </a>
   );
 }

@@ -198,7 +198,7 @@ class SummaryWriter {
     this.rect(0, 0, PAGE_W, 26, C.navy);
     this.rect(0, 26, PAGE_W, 1.2, C.amber);
     const lw = this.logo(this.logos.lockup, M, 17, 15);
-    this.text("Declined-work report", M + lw + 8, 17, {
+    this.text("Declined-work review", M + lw + 8, 17, {
       size: 8,
       color: C.slate400,
     });
@@ -236,7 +236,7 @@ class SummaryWriter {
         x += this.width("SAMPLE REPORT", 7, true, 0.6) + 8;
       }
       this.text(
-        `${BRAND.name} · Generated locally in your browser from the selected report.`,
+        `${BRAND.name} · Reported declined estimates. Recovery is not tracked. Generated on your device.`,
         x,
         fy,
         { size: 7, color: C.ink3 },

@@ -17,7 +17,7 @@ import { prefersReducedMotion } from "@/lib/scroll";
 const easeOutQuart = (t: number) => 1 - Math.pow(1 - t, 4);
 
 /** Animates from 0 to `target` with a decelerating ease. */
-export function useCountUp(target: number, durationMs = 1500): number {
+export function useCountUp(target: number, durationMs = 650): number {
   const [value, setValue] = useState(0);
 
   useEffect(() => {

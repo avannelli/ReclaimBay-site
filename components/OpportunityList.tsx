@@ -77,9 +77,6 @@ function Row({
               {o.vehicle}
             </p>
           )}
-          {contact && (
-            <p className="mt-0.5 wrap-break-word text-xs text-ink-3">{contact}</p>
-          )}
           {(recent || o.possibleDuplicate) && (
             <div className="mt-2 flex flex-wrap gap-1.5 text-xs">
               {recent && (
@@ -125,6 +122,21 @@ function Row({
             <span className="lg:block">{formatAge(o.ageDays)} ago</span>
           </p>
         )}
+        <details className="source-record">
+          <summary>View report details<span className="sr-only"> for {o.service}, {o.customer ?? "customer not provided"}</span></summary>
+          <div className="source-record-body">
+            <p><strong>Why it appears:</strong> A readable, positive declined amount in the column you mapped. Jobs are initially ranked by value.</p>
+            <dl>
+              <div><dt>Service from report</dt><dd>{o.service}</dd></div>
+              <div><dt>Declined amount</dt><dd>{format(o.amount)}</dd></div>
+              <div><dt>Customer</dt><dd>{o.customer ?? "Not provided"}</dd></div>
+              <div><dt>Vehicle</dt><dd>{o.vehicle ?? "Not provided"}</dd></div>
+              <div><dt>Decline date</dt><dd>{o.date ? formatDate(o.date) : "Not provided or unreadable"}</dd></div>
+              <div><dt>Contact from report</dt><dd>{contact || "Not provided"}</dd></div>
+            </dl>
+            <p>These details come from your file. The current job status and customer interest have not been verified.</p>
+          </div>
+        </details>
       </div>
     </li>
   );

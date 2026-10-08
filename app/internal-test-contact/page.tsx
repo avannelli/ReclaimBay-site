@@ -11,7 +11,7 @@ export default function InternalTestContactPage() {
   return (
     <div className="flex min-h-screen flex-col">
       <SiteHeader />
-      <main className="flex flex-1 items-center bg-canvas px-4 py-12 sm:px-6 sm:py-20">
+      <main id="main" className="flex flex-1 items-center bg-canvas px-4 py-12 sm:px-6 sm:py-20">
         <section className="mx-auto w-full max-w-2xl rounded-2xl border border-line bg-surface p-6 shadow-card sm:p-10">
           <p className="eyebrow text-ink-3">Internal testing</p>
           <h1 className="mt-3 text-2xl font-semibold tracking-tight text-ink sm:text-3xl">

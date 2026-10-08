@@ -20,9 +20,9 @@ export default function EmptyResult({
   onRemap: () => void;
 }) {
   return (
-    <div className="mx-auto max-w-2xl">
+    <div className="mapping-sheet mx-auto max-w-2xl">
       <PrivacyBadge />
-      <div className="mt-4 rounded-2xl border border-line bg-surface p-6 shadow-card sm:p-8">
+      <div className="mt-6 rounded-md border border-line bg-surface p-6 sm:p-8">
         <span
           aria-hidden
           className="grid h-11 w-11 place-items-center rounded-xl bg-canvas text-ink-2 ring-1 ring-inset ring-line"

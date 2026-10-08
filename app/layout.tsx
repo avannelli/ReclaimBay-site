@@ -15,7 +15,7 @@ const geistMono = Geist_Mono({
 
 const title = `${BRAND.name} | ${BRAND.descriptor}`;
 const description =
-  "Upload your declined-work report and see the total value, the highest-value jobs, and where the opportunity is concentrated. Analyzed privately in your browser.";
+  "Find the value in work left undone. Review your shop's declined work, see the largest opportunities, and decide where to start. Your report stays on your device.";
 
 export const metadata: Metadata = {
   title,

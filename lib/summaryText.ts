@@ -26,6 +26,7 @@ export function buildSummaryText({
     `Total declined work: ${money(a.total)}`,
     `Opportunities: ${a.count.toLocaleString("en-US")}`,
     `Average opportunity: ${formatAverage(a.average, a.showCents)}`,
+    "Values are reported declined estimates. Recovery is not tracked.",
   );
   if (a.hasDates) {
     lines.push(`Declined in last ${RECENT_DAYS} days: ${money(a.recency.recent.value)}`);

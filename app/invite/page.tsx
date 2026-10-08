@@ -18,7 +18,7 @@ export default function InvitePage() {
   return (
     <div className="flex min-h-screen flex-col">
       <SiteHeader />
-      <main className="flex flex-1 items-center bg-canvas px-4 py-12 sm:px-6 sm:py-20">
+      <main id="main" className="flex flex-1 items-center bg-canvas px-4 py-12 sm:px-6 sm:py-20">
         <InvitationExperience />
       </main>
       <SiteFooter />

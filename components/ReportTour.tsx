@@ -18,7 +18,7 @@ const STEPS: Step[] = [
   {
     target: "total",
     title: "Your total opportunity",
-    body: "This is the total value of declined work included in this report.",
+    body: "This totals the declined estimates included from your file. Review current job status before following up; recovery is not tracked.",
   },
   {
     target: "opportunities",

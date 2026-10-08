@@ -118,11 +118,11 @@ export default function ColumnMapper({
   };
 
   const card =
-    "divide-y divide-line rounded-2xl border border-line bg-surface shadow-card";
+    "divide-y divide-line rounded-md border border-line bg-surface";
   const optionalFields = MAPPER_FIELDS.filter((f) => !FIELD_DEFS[f].required);
 
   return (
-    <div className="mx-auto max-w-3xl">
+    <div className="mapping-sheet mx-auto max-w-3xl">
       <PrivacyBadge />
       {veryUnlikely ? (
         <>
@@ -137,7 +137,7 @@ export default function ColumnMapper({
       ) : (
         <>
           <h1 className="mt-4 text-3xl font-semibold tracking-tight text-navy">
-            Confirm a few columns
+            Match your report to the review
           </h1>
           <p className="mt-3 text-ink-2">
             {/* After a failed scan, `initial` is the user's own mapping. */}

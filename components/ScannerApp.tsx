@@ -6,7 +6,7 @@ import { trackEvent, trackLandingView } from "@/lib/analytics";
 import { detectColumns, normalizeRows } from "@/lib/normalize";
 import { confirmHeader, FileParseError, parseFile } from "@/lib/parseFile";
 import { applyRememberedMappings, rememberConfirmedMappings } from "@/lib/prefs";
-import { prefersReducedMotion, scrollPageTo } from "@/lib/scroll";
+import { prefersReducedMotion, scrollPageTo, scrollToElement } from "@/lib/scroll";
 import type {
   Analysis,
   ColumnMapping,
@@ -23,7 +23,7 @@ import ColumnMapper from "./ColumnMapper";
 import HeaderChooser from "./HeaderChooser";
 import Dashboard from "./Dashboard";
 import EmptyResult from "./EmptyResult";
-import { buildSampleTable } from "@/lib/sampleData";
+import { buildDemoTable } from "@/lib/demoReport";
 import UploadPanel from "./UploadPanel";
 
 /** What the file's columns were matched to, and how. */
@@ -55,6 +55,7 @@ type Stage =
  */
 export default function ScannerApp() {
   const [stage, setStage] = useState<Stage>({ name: "upload" });
+  const mainRef = useRef<HTMLElement>(null);
   const [error, setError] = useState<string | null>(null);
   // Guards against a second file starting while one is still being read.
   const processing = useRef(false);
@@ -79,13 +80,26 @@ export default function ScannerApp() {
       firstStage.current = false;
       return;
     }
-    if (stage.name !== "parsing") scrollPageTo(0, { instant: true });
-  }, [stage.name]);
+    if (stage.name === "upload" && (focusUpload || error)) {
+      const target = mainRef.current?.querySelector<HTMLElement>(error ? "[role=alert]" : "#scan");
+      if (target) {
+        scrollToElement(target, 24, { instant: true });
+        if (error) { target.tabIndex = -1; target.focus({ preventScroll: true }); }
+      }
+    } else if (stage.name !== "parsing") scrollPageTo(0, { instant: true });
+  }, [stage.name, focusUpload, error]);
 
   const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
   // "in" while the branded transition plays; "out" while it fades away.
   const [transition, setTransition] = useState<"in" | "out" | null>(null);
+  useEffect(() => {
+    if (transition || stage.name === "parsing") return;
+    const target = stage.name === "upload"
+      ? error ? mainRef.current?.querySelector<HTMLElement>("[role=alert]") : null
+      : mainRef.current?.querySelector("h1");
+    if (target) { target.tabIndex = -1; target.focus({ preventScroll: true }); }
+  }, [stage.name, transition, error]);
 
   /**
    * Plays the branded transition around a scan. A report is revealed only
@@ -161,7 +175,7 @@ export default function ScannerApp() {
 
   const handleSample = () =>
     startScan(() => {
-      const table = buildSampleTable();
+      const table = buildDemoTable();
       const detection = detectColumns(table);
       return analyzeToStage({ table, detection, remembered: 0 }, detection.mapping, {
         isSample: true,
@@ -192,8 +206,15 @@ export default function ScannerApp() {
     });
 
   return (
-    <main className="mx-auto w-full max-w-300 flex-1 px-4 py-8 sm:px-6 sm:py-12 lg:px-8">
+    <main ref={mainRef} id="main" className={`scanner-main ${stage.name === "upload" || stage.name === "parsing" ? "" : "scanner-workspace"}`}>
         {transition && <BrandTransition leaving={transition === "out"} />}
+        <div inert={transition !== null} aria-busy={stage.name === "parsing"}>
+        {stage.name !== "upload" && stage.name !== "parsing" && (
+          <ol className="scan-progress" aria-label="Report progress">
+            <li aria-current={stage.name === "mapping" || stage.name === "header" ? "step" : undefined}>01 <span>Match your report</span></li>
+            <li aria-current={stage.name === "results" || stage.name === "empty" ? "step" : undefined}>02 <span>Review the opportunity</span></li>
+          </ol>
+        )}
         {stage.name === "header" && (
           <HeaderChooser table={stage.table} onCancel={reset} onConfirm={(index) => {
             const table = confirmHeader(stage.table, index);
@@ -261,6 +282,7 @@ export default function ScannerApp() {
             onReset={reset}
           />
         )}
+        </div>
     </main>
   );
 }
