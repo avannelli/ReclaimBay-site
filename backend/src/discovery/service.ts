@@ -41,12 +41,11 @@ import { nameCategory } from "./categories.js";
 import {
   CATEGORY_VERDICT_LABELS,
   automatedMayReplace,
-  categoryFields,
   isCategoryVerdict,
-  isOutsideTarget,
   type CategoryResult,
   type CategoryVerdict,
-} from "./categoryCheck.js";
+} from "@avannelli/aos/categories";
+import { categoryFields, isOutsideTarget } from "./categoryCheck.js";
 import { MatchIndex, flagReason, relationReason, type IncomingKeys, type MatchKeys, type Verdict } from "./dedupe.js";
 import {
   cleanDiscovered,

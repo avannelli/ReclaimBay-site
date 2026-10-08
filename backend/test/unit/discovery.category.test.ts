@@ -4,13 +4,12 @@ import { describe, test } from "node:test";
 import { AUTOMOTIVE_CATEGORY_RULES, nameCategory } from "../../src/discovery/categories.js";
 import {
   automatedMayReplace,
-  categoryFields,
   checkName,
   checkWebsite,
-  isOutsideTarget,
   type CategoryRules,
   type CategoryVerdict,
-} from "../../src/discovery/categoryCheck.js";
+} from "@avannelli/aos/categories";
+import { categoryFields, isOutsideTarget } from "../../src/discovery/categoryCheck.js";
 
 const verdict = (name: string) => nameCategory({ businessName: name, category: "automotive_repair", categoryTier: "core" }).verdict;
 
@@ -91,11 +90,15 @@ describe("category check: what an automated result may replace", () => {
 });
 
 describe("category check: the engine has no industry built in", () => {
-  // A second vertical (veterinary clinics), entirely from its own rules.
+  // A second vertical (veterinary clinics), entirely from its own rules. Unlike
+  // automotive@c3, it treats names as decisive: nothing outside the target in a
+  // usable name is enough for in_target. The AOS engine fails closed, so that is
+  // an explicit opt-in (provisional: false), never a default.
   const VET: CategoryRules = {
     id: "veterinary@t1",
     target: "veterinary care",
     name: {
+      provisional: false,
       inScope: [{ label: "veterinary care", pattern: /\bvet(?:erinary)?\b|\banimal hospital\b/ }],
       outOfScope: [
         { label: "grooming", pattern: /\bgroom\w*/, strength: "strong" },
@@ -128,10 +131,21 @@ describe("category check: the engine has no industry built in", () => {
     assert.equal(checkName(VET, { name: "Able Auto Glass" }).verdict, "in_target");
   });
 
-  test("categoryCheck.ts contains no industry words", () => {
-    const src = readFileSync(new URL("../../src/discovery/categoryCheck.ts", import.meta.url), "utf8").toLowerCase();
-    for (const word of [/\bauto\b/, /automotive/, /\brepair/, /\bcars?\b/, /vehicle/, /brake/, /\btires?\b/, /glass/, /reclaimbay/]) {
-      assert.ok(!word.test(src), `the engine mentions ${word}`);
-    }
+  test("without the explicit opt-in, the same rules fail closed: names stay provisional", () => {
+    const { provisional: _optIn, ...name } = VET.name;
+    const omitted: CategoryRules = { ...VET, name };
+    assert.equal(checkName(omitted, { name: "Oak Animal Hospital" }).verdict, "unclear");
+    assert.equal(checkName(omitted, { name: "Able Auto Glass" }).verdict, "unclear");
+    assert.equal(checkName(omitted, { name: "Happy Paws Grooming" }).verdict, "wrong_category", "out-of-scope evidence still decides");
+  });
+
+  test("the category engine and ReclaimBay's storage helpers contain no industry words", () => {
+    const industry = [/\bauto\b/, /automotive/, /\brepair/, /\bcars?\b/, /vehicle/, /brake/, /\btires?\b/, /glass/];
+    const scan = (file: string, words: RegExp[]) => {
+      const src = readFileSync(new URL(file, import.meta.url), "utf8").toLowerCase();
+      for (const word of words) assert.ok(!word.test(src), `${file} mentions ${word}`);
+    };
+    scan("../../node_modules/@avannelli/aos/dist/categories/categories.js", [...industry, /reclaimbay/]);
+    scan("../../src/discovery/categoryCheck.ts", industry);
   });
 });

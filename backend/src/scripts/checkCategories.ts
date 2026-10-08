@@ -15,7 +15,7 @@
 import { parseArgs } from "node:util";
 import { loadConfig } from "../config.js";
 import { createDb } from "../db.js";
-import { CATEGORY_VERDICTS } from "../discovery/categoryCheck.js";
+import { CATEGORY_VERDICTS } from "@avannelli/aos/categories";
 import { backfillCategoryCheck } from "../discovery/service.js";
 
 const { values } = parseArgs({ options: { apply: { type: "boolean", default: false } } });

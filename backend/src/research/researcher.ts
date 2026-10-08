@@ -10,7 +10,7 @@
  * person searches by hand.
  */
 import { isOwnWebsiteHost } from "../discovery/normalize.js";
-import type { CategoryResult } from "../discovery/categoryCheck.js";
+import type { CategoryResult } from "@avannelli/aos/categories";
 import { analyze, type Fact, type Page, type PageRole, type SignalProposal, type Subject, type ContactProposal } from "./analyze.js";
 import { RESEARCH_LIMITS, type PoliteFetcher, type SourceRecord } from "./fetcher.js";
 import { parseHtml } from "@avannelli/aos/html";

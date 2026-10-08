@@ -9,7 +9,7 @@
  * against Overture release 2026-09-23.1 (schema v2: `taxonomy`, no
  * `categories`). Anything unlisted has no tier and is not discovered.
  */
-import { checkName, type CategoryResult, type CategoryRules, type OutOfScopeTerm } from "./categoryCheck.js";
+import { checkName, type CategoryResult, type CategoryRules, type OutOfScopeTerm } from "@avannelli/aos/categories";
 import type { CategoryTier } from "./types.js";
 
 const TIERS: Record<string, { core: readonly string[]; adjacent: readonly string[] }> = {
@@ -128,7 +128,7 @@ export const TIER_LABELS: Record<CategoryTier, string> = {
 
 /*
  * Category check rules for ReclaimBay: businesses that perform automotive
- * repair/service work (src/discovery/categoryCheck.ts runs them). Policy, c3:
+ * repair/service work (the AOS category engine runs them). Policy, c3:
  *   - in scope: general, mechanical, specialist (engine, transmission,
  *     brakes, electrical, diesel...) and collision/body repair;
  *   - names are leads only (provisional): an in-scope name is "unclear" until

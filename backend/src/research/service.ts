@@ -24,7 +24,8 @@
 import { createDb, type Db } from "../db.js";
 import { researchGateErrors } from "../discovery/approval.js";
 import { autoDecideCandidate } from "../discovery/service.js";
-import { CATEGORY_VERDICT_LABELS, automatedMayReplace, categoryFields, isOutsideTarget } from "../discovery/categoryCheck.js";
+import { CATEGORY_VERDICT_LABELS, automatedMayReplace } from "@avannelli/aos/categories";
+import { categoryFields, isOutsideTarget } from "../discovery/categoryCheck.js";
 import { phoneKey } from "../discovery/normalize.js";
 import type { Prisma } from "../generated/prisma/client.js";
 import { isPhoneNumber, parseProspectInput } from "../prospects.js";

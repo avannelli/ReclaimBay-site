@@ -9,7 +9,7 @@ import type { automaticResearchStatus, candidateResearch, researchQueue } from "
 import { CANDIDATE_SORTS, DEFAULT_BUSINESS_TYPE } from "../discovery/service.js";
 import { AUTO_APPROVAL_LABELS, AUTO_APPROVAL_RULES, isAutoApproved } from "../discovery/autoApproval.js";
 import { CATEGORY_RULES } from "../discovery/categories.js";
-import { CATEGORY_SOURCE_LABELS, CATEGORY_VERDICTS, CATEGORY_VERDICT_LABELS, type CategorySource, type CategoryVerdict } from "../discovery/categoryCheck.js";
+import { CATEGORY_SOURCE_LABELS, CATEGORY_VERDICTS, CATEGORY_VERDICT_LABELS, type CategorySource, type CategoryVerdict } from "@avannelli/aos/categories";
 import {
   CANDIDATE_REASON_REQUIRED,
   CANDIDATE_STATUSES,

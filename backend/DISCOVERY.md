@@ -58,7 +58,7 @@ codes, and analytics attribution are unchanged; discovery only feeds them.
 | Candidate lifecycle (pure) | `src/discovery/candidateStatus.ts` |
 | Candidate to Prospect mapping (pure) | `src/discovery/approval.ts` |
 | Provider category codes and tiers (incl. the Overture classifier), and the ReclaimBay category check rules | `src/discovery/categories.ts` |
-| Category check engine (pure, no industry built in) | `src/discovery/categoryCheck.ts` |
+| Category check engine (pure, no industry built in, fails closed) | AOS `@avannelli/aos/categories`; storage helpers in `src/discovery/categoryCheck.ts` |
 | Overture Places: release lookup, record mapping, importer | `src/discovery/overture.ts` |
 | Overture Places: reading the release (DuckDB, background only) | `src/discovery/overtureSource.ts` |
 | County boundaries for scoped imports (US Census TIGERweb) | `src/discovery/boundaries.ts` |
@@ -725,7 +725,7 @@ rejects a candidate: a wrong-category candidate is stored, kept in the
 duplicate index (so a re-import still skips it), and keeps its history.
 Rejecting it is still a person's decision, with a reason.
 
-**Where it runs.** The engine (`categoryCheck.ts`) knows no industry; the
+**Where it runs.** The engine (AOS `@avannelli/aos/categories`) knows no industry; the
 rules are `AUTOMOTIVE_CATEGORY_RULES` in `categories.ts` (`automotive@c1`).
 1. **Name**, when a candidate is created (discovery ingest, after the duplicate
    verdict; or added by hand) and when a person renames it. Wrong category

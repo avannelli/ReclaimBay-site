@@ -33,7 +33,8 @@
  * person: those stay for review.
  */
 import { scoreCandidate, researchGateErrors, type CandidateFacts } from "./approval.js";
-import { CATEGORY_SOURCE_LABELS, isOutsideTarget, type CategorySource, type CategoryVerdict } from "./categoryCheck.js";
+import { CATEGORY_SOURCE_LABELS, type CategorySource, type CategoryVerdict } from "@avannelli/aos/categories";
+import { isOutsideTarget } from "./categoryCheck.js";
 import { CANDIDATE_STATUS_LABELS, type CandidateStatus } from "./candidateStatus.js";
 import { FIT_CRITERION, QUALIFICATION_LABELS, REQUIRED_CRITERIA, SIGNALS, type SignalDefinition } from "../scoring.js";
 import { fitBasis, fitConflict } from "../research/repairFit.js";

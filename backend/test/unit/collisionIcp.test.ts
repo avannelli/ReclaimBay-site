@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
 import { categoryTierFor, nameCategory, overtureTier } from "../../src/discovery/categories.js";
-import { automatedMayReplace } from "../../src/discovery/categoryCheck.js";
+import { automatedMayReplace } from "@avannelli/aos/categories";
 import { analyze, type Page, type Subject } from "../../src/research/analyze.js";
 import { parseHtml } from "@avannelli/aos/html";
 import { pickPages } from "../../src/research/researcher.js";
