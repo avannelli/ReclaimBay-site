@@ -66,7 +66,7 @@ codes, and analytics attribution are unchanged; discovery only feeds them.
 | Release import, staging, and the staged (background) provider | `src/discovery/staging.ts` |
 | Persistence, runs (sync and queued), research, approval | `src/discovery/service.ts` |
 | Background job entry points | `src/scripts/importProvider.ts`, `src/scripts/processDiscoveryRuns.ts`, `src/scripts/researchCandidates.ts`, `src/scripts/checkCategories.ts` |
-| Automated research: polite fetching, robots.txt, HTML reading | Polite fetcher, robots.txt reader and HTML reader from AOS (`@avannelli/aos/fetch`, `/robots`, `/html`); ReclaimBay's crawler identity and limits in `src/research/fetcher.ts` |
+| Automated research: polite fetching, robots.txt, HTML reading, page selection | Polite fetcher, robots.txt reader, HTML reader and page selector from AOS (`@avannelli/aos/fetch`, `/robots`, `/html`, `/pages`); ReclaimBay's crawler identity and limits (including `maxPages`) in `src/research/fetcher.ts`, and its page roles (contact, about, services, team) and collision-first services preference in `src/research/researcher.ts` |
 | Automated research: verification rules (pure) | `src/research/analyze.ts` |
 | Automated research: one candidate, page selection | `src/research/researcher.ts` |
 | Automated research: runs, queue, reconciliation into signals | `src/research/service.ts` |
@@ -277,7 +277,8 @@ never creates a prospect, and never contacts anyone.
 candidate (website from the provider: unverified)
   -> queue a research run (admin button, admin batch, or CLI)
   -> fetch: robots.txt, the stored website page, up to 4 linked pages
-     (contact, about, services, team), and an HTTPS check
+     (contact, about, services, team; chosen by the AOS page selector with
+     ReclaimBay's roles), and an HTTPS check
   -> verify ownership: is this the business's own website?
   -> extract facts and signal values, each with its page and a short quote
   -> store the run, its sources, and its facts

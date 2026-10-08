@@ -35,7 +35,7 @@
     "ai:smoke": "node --env-file-if-exists=.env dist/scripts/aiSmoke.js"
   },
   "dependencies": {
-    "@avannelli/aos": "file:vendor/avannelli-aos-0.4.0.tgz",
+    "@avannelli/aos": "file:vendor/avannelli-aos-0.5.0.tgz",
     "@duckdb/node-api": "1.5.6-r.1",
     "@fastify/cors": "11.3.0",
     "@fastify/rate-limit": "11.2.0",

@@ -15,6 +15,7 @@ import { analyze, type Fact, type Page, type PageRole, type SignalProposal, type
 import type { PoliteFetcher, SourceRecord } from "@avannelli/aos/fetch";
 import { RESEARCH_LIMITS } from "./fetcher.js";
 import { parseHtml } from "@avannelli/aos/html";
+import { DEFAULT_SKIP, selectPages, type PageRoleRule, type SelectedPage } from "@avannelli/aos/pages";
 
 /** Bumped whenever a rule changes, so runs say which rules produced them. */
 export const RESEARCH_VERSION = "r14";
@@ -71,36 +72,21 @@ const ROLE_PATTERNS: [PageRole, RegExp][] = [
   ["team", /team|staff|technician|meet-us|our-people/i],
 ];
 
-const SKIP = /\.(pdf|jpe?g|png|gif|webp|svg|zip|mp4|docx?|xlsx?)(\?|$)|\/(wp-admin|wp-login|cart|checkout|login|account|feed)\b|^(javascript|mailto|tel|sms):/i;
+/** For the services role, collision/body links are read first. */
+const SERVICES_PREFER = /collision|body|accident|dent|structural/i;
 
-const sameSite = (a: string, b: string) => a.replace(/^www\./, "") === b.replace(/^www\./, "");
+/** ReclaimBay's page-selection policy for the AOS page selector: its roles, in order, and the services preference. */
+const PAGE_ROLES: readonly PageRoleRule<PageRole>[] = ROLE_PATTERNS.map(([role, pattern]) =>
+  role === "services" ? { role, pattern, prefer: SERVICES_PREFER } : { role, pattern },
+);
 
-/** Up to `max` same-site pages worth reading, best first: contact, about, services, team. */
-export function pickPages(home: Page, max: number): { url: string; role: PageRole }[] {
-  const base = new URL(home.url);
-  const picked = new Map<string, PageRole>();
-  for (const [role, re] of ROLE_PATTERNS) {
-    const links = role === "services" ? [...home.parsed.links].sort((a, b) => Number(/collision|body|accident|dent|structural/i.test(b.href + " " + b.text)) - Number(/collision|body|accident|dent|structural/i.test(a.href + " " + a.text))) : home.parsed.links;
-    for (const link of links) {
-      if (picked.size >= max) break;
-      if (SKIP.test(link.href)) continue;
-      let u: URL;
-      try {
-        u = new URL(link.href, base);
-      } catch {
-        continue;
-      }
-      if (!/^https?:$/.test(u.protocol) || !sameSite(u.hostname, base.hostname)) continue;
-      u.hash = "";
-      const key = u.toString();
-      if (key === home.url || picked.has(key) || u.pathname === base.pathname) continue;
-      if (re.test(u.pathname) || re.test(link.text)) {
-        picked.set(key, role);
-        break; // one page per role
-      }
-    }
-  }
-  return [...picked].map(([url, role]) => ({ url, role }));
+/**
+ * Up to `max` same-site pages worth reading, best first: contact, about, services, team.
+ * The selection mechanics (same site, skip rule, one page per role) are AOS's
+ * (@avannelli/aos/pages); the roles and preference are ReclaimBay's.
+ */
+export function pickPages(home: Page, max: number): SelectedPage<PageRole>[] {
+  return selectPages({ url: home.url, links: home.parsed.links }, { roles: PAGE_ROLES, skip: DEFAULT_SKIP, max });
 }
 
 const providerFacts = (s: Subject): Fact[] => [

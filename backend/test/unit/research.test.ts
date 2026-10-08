@@ -4,7 +4,7 @@ import { sitePhones, type Subject } from "../../src/research/analyze.js";
 import type { HttpGet, HttpResult } from "@avannelli/aos/fetch";
 import { RESEARCH_LIMITS, RESEARCH_ROBOTS_AGENT, RESEARCH_USER_AGENT, researchFetcher } from "../../src/research/fetcher.js";
 import { parseHtml } from "@avannelli/aos/html";
-import { researchCandidate } from "../../src/research/researcher.js";
+import { pickPages, researchCandidate } from "../../src/research/researcher.js";
 import { parseRobots, robotsAllows } from "@avannelli/aos/robots";
 
 /*
@@ -96,6 +96,51 @@ const fact = (r: { facts: { field: string }[] }, field: string) => r.facts.find(
   | { field: string; value: string | null; state: string; sourceUrl?: string | null; excerpt?: string | null; note?: string | null }
   | undefined;
 const signal = (r: { signals: { key: string; value: string; sourceUrl: string; excerpt: string }[] }, key: string) => r.signals.find((s) => s.key === key);
+
+describe("page-selection policy (supplied to the AOS page selector)", () => {
+  const home = (links: string, url = "https://shop.example.com/") => ({ url, role: "home" as const, parsed: parseHtml(`<body>${links}</body>`), html: "" });
+  const a = (href: string, text = "") => `<a href="${href}">${text}</a>`;
+
+  test("ReclaimBay's roles, in ReclaimBay's order, with its own vocabulary", () => {
+    const p = home(a("/our-team", "Meet the team") + a("/brake-repair", "Brakes") + a("/who-we-are", "Who we are") + a("/find-us", "Directions"));
+    assert.deepEqual(pickPages(p, RESEARCH_LIMITS.maxPages - 1), [
+      { url: "https://shop.example.com/find-us", role: "contact" },
+      { url: "https://shop.example.com/who-we-are", role: "about" },
+      { url: "https://shop.example.com/brake-repair", role: "services" },
+      { url: "https://shop.example.com/our-team", role: "team" },
+    ]);
+  });
+
+  test("services: collision/body links come first; other roles keep link order", () => {
+    const p = home(a("/services", "Services") + a("/oil-change-service", "Oil") + a("/collision-center", "Collision") + a("/contact", "Contact") + a("/contact-2", "Contact"));
+    const picked = pickPages(p, 4);
+    assert.equal(picked.find((x) => x.role === "services")!.url, "https://shop.example.com/collision-center");
+    assert.equal(picked.find((x) => x.role === "contact")!.url, "https://shop.example.com/contact");
+    const noCollision = pickPages(home(a("/services", "Services") + a("/oil-change-service", "Oil")), 4);
+    assert.equal(noCollision.find((x) => x.role === "services")!.url, "https://shop.example.com/services", "without a collision link, the first services link");
+  });
+
+  test("max: research reads at most maxPages - 1 linked pages; smaller limits cut in role order", () => {
+    const p = home(a("/contact") + a("/about") + a("/services") + a("/team") + a("/locations") + a("/staff"));
+    assert.equal(RESEARCH_LIMITS.maxPages - 1, 4);
+    assert.deepEqual(pickPages(p, RESEARCH_LIMITS.maxPages - 1).map((x) => x.role), ["contact", "about", "services", "team"]);
+    assert.deepEqual(pickPages(p, 2).map((x) => x.role), ["contact", "about"]);
+    assert.deepEqual(pickPages(p, 0), []);
+  });
+
+  test("skip: documents, admin/login/cart paths and non-page links are never read; other sites are never read", () => {
+    const p = home(
+      a("/contact-form.pdf", "Contact") + a("/wp-admin/about", "About") + a("/cart", "Services") + a("mailto:team@shop.example.com", "Team") +
+        a("tel:8055550101", "Contact") + a("https://other.example.com/contact", "Contact") + a("https://www.shop.example.com/about", "About"),
+    );
+    assert.deepEqual(pickPages(p, 4), [{ url: "https://www.shop.example.com/about", role: "about" }], "www is the same site");
+  });
+
+  test("the home page itself, fragments and repeats are not separate pages", () => {
+    const p = home(a("/#contact", "Contact") + a("/?ref=about", "About") + a("/contact#form", "Contact") + a("/contact", "Contact"));
+    assert.deepEqual(pickPages(p, 4), [{ url: "https://shop.example.com/contact", role: "contact" }]);
+  });
+});
 
 describe("research crawler configuration (supplied to the AOS fetcher)", () => {
   test("ReclaimBay's identity and limits are unchanged", () => {
