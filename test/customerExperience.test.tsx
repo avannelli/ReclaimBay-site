@@ -44,7 +44,12 @@ test("product demo offers named, keyboard-native source/evidence interactions", 
   const html = renderToStaticMarkup(<ProductDemo onOpen={noop} />);
   assert.match(html, /aria-label="Demonstration view"/);
   assert.match(html, /aria-pressed="true"/);
-  assert.equal((html.match(/<details\b/g) ?? []).length, 3);
+  assert.doesNotMatch(html, /<details\b/);
+  assert.equal((html.match(/class="demo-job"/g) ?? []).length, 3);
+  assert.equal((html.match(/aria-controls=/g) ?? []).length, 3);
+  assert.match(html, /role="region" aria-label="Selected opportunity evidence" aria-live="polite"/);
+  assert.equal((html.match(/data-active="true"/g) ?? []).length, 1);
+  assert.equal((html.match(/aria-hidden="true" inert=""/g) ?? []).length, 3);
   assert.match(html, /Why it appears/);
   assert.match(html, /Source record/);
   assert.match(html, /JAC-001/);

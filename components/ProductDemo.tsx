@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { DEMO_SHOP, demoAnalysis } from "@/lib/demoReport";
 import { moneyFormat } from "@/lib/format";
 import { prefersReducedMotion } from "@/lib/scroll";
@@ -11,9 +11,12 @@ export default function ProductDemo({ onOpen }: { onOpen: () => void }) {
   const [report, setReport] = useState(demoAnalysis);
   const [view, setView] = useState<"report" | "source" | "processing">("report");
   const [replayed, setReplayed] = useState(false);
+  const [selectedId, setSelectedId] = useState<number | null>(0);
+  const evidenceId = useId();
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => () => { if (timer.current) clearTimeout(timer.current); }, []);
   const money = moneyFormat(report.analysis.showCents);
+  const jobs = report.analysis.ranked.slice(0, 3);
   const run = () => {
     const calculated = demoAnalysis();
     if (prefersReducedMotion()) {
@@ -39,20 +42,37 @@ export default function ProductDemo({ onOpen }: { onOpen: () => void }) {
         </div>
       ) : (
         <div className="demo-result" aria-busy={view === "processing"}>
-          <div className="demo-total"><p className="eyebrow">Reported declined value</p><p className="demo-number">{replayed && view !== "processing" ? <CountUp value={report.analysis.total} format={money} durationMs={450} /> : money(report.analysis.total)}</p><p>6 opportunities to review <span aria-hidden>↗</span></p></div>
+          <div className="demo-total"><p className="eyebrow">Reported declined value</p><p className="demo-number">{replayed && view !== "processing" ? <CountUp value={report.analysis.total} format={money} durationMs={450} /> : money(report.analysis.total)}</p><p>6 opportunities to review</p></div>
           <div className="demo-findings">
             <p className="eyebrow">Largest jobs first</p>
-            {report.analysis.ranked.slice(0, 3).map((job, index) => (
-              <details className="demo-job" key={job.id}>
-                <summary><span className="demo-rank">0{index + 1}</span><span>{job.service}<small>View report details <span aria-hidden>+</span></small></span><strong>{money(job.amount)}</strong></summary>
-                <div className="demo-evidence"><p><strong>Why it appears:</strong> A positive declined estimate, ranked by value.</p><dl><div><dt>Customer</dt><dd>{job.customer}</dd></div><div><dt>Vehicle</dt><dd>{job.vehicle}</dd></div><div><dt>Source record</dt><dd>{String(report.table.rows[job.id][5])}</dd></div></dl><p>Reported in the fictional export. Current job status needs review.</p></div>
-              </details>
+            {jobs.map((job, index) => (
+              <button className="demo-job" type="button" key={job.id}
+                aria-pressed={selectedId === job.id} aria-controls={evidenceId}
+                disabled={view === "processing"}
+                onClick={() => setSelectedId(selectedId === job.id ? null : job.id)}>
+                <span className="demo-rank">0{index + 1}</span><span>{job.service}<small>Inspect source record <span aria-hidden>→</span></small></span><strong>{money(job.amount)}</strong>
+              </button>
             ))}
+          </div>
+          {/* Overlapping grid panels reserve the tallest detail at every width.
+              Inactive content still sizes the region but is neither visible nor accessible. */}
+          <div className="demo-evidence" id={evidenceId} role="region" aria-label="Selected opportunity evidence" aria-live="polite" aria-atomic="true">
+            {jobs.map((job, index) => (
+              <div className="demo-evidence-panel" key={job.id} data-active={selectedId === job.id} aria-hidden={selectedId !== job.id} inert={selectedId !== job.id}>
+                <p className="demo-evidence-heading">Source evidence <span>Job 0{index + 1} / {String(report.table.rows[job.id][5])}</span></p>
+                <dl><div><dt>Customer</dt><dd>{job.customer}</dd></div><div><dt>Vehicle</dt><dd>{job.vehicle}</dd></div><div><dt>Source record</dt><dd>{String(report.table.rows[job.id][5])}</dd></div></dl>
+                <p><strong>Why it appears:</strong> A positive declined estimate, ranked by value.</p>
+                <p className="demo-evidence-note">Reported in the fictional export. Current job status needs review.</p>
+              </div>
+            ))}
+            <div className="demo-evidence-panel demo-evidence-empty" data-active={selectedId === null} aria-hidden={selectedId !== null} inert={selectedId !== null}>
+              <p className="demo-evidence-heading">Inspect the source</p><p>Select a job above to see the customer, vehicle, and source record behind its estimate.</p>
+            </div>
           </div>
           {view === "processing" && <div className="demo-processing" role="status"><span className="processing-line" />Calculating the sample report…</div>}
         </div>
       )}
-      <footer className="demo-footer"><button type="button" onClick={run} disabled={view === "processing"}>Run sample analysis <span aria-hidden>↻</span></button><button type="button" onClick={onOpen} disabled={view === "processing"}>Open full report <span aria-hidden>↗</span></button></footer>
+      <footer className="demo-footer"><button type="button" onClick={run} disabled={view === "processing"}>Run sample analysis <span aria-hidden>↻</span></button><button type="button" onClick={onOpen} disabled={view === "processing"}>Open full report <span aria-hidden>→</span></button></footer>
       <p className="demo-disclaimer">Potential work to revisit. This is not recovered revenue.</p>
     </section>
   );
