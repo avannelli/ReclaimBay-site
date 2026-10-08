@@ -1,11 +1,13 @@
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
+import { readFileSync } from "node:fs";
 import { sitePhones, type Subject } from "../../src/research/analyze.js";
 import type { HttpGet, HttpResult } from "@avannelli/aos/fetch";
 import { RESEARCH_LIMITS, RESEARCH_ROBOTS_AGENT, RESEARCH_USER_AGENT, researchFetcher } from "../../src/research/fetcher.js";
 import { parseHtml } from "@avannelli/aos/html";
 import { pickPages, researchCandidate } from "../../src/research/researcher.js";
 import { parseRobots, robotsAllows } from "@avannelli/aos/robots";
+import { readPages } from "../../src/ai/shadow.js";
 
 /*
  * Research runs against fixture websites served by an in-memory HttpGet:
@@ -1184,5 +1186,68 @@ describe("category check on the business's own website", () => {
     assert.equal(r.outcome, "website_mismatch");
     assert.equal(r.category, null);
     assert.equal(fact(r, "business_category"), undefined);
+  });
+});
+
+describe("AOS site-reader consumer boundary", () => {
+  test("research and shadow delegate reading while retaining separate fallback policies", () => {
+    const researcher = readFileSync(new URL("../../src/research/researcher.ts", import.meta.url), "utf8");
+    const shadow = readFileSync(new URL("../../src/ai/shadow.ts", import.meta.url), "utf8");
+    const reader = shadow.slice(shadow.indexOf("export async function readPages("), shadow.indexOf("export interface ShadowReport"));
+    for (const source of [researcher, reader]) {
+      assert.match(source, /await readSite\(/);
+      assert.match(source, /parse: parseHtml/);
+      assert.match(source, /select: pickPages/);
+      assert.match(source, /maxPages: RESEARCH_LIMITS\.maxPages/);
+      assert.doesNotMatch(source, /fetcher\.page\(|failureKind|root\.pathname|for \(const next/);
+    }
+    assert.match(researcher, /rootFallback: true/);
+    assert.match(reader, /rootFallback: false/);
+  });
+
+  test("the installed generic reader has no runtime imports, business policy or execution side effects", () => {
+    const source = readFileSync(new URL("../../node_modules/@avannelli/aos/dist/crawl/crawl.js", import.meta.url), "utf8");
+    assert.doesNotMatch(source, /^import\s|\brequire\s*\(|\bimport\s*\(/m);
+    assert.doesNotMatch(source, /reclaimbay|automotive|collision|repair|prospect|outreach|suppression|anthropic|openai|prisma/i);
+    assert.doesNotMatch(source, /\bprocess\.|\bfetch\s*\(|\bDate\b|Math\.random|setTimeout|setInterval|Promise\.all/);
+  });
+
+  const deep = "https://saviersauto.example.com/old-page?source=fixture";
+  for (const [label, response] of [
+    ["410", { status: 410 }], ["500 after retry", { status: 500 }],
+    ["301", { status: 301 }], ["199", { status: 199 }],
+    ["non-HTML 200", { status: 200, body: "%PDF", contentType: "application/pdf" }],
+  ] as const) {
+    test(`${label}: research falls back, shadow does not`, async () => {
+      const research = server(goodSite({ [deep]: response }));
+      const result = await researchCandidate(subject({ website: deep }), research.fetcher(), TODAY);
+      assert.equal(result.outcome, "website_verified");
+      assert.ok(research.calls.includes("https://saviersauto.example.com/"));
+      assert.equal(result.sources.find((s) => s.ok && s.kind === "website")?.url, "https://saviersauto.example.com/");
+      const shadow = server(goodSite({ [deep]: response }));
+      assert.deepEqual(await readPages(shadow.fetcher(), deep), []);
+      assert.ok(!shadow.calls.includes("https://saviersauto.example.com/"));
+    });
+  }
+
+  test("selected-page failure preserves order, continues reading, and keeps shadow's existing shape", async () => {
+    const fixture = goodSite({ "https://saviersauto.example.com/contact-us": { status: 404 } });
+    const research = server(fixture);
+    const result = await researchCandidate(subject(), research.fetcher(), TODAY);
+    assert.equal(result.pagesFetched, 3);
+    const shadow = server(fixture);
+    const pages = await readPages(shadow.fetcher(), subject().website!);
+    assert.deepEqual(pages.map((p) => p.role), ["home", "about", "services"]);
+    assert.deepEqual(Object.keys(pages[0]!), ["url", "role", "parsed"]);
+    assert.deepEqual(shadow.calls, research.calls);
+    assert.equal(shadow.calls.at(-1), "https://saviersauto.example.com/services");
+  });
+
+  test("selected-page parser errors preserve type/message for both consumers", async () => {
+    const fixture = goodSite({ "https://saviersauto.example.com/contact-us": { body: '<a href="tel:%E0%A4%A">Phone</a>' } });
+    for (const run of [
+      () => researchCandidate(subject(), server(fixture).fetcher(), TODAY),
+      () => readPages(server(fixture).fetcher(), subject().website!),
+    ]) await assert.rejects(run, { name: "URIError", message: "URI malformed" });
   });
 });

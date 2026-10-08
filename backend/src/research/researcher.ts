@@ -16,6 +16,7 @@ import type { PoliteFetcher, SourceRecord } from "@avannelli/aos/fetch";
 import { RESEARCH_LIMITS } from "./fetcher.js";
 import { parseHtml } from "@avannelli/aos/html";
 import { DEFAULT_SKIP, selectPages, type PageRoleRule, type SelectedPage } from "@avannelli/aos/pages";
+import { readSite } from "@avannelli/aos/crawl";
 
 /** Bumped whenever a rule changes, so runs say which rules produced them. */
 export const RESEARCH_VERSION = "r14";
@@ -42,11 +43,6 @@ export const OUTCOME_LABELS: Record<ResearchOutcome, string> = {
 
 /** Shown on every run whose website refused automated access. */
 export const BLOCKED_WARNING = "Website blocks automated access; verify manually.";
-
-/** Why the first page wasn't read: the site refused automated access, or it couldn't be reached. */
-function failureKind(note: string | null | undefined): "blocked" | "unreachable" {
-  return /^(skipped|blocked)/.test(note ?? "") ? "blocked" : "unreachable";
-}
 
 export interface ResearchResult {
   /** "failed" only when the website could not be read at all. */
@@ -85,7 +81,7 @@ const PAGE_ROLES: readonly PageRoleRule<PageRole>[] = ROLE_PATTERNS.map(([role, 
  * The selection mechanics (same site, skip rule, one page per role) are AOS's
  * (@avannelli/aos/pages); the roles and preference are ReclaimBay's.
  */
-export function pickPages(home: Page, max: number): SelectedPage<PageRole>[] {
+export function pickPages(home: Pick<Page, "url" | "parsed">, max: number): SelectedPage<PageRole>[] {
   return selectPages({ url: home.url, links: home.parsed.links }, { roles: PAGE_ROLES, skip: DEFAULT_SKIP, max });
 }
 
@@ -126,31 +122,17 @@ export async function researchCandidate(subject: Subject, fetcher: PoliteFetcher
     };
   }
 
-  const pages: Page[] = [];
-  const read = async (url: string, role: PageRole) => {
-    const r = await fetcher.page(url);
-    if (r.html !== null && r.result) pages.push({ url: r.result.finalUrl ?? url, role, parsed: parseHtml(r.html), html: r.html });
-    return r;
-  };
-
-  // The page the website points to; if it answered with an ordinary HTTP
-  // error (e.g. 404) and has a path, the site root. Never after a block
-  // (401/403, robots.txt) or when the site can't be reached at all.
-  let first = await read(subject.website, "home");
-  if (!pages.length) {
-    const root = new URL(subject.website);
-    const httpError = first.result?.status !== null && first.result?.status !== undefined && failureKind(first.source.note) === "unreachable";
-    if (root.pathname !== "/" && httpError) {
-      root.pathname = "/";
-      root.search = "";
-      first = await read(root.toString(), "home");
-    }
-  }
-  if (!pages.length) {
+  const { pages, first, status: readStatus } = await readSite(fetcher, subject.website, {
+    parse: parseHtml,
+    select: pickPages,
+    maxPages: RESEARCH_LIMITS.maxPages,
+    rootFallback: true,
+  });
+  if (readStatus !== "read") {
     // Blocked (HTTP 401/403, robots.txt) is not dead and not a mismatch: the
     // site exists but refuses automated reading. Unreachable (DNS,
     // connection, timeout, server error) is a failed run that can be retried.
-    const blocked = failureKind(first.source.note) === "blocked";
+    const blocked = readStatus === "blocked";
     const note = first.source.note ?? "could not be read";
     const how = /robots\.txt/.test(note) ? "its robots.txt" : `HTTP ${first.result?.status ?? ""}`.trim();
     return {
@@ -171,8 +153,6 @@ export async function researchCandidate(subject: Subject, fetcher: PoliteFetcher
       warnings: [blocked ? BLOCKED_WARNING : "The website could not be loaded. Try again later, or check it by hand."],
     };
   }
-
-  for (const next of pickPages(pages[0]!, RESEARCH_LIMITS.maxPages - 1)) await read(next.url, next.role);
 
   const finalUrl = new URL(pages[0]!.url);
   const secure = finalUrl.protocol === "https:" ? true : (await fetcher.httpsCheck(finalUrl.host)).secure;

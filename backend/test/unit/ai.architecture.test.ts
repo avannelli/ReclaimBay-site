@@ -62,7 +62,7 @@ function closure(starts: string[]): Set<string> {
 
 describe("AI shadow layer: isolation", () => {
   test("AI modules import only the allowed foundations", () => {
-    const allowed = new Set(["node:crypto", "db.ts", "discovery/normalize.ts", "research/collisionFit.ts", "research/fetcher.ts", "@avannelli/aos/html", "research/researcher.ts", ...AI]);
+    const allowed = new Set(["node:crypto", "db.ts", "discovery/normalize.ts", "research/collisionFit.ts", "research/fetcher.ts", "@avannelli/aos/html", "@avannelli/aos/crawl", "research/researcher.ts", ...AI]);
     for (const f of AI) for (const i of runtimeImports(f)) assert.ok(allowed.has(i), `${f} imports ${i}`);
     for (const i of runtimeImports("scripts/aiShadow.ts")) assert.ok(["node:util", "config.ts", "db.ts", "research/fetcher.ts", ...AI].includes(i), `scripts/aiShadow.ts imports ${i}`);
     for (const i of runtimeImports("scripts/aiCohort.ts")) assert.ok(["node:fs", "node:util", "config.ts", "db.ts", ...AI].includes(i), `scripts/aiCohort.ts imports ${i}`);

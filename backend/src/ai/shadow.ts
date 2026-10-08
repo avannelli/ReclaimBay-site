@@ -28,6 +28,7 @@ import type { PoliteFetcher } from "@avannelli/aos/fetch";
 import { RESEARCH_LIMITS } from "../research/fetcher.js";
 import { parseHtml } from "@avannelli/aos/html";
 import { pickPages } from "../research/researcher.js";
+import { readSite } from "@avannelli/aos/crawl";
 import {
   COLLISION_FIT_KIND,
   COLLISION_FIT_PROMPT_VERSION,
@@ -131,17 +132,13 @@ const humanOf = (c: Selected): HumanFit | null => {
 
 /** The pages the research fetcher reads: the website, then up to four same-site pages it links to. Never stored. */
 export async function readPages(fetcher: PoliteFetcher, website: string): Promise<FetchedPage[]> {
-  const pages: FetchedPage[] = [];
-  const read = async (url: string, role: FetchedPage["role"]) => {
-    const r = await fetcher.page(url);
-    if (r.html !== null && r.result) pages.push({ url: r.result.finalUrl ?? url, role, parsed: parseHtml(r.html) });
-  };
-  await read(website, "home");
-  const home = pages[0];
-  if (!home) return [];
-  const parsedHome = home.parsed as ReturnType<typeof parseHtml>;
-  for (const next of pickPages({ url: home.url, role: "home", parsed: parsedHome, html: "" }, RESEARCH_LIMITS.maxPages - 1)) await read(next.url, next.role);
-  return pages;
+  const { pages } = await readSite(fetcher, website, {
+    parse: parseHtml,
+    select: pickPages,
+    maxPages: RESEARCH_LIMITS.maxPages,
+    rootFallback: false,
+  });
+  return pages.map(({ url, role, parsed }) => ({ url, role, parsed }));
 }
 
 export interface ShadowReport {

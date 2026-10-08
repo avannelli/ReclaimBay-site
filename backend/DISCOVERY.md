@@ -66,9 +66,9 @@ codes, and analytics attribution are unchanged; discovery only feeds them.
 | Release import, staging, and the staged (background) provider | `src/discovery/staging.ts` |
 | Persistence, runs (sync and queued), research, approval | `src/discovery/service.ts` |
 | Background job entry points | `src/scripts/importProvider.ts`, `src/scripts/processDiscoveryRuns.ts`, `src/scripts/researchCandidates.ts`, `src/scripts/checkCategories.ts` |
-| Automated research: polite fetching, robots.txt, HTML reading, page selection | Polite fetcher, robots.txt reader, HTML reader and page selector from AOS (`@avannelli/aos/fetch`, `/robots`, `/html`, `/pages`); ReclaimBay's crawler identity and limits (including `maxPages`) in `src/research/fetcher.ts`, and its page roles (contact, about, services, team) and collision-first services preference in `src/research/researcher.ts` |
+| Automated research: polite fetching, robots.txt, HTML reading, page selection, site reading | Polite fetcher, robots.txt reader, HTML reader, page selector and site reader from AOS (`@avannelli/aos/fetch`, `/robots`, `/html`, `/pages`, `/crawl`); ReclaimBay's crawler identity and limits (including `maxPages`) in `src/research/fetcher.ts`, and its page roles (contact, about, services, team) and collision-first services preference in `src/research/researcher.ts` |
 | Automated research: verification rules (pure) | `src/research/analyze.ts` |
-| Automated research: one candidate, page selection | `src/research/researcher.ts` |
+| Automated research: one candidate, research policy | `src/research/researcher.ts` |
 | Automated research: runs, queue, reconciliation into signals | `src/research/service.ts` |
 | Admin pages and routes | `src/admin/discoveryViews.ts`, `src/routes/adminDiscovery.ts` |
 
@@ -363,6 +363,7 @@ yields no evidence returns to Discovered; Needs review stays Needs review;
 approved, rejected, and duplicate candidates are not researched.
 
 **Failure, retries, and safety controls.**
+- Site-reading mechanics are AOS `@avannelli/aos/crawl` (`readSite`): initial read, root fallback, sequential selected-page reads and readability status. ReclaimBay supplies `parseHtml`, its `pickPages` policy and `RESEARCH_LIMITS.maxPages`. Research enables root fallback; the AI-shadow page reader uses the same primitive with fallback disabled and retains its existing page-result shape. Research outcomes, evidence interpretation, HTTPS analysis and full fetch-source logging remain ReclaimBay responsibilities.
 - The fetcher is the generic AOS `@avannelli/aos/fetch`; it has no identity or
   tuning of its own. ReclaimBay supplies its user agent
   (`ReclaimBayResearch/1.0 (+https://reclaimbay.com)`), its robots.txt token
