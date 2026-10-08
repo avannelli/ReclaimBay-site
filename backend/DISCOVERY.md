@@ -66,7 +66,7 @@ codes, and analytics attribution are unchanged; discovery only feeds them.
 | Release import, staging, and the staged (background) provider | `src/discovery/staging.ts` |
 | Persistence, runs (sync and queued), research, approval | `src/discovery/service.ts` |
 | Background job entry points | `src/scripts/importProvider.ts`, `src/scripts/processDiscoveryRuns.ts`, `src/scripts/researchCandidates.ts`, `src/scripts/checkCategories.ts` |
-| Automated research: polite fetching, robots.txt, HTML reading | `src/research/fetcher.ts`, `robots.ts`, `html.ts` |
+| Automated research: polite fetching, robots.txt, HTML reading | `src/research/fetcher.ts`; parsers from AOS: `@avannelli/aos/robots`, `@avannelli/aos/html` |
 | Automated research: verification rules (pure) | `src/research/analyze.ts` |
 | Automated research: one candidate, page selection | `src/research/researcher.ts` |
 | Automated research: runs, queue, reconciliation into signals | `src/research/service.ts` |

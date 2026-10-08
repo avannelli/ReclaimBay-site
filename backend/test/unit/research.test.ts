@@ -2,9 +2,9 @@ import assert from "node:assert/strict";
 import { describe, test } from "node:test";
 import { sitePhones, type Subject } from "../../src/research/analyze.js";
 import { PoliteFetcher, RESEARCH_LIMITS, type HttpGet, type HttpResult } from "../../src/research/fetcher.js";
-import { parseHtml } from "../../src/research/html.js";
+import { parseHtml } from "@avannelli/aos/html";
 import { researchCandidate } from "../../src/research/researcher.js";
-import { parseRobots, robotsAllows } from "../../src/research/robots.js";
+import { parseRobots, robotsAllows } from "@avannelli/aos/robots";
 
 /*
  * Research runs against fixture websites served by an in-memory HttpGet:

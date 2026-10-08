@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { describe, test } from "node:test";
 import { businessTypeOf, targetFit, type FitInput } from "../../src/discovery/targetFit.js";
 import { analyze, type Page, type Subject } from "../../src/research/analyze.js";
-import { parseHtml } from "../../src/research/html.js";
+import { parseHtml } from "@avannelli/aos/html";
 import { repairEvidenceErrors, repairFit } from "../../src/research/repairFit.js";
 import { FIT_CRITERION } from "../../src/scoring.js";
 

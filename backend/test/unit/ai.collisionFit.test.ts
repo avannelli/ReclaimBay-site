@@ -14,7 +14,7 @@ import {
   validateCollisionFit,
   type FetchedPage,
 } from "../../src/ai/collisionFitJudge.js";
-import { parseHtml } from "../../src/research/html.js";
+import { parseHtml } from "@avannelli/aos/html";
 
 const SITE = "https://harbor.example.com/";
 const page = (url: string, role: FetchedPage["role"], body: string, title = "Harbor Collision"): FetchedPage => ({ url, role, parsed: parseHtml(`<html><head><title>${title}</title></head><body>${body}</body></html>`) });

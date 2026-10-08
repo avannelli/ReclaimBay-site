@@ -15,7 +15,7 @@ import { CATEGORY_RULES, nameOutsideTerms } from "../discovery/categories.js";
 import { CATEGORY_VERDICT_LABELS, checkWebsite, type CategoryResult } from "../discovery/categoryCheck.js";
 import { collisionFit } from "./collisionFit.js";
 import { REPAIR_SERVICES, repairFit, type RepairFit } from "./repairFit.js";
-import type { ParsedPage } from "./html.js";
+import type { ParsedPage } from "@avannelli/aos/html";
 
 export type FactState = "verified" | "unverified" | "uncertain" | "not_found";
 

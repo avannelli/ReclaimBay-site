@@ -5,7 +5,7 @@ import { APPROVABLE_FROM, CANDIDATE_TRANSITIONS } from "../../src/discovery/cand
 import { assessAutoApproval, type AutoApprovalInput } from "../../src/discovery/autoApproval.js";
 import { businessTypeOf, targetFit, type FitInput } from "../../src/discovery/targetFit.js";
 import { analyze, type Page, type Subject } from "../../src/research/analyze.js";
-import { parseHtml } from "../../src/research/html.js";
+import { parseHtml } from "@avannelli/aos/html";
 import { fitConflict, repairEvidenceErrors, repairFit } from "../../src/research/repairFit.js";
 import { composeIntro, type ComposeInput } from "../../src/outreach/compose.js";
 import { draftEligibilityErrors } from "../../src/outreach/lifecycle.js";

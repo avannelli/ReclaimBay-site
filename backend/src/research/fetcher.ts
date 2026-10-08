@@ -12,7 +12,7 @@
  *
  * HttpGet is injectable so tests never touch the network.
  */
-import { parseRobots, robotsAllows, type RobotsRules } from "./robots.js";
+import { parseRobots, robotsAllows, type RobotsRules } from "@avannelli/aos/robots";
 
 export const RESEARCH_USER_AGENT = "ReclaimBayResearch/1.0 (+https://reclaimbay.com)";
 

@@ -48,7 +48,7 @@ Tests:
 Engine isolation (consumed from the standalone AOS repository):
 
 - The generic engine is AOS's `@avannelli/aos/qualification`, installed from the packed
-  tarball `vendor/avannelli-aos-0.1.0.tgz` (AOS commit `f4d6f4e`, pinned by lockfile
+  tarball `vendor/avannelli-aos-0.2.0.tgz` (AOS commit `46b97df`, pinned by lockfile
   integrity). ReclaimBay has no local copy. To update it, re-pack AOS into
   `vendor/` and reinstall. It imports nothing outside itself and has no business
   vocabulary; tests scan the installed package, and another checks the direction

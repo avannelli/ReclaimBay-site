@@ -25,7 +25,7 @@ import { createHash } from "node:crypto";
 import { isOnBusinessSite } from "../discovery/normalize.js";
 import { collisionEvidenceErrors, collisionFit, type CollisionFit } from "../research/collisionFit.js";
 import type { PageRole } from "../research/analyze.js";
-import type { ParsedPage } from "../research/html.js";
+import type { ParsedPage } from "@avannelli/aos/html";
 
 export const COLLISION_FIT_KIND = "collision_fit";
 /** Bumped whenever the prompt, schema, or input rules change: a new version makes new decisions. */

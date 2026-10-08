@@ -13,7 +13,7 @@ import { isOwnWebsiteHost } from "../discovery/normalize.js";
 import type { CategoryResult } from "../discovery/categoryCheck.js";
 import { analyze, type Fact, type Page, type PageRole, type SignalProposal, type Subject, type ContactProposal } from "./analyze.js";
 import { RESEARCH_LIMITS, type PoliteFetcher, type SourceRecord } from "./fetcher.js";
-import { parseHtml } from "./html.js";
+import { parseHtml } from "@avannelli/aos/html";
 
 /** Bumped whenever a rule changes, so runs say which rules produced them. */
 export const RESEARCH_VERSION = "r14";

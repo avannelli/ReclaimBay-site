@@ -3,7 +3,7 @@ import { describe, test } from "node:test";
 import { categoryTierFor, nameCategory, overtureTier } from "../../src/discovery/categories.js";
 import { automatedMayReplace } from "../../src/discovery/categoryCheck.js";
 import { analyze, type Page, type Subject } from "../../src/research/analyze.js";
-import { parseHtml } from "../../src/research/html.js";
+import { parseHtml } from "@avannelli/aos/html";
 import { pickPages } from "../../src/research/researcher.js";
 import { scoreProspect } from "../../src/scoring.js";
 import { assessAutoApproval, type AutoApprovalInput } from "../../src/discovery/autoApproval.js";

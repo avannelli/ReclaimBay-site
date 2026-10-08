@@ -25,7 +25,7 @@
 import type { Db } from "../db.js";
 import type { Prisma } from "../generated/prisma/client.js";
 import { PoliteFetcher, RESEARCH_LIMITS } from "../research/fetcher.js";
-import { parseHtml } from "../research/html.js";
+import { parseHtml } from "@avannelli/aos/html";
 import { pickPages } from "../research/researcher.js";
 import {
   COLLISION_FIT_KIND,
