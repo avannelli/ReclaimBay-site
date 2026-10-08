@@ -20,7 +20,7 @@ import { providerFromConfig } from "../ai/provider.js";
 import { runAiShadow, shadowSummary } from "../ai/shadow.js";
 import { loadConfig } from "../config.js";
 import { createDb } from "../db.js";
-import { PoliteFetcher } from "../research/fetcher.js";
+import { researchFetcher } from "../research/fetcher.js";
 
 const { values } = parseArgs({ options: { labeled: { type: "boolean", default: false }, cohort: { type: "string" } } });
 if (values.labeled && values.cohort) {
@@ -43,7 +43,7 @@ try {
     mode: values.cohort ? "cohort" : values.labeled ? "labeled" : "verify",
     cohortId: values.cohort,
     acquireLock: () => acquireShadowLock(config.databaseUrl),
-    makeFetcher: () => new PoliteFetcher(),
+    makeFetcher: () => researchFetcher(),
     shouldStop: () => stop,
   });
   console.log(shadowSummary(report));

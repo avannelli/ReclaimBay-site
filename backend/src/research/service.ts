@@ -29,7 +29,8 @@ import { categoryFields, isOutsideTarget } from "../discovery/categoryCheck.js";
 import { phoneKey } from "../discovery/normalize.js";
 import type { Prisma } from "../generated/prisma/client.js";
 import { isPhoneNumber, parseProspectInput } from "../prospects.js";
-import { PoliteFetcher } from "./fetcher.js";
+import type { PoliteFetcher } from "@avannelli/aos/fetch";
+import { researchFetcher } from "./fetcher.js";
 import { RESEARCH_VERSION, researchCandidate, type ResearchResult } from "./researcher.js";
 
 /** Runs kept per candidate. */
@@ -108,7 +109,7 @@ export async function processResearch(db: Db, researchId: string, deps: ProcessD
 
   let stored;
   try {
-    const fetcher = deps.makeFetcher?.() ?? new PoliteFetcher();
+    const fetcher = deps.makeFetcher?.() ?? researchFetcher();
     const result = await researchCandidate(
       {
         businessName: c.businessName,

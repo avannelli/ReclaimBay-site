@@ -24,7 +24,8 @@
  */
 import type { Db } from "../db.js";
 import type { Prisma } from "../generated/prisma/client.js";
-import { PoliteFetcher, RESEARCH_LIMITS } from "../research/fetcher.js";
+import type { PoliteFetcher } from "@avannelli/aos/fetch";
+import { RESEARCH_LIMITS } from "../research/fetcher.js";
 import { parseHtml } from "@avannelli/aos/html";
 import { pickPages } from "../research/researcher.js";
 import {

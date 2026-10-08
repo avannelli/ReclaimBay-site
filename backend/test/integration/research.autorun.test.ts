@@ -6,7 +6,7 @@ import { loadConfig } from "../../src/config.js";
 import type { Db } from "../../src/db.js";
 import { ingestBusinesses } from "../../src/discovery/service.js";
 import type { DiscoveredBusiness } from "../../src/discovery/types.js";
-import { PoliteFetcher } from "../../src/research/fetcher.js";
+import { researchFetcher } from "../../src/research/fetcher.js";
 import { RESEARCH_VERSION } from "../../src/research/researcher.js";
 import {
   STALE_RESEARCH_MS,
@@ -145,7 +145,7 @@ describe("automatic research worker (real PostgreSQL)", { skip: skipReason }, ()
       await candidate(clean());
       // Slow websites, so the winner is still working when the other asks for the lock.
       const w = web();
-      const slow = { ...deps(), makeFetcher: () => new PoliteFetcher({ get: async (u, o) => (await new Promise((r) => setTimeout(r, 200)), w.get(u, o)), sleep: async () => undefined }) };
+      const slow = { ...deps(), makeFetcher: () => researchFetcher({ get: async (u, o) => (await new Promise((r) => setTimeout(r, 200)), w.get(u, o)), sleep: async () => undefined }) };
       const [a, b] = await Promise.all([auto({ deps: slow }), auto({ deps: slow })]);
       assert.deepEqual([a.outcome, b.outcome].sort(), ["done", "locked"]);
       assert.equal(await db.candidateResearch.count(), 1, "the candidate was researched once");

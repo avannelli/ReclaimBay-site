@@ -2,7 +2,8 @@
  * Fixture websites for research tests: an in-memory HttpGet, so no test
  * touches the network. All businesses and domains are synthetic.
  */
-import { PoliteFetcher, type HttpGet, type HttpResult } from "../../src/research/fetcher.js";
+import type { HttpGet, HttpResult } from "@avannelli/aos/fetch";
+import { researchFetcher } from "../../src/research/fetcher.js";
 
 export type Fixture = Partial<HttpResult> & { body?: string };
 
@@ -26,7 +27,7 @@ export function fixtureWeb(routes: Record<string, Fixture | Fixture[]>) {
       error: f.error ?? null,
     };
   };
-  const makeFetcher = () => new PoliteFetcher({ get, sleep: async () => undefined });
+  const makeFetcher = () => researchFetcher({ get, sleep: async () => undefined });
   return { get, calls, makeFetcher };
 }
 

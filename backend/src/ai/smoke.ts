@@ -13,7 +13,7 @@
  * cost could exceed a fixed ceiling or the configured daily budget.
  */
 import type { Db } from "../db.js";
-import type { PoliteFetcher } from "../research/fetcher.js";
+import type { PoliteFetcher } from "@avannelli/aos/fetch";
 import { COLLISION_FIT_SCHEMA, COLLISION_FIT_SYSTEM, collisionFitUserMessage, validateCollisionFit } from "./collisionFitJudge.js";
 import { AiProviderError, costMicroUsd, type AiProvider } from "./provider.js";
 import { CANDIDATE_SELECT, SHADOW_MAX_TOKENS, estimateTokens, judgeInput, readPages } from "./shadow.js";

@@ -13,7 +13,7 @@ import { providerFromConfig } from "../ai/provider.js";
 import { parseSmokeArgs, runAiSmoke, smokeSummary } from "../ai/smoke.js";
 import { loadConfig } from "../config.js";
 import { createDb } from "../db.js";
-import { PoliteFetcher } from "../research/fetcher.js";
+import { researchFetcher } from "../research/fetcher.js";
 
 const args = parseSmokeArgs(process.argv.slice(2));
 if ("error" in args) {
@@ -28,7 +28,7 @@ try {
     provider: providerFromConfig(config.ai),
     dailyBudgetUsd: config.ai.shadowDailyBudgetUsd,
     candidateId: args.candidateId,
-    makeFetcher: () => new PoliteFetcher(),
+    makeFetcher: () => researchFetcher(),
   });
   console.log(smokeSummary(report));
   if (report.outcome !== "valid") process.exitCode = 1;

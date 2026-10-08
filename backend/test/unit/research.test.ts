@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
 import { sitePhones, type Subject } from "../../src/research/analyze.js";
-import { PoliteFetcher, RESEARCH_LIMITS, type HttpGet, type HttpResult } from "../../src/research/fetcher.js";
+import type { HttpGet, HttpResult } from "@avannelli/aos/fetch";
+import { RESEARCH_LIMITS, RESEARCH_ROBOTS_AGENT, RESEARCH_USER_AGENT, researchFetcher } from "../../src/research/fetcher.js";
 import { parseHtml } from "@avannelli/aos/html";
 import { researchCandidate } from "../../src/research/researcher.js";
 import { parseRobots, robotsAllows } from "@avannelli/aos/robots";
@@ -36,7 +37,7 @@ function server(routes: Record<string, Fixture | Fixture[]>) {
   const slept: number[] = [];
   let clock = 0;
   const fetcher = () =>
-    new PoliteFetcher({
+    researchFetcher({
       get,
       sleep: async (ms) => {
         slept.push(ms);
@@ -95,6 +96,35 @@ const fact = (r: { facts: { field: string }[] }, field: string) => r.facts.find(
   | { field: string; value: string | null; state: string; sourceUrl?: string | null; excerpt?: string | null; note?: string | null }
   | undefined;
 const signal = (r: { signals: { key: string; value: string; sourceUrl: string; excerpt: string }[] }, key: string) => r.signals.find((s) => s.key === key);
+
+describe("research crawler configuration (supplied to the AOS fetcher)", () => {
+  test("ReclaimBay's identity and limits are unchanged", () => {
+    assert.equal(RESEARCH_USER_AGENT, "ReclaimBayResearch/1.0 (+https://reclaimbay.com)");
+    assert.equal(RESEARCH_ROBOTS_AGENT, "ReclaimBayResearch");
+    assert.deepEqual({ ...RESEARCH_LIMITS }, { timeoutMs: 10_000, robotsTimeoutMs: 5_000, maxBytes: 1_500_000, maxPages: 5, perHostDelayMs: 1_000, retryDelayMs: 2_000, maxRetries: 1 });
+  });
+
+  test("every request carries them, and robots.txt is matched on ReclaimBay's token", async () => {
+    const seen: { url: string; timeoutMs: number; maxBytes: number; userAgent: string }[] = [];
+    const slept: number[] = [];
+    const f = researchFetcher({
+      get: async (url, o) => {
+        seen.push({ url, ...o });
+        const robots = url.endsWith("/robots.txt");
+        return { url, finalUrl: url, status: robots ? 200 : 503, contentType: robots ? "text/plain" : "text/html", body: robots ? "User-agent: reclaimbayresearch\nDisallow: /private\n\nUser-agent: *\nDisallow: /\n" : "busy", bytes: 4, error: null };
+      },
+      sleep: async (ms) => void slept.push(ms),
+    });
+    assert.equal((await f.page("https://shop.example.com/private/x")).source.note, "skipped: disallowed by robots.txt");
+    assert.equal((await f.page("https://shop.example.com/")).source.note, "HTTP 503 (after a retry)", "ReclaimBay's group applies, not *; one retry");
+    assert.deepEqual(seen.map((s) => [s.url, s.timeoutMs, s.maxBytes, s.userAgent]), [
+      ["https://shop.example.com/robots.txt", 5_000, 1_500_000, RESEARCH_USER_AGENT],
+      ["https://shop.example.com/", 10_000, 1_500_000, RESEARCH_USER_AGENT],
+      ["https://shop.example.com/", 10_000, 1_500_000, RESEARCH_USER_AGENT],
+    ]);
+    assert.ok(slept.includes(2_000), "retry delay");
+  });
+});
 
 describe("robots.txt", () => {
   const body = "User-agent: *\nDisallow: /private/\nAllow: /private/ok\nDisallow: /*.pdf$\n\nUser-agent: ReclaimBayResearch\nDisallow: /no-bots\n";

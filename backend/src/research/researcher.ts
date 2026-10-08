@@ -12,7 +12,8 @@
 import { isOwnWebsiteHost } from "../discovery/normalize.js";
 import type { CategoryResult } from "@avannelli/aos/categories";
 import { analyze, type Fact, type Page, type PageRole, type SignalProposal, type Subject, type ContactProposal } from "./analyze.js";
-import { RESEARCH_LIMITS, type PoliteFetcher, type SourceRecord } from "./fetcher.js";
+import type { PoliteFetcher, SourceRecord } from "@avannelli/aos/fetch";
+import { RESEARCH_LIMITS } from "./fetcher.js";
 import { parseHtml } from "@avannelli/aos/html";
 
 /** Bumped whenever a rule changes, so runs say which rules produced them. */

@@ -66,7 +66,7 @@ codes, and analytics attribution are unchanged; discovery only feeds them.
 | Release import, staging, and the staged (background) provider | `src/discovery/staging.ts` |
 | Persistence, runs (sync and queued), research, approval | `src/discovery/service.ts` |
 | Background job entry points | `src/scripts/importProvider.ts`, `src/scripts/processDiscoveryRuns.ts`, `src/scripts/researchCandidates.ts`, `src/scripts/checkCategories.ts` |
-| Automated research: polite fetching, robots.txt, HTML reading | `src/research/fetcher.ts`; parsers from AOS: `@avannelli/aos/robots`, `@avannelli/aos/html` |
+| Automated research: polite fetching, robots.txt, HTML reading | Polite fetcher, robots.txt reader and HTML reader from AOS (`@avannelli/aos/fetch`, `/robots`, `/html`); ReclaimBay's crawler identity and limits in `src/research/fetcher.ts` |
 | Automated research: verification rules (pure) | `src/research/analyze.ts` |
 | Automated research: one candidate, page selection | `src/research/researcher.ts` |
 | Automated research: runs, queue, reconciliation into signals | `src/research/service.ts` |
@@ -362,6 +362,11 @@ yields no evidence returns to Discovered; Needs review stays Needs review;
 approved, rejected, and duplicate candidates are not researched.
 
 **Failure, retries, and safety controls.**
+- The fetcher is the generic AOS `@avannelli/aos/fetch`; it has no identity or
+  tuning of its own. ReclaimBay supplies its user agent
+  (`ReclaimBayResearch/1.0 (+https://reclaimbay.com)`), its robots.txt token
+  (`ReclaimBayResearch`) and the limits below, via `researchFetcher()` in
+  `src/research/fetcher.ts`.
 - Per request: 10-second timeout, at most 1.5 MB read, HTML only.
 - One retry, only for transient failures (5xx, 429, network); never for 4xx,
   DNS, or certificate errors. No retry loops.
