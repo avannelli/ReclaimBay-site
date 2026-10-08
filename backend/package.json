@@ -40,6 +40,7 @@
     "@fastify/rate-limit": "11.2.0",
     "@prisma/adapter-pg": "7.10.0",
     "@prisma/client": "7.10.0",
+    "aos": "file:vendor/aos-0.1.0.tgz",
     "fastify": "5.12.5",
     "google-auth-library": "11.1.0",
     "prisma": "7.10.0"

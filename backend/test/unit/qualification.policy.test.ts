@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
-import { readdirSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { describe, test } from "node:test";
 import {
   evaluatePolicy, validatePolicyInput, validateQualificationEvidence,
   type QualificationPolicy, type StoredSignalValue,
-} from "../../src/qualification/policy.js";
+} from "aos/qualification";
 
 // A deliberately small, unrelated policy. No website, contact, prospect, or repair fields.
 interface LibraryInput { publicAccess?: StoredSignalValue; seats: number }
@@ -86,12 +86,14 @@ describe("generic policy execution with an unrelated library policy", () => {
     assert.equal(evaluatePolicy(garbled, { seats: 25 }).known, 1);
   });
 
-  test("every file in the generic layer imports nothing outside it and carries no business vocabulary", () => {
-    const dir = new URL("../../src/qualification/", import.meta.url);
-    const files = readdirSync(dir).filter((f) => f.endsWith(".ts"));
-    assert.ok(files.includes("policy.ts"));
+  // The engine is consumed from the standalone AOS package; these guards scan what is installed.
+  const engineDir = new URL("../../node_modules/aos/dist/qualification/", import.meta.url);
+
+  test("every file in the consumed generic layer imports nothing outside it and carries no business vocabulary", () => {
+    const files = readdirSync(engineDir).filter((f) => f.endsWith(".js") || f.endsWith(".d.ts"));
+    assert.ok(files.includes("policy.js"));
     for (const file of files) {
-      const source = readFileSync(new URL(file, dir), "utf8");
+      const source = readFileSync(new URL(file, engineDir), "utf8");
       for (const m of source.matchAll(/\bfrom\s+["']([^"']+)["']|\bimport\s*\(\s*["']([^"']+)["']/g)) {
         const target = m[1] ?? m[2]!;
         assert.match(target, /^\.\/[\w.-]+$/, `${file} imports ${target}: the generic layer depends only on itself`);
@@ -101,8 +103,12 @@ describe("generic policy execution with an unrelated library policy", () => {
   });
 
   test("core has no business imports, identifiers, database, or process access", () => {
-    const source = readFileSync(new URL("../../src/qualification/policy.ts", import.meta.url), "utf8");
+    const source = readFileSync(new URL("policy.js", engineDir), "utf8");
     assert.doesNotMatch(source, /\bimport\b|\brequire\s*\(|\bprocess\.|\bfetch\s*\(|prisma/i);
     assert.doesNotMatch(source, /reclaimbay|automotive|collision|revenue recovery|has_website|public_business_contact/i);
+  });
+
+  test("ReclaimBay has no local copy of the generic engine", () => {
+    assert.equal(existsSync(new URL("../../src/qualification/", import.meta.url)), false);
   });
 });

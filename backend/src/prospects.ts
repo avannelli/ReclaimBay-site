@@ -5,7 +5,7 @@ import { OUTREACH_CLOSED } from "./outreach/lifecycle.js";
 import { cancelOpenOutreach, lockSendGate, suppressEmail } from "./outreach/records.js";
 import { INTERNAL_TEST_IDENTITY, internalTestIdentity, isInternalTestEmail, isInternalTestName } from "./internalTest.js";
 import { STATUS_LABELS, isStatus, statusRequirementErrors, transitionErrors, type Status } from "./prospectStatus.js";
-import { validateQualificationEvidence } from "./qualification/policy.js";
+import { validateQualificationEvidence } from "aos/qualification";
 import { reclaimBayQualificationPolicy } from "./policies/reclaimbay/qualification.js";
 import {
   BAND_THRESHOLDS,

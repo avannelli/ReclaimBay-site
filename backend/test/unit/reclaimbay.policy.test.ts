@@ -6,7 +6,7 @@ import {
   SIGNALS, SIGNAL_KEYS, BAND_THRESHOLDS, BAND_LABELS, QUALIFICATION_LABELS,
   POLICY_ID, SCORING_VERSION, bandFor, scoreProspect, resolveSignals, signalConsistencyErrors, type ScoringInput,
 } from "../../src/scoring.js";
-import { bandFor as engineBandFor, evaluatePolicy, validatePolicyInput, validateQualificationEvidence } from "../../src/qualification/policy.js";
+import { bandFor as engineBandFor, evaluatePolicy, validatePolicyInput, validateQualificationEvidence } from "aos/qualification";
 import { reclaimBayQualificationPolicy } from "../../src/policies/reclaimbay/qualification.js";
 import { reclaimBayScoringPolicy } from "../../src/policies/reclaimbay/scoring.js";
 import { fitBasis, fitConflict, fitEvidenceErrors } from "../../src/research/repairFit.js";
@@ -98,11 +98,11 @@ describe("ReclaimBay policy compatibility", () => {
     assert.equal(compared, 400);
   });
 
-  test("ReclaimBay depends on the generic engine, never the reverse", () => {
-    const read = (path: string) => readFileSync(new URL(`../../src/${path}`, import.meta.url), "utf8");
-    assert.doesNotMatch(read("qualification/policy.ts"), /policies\/|reclaimbay|scoring\.js/i);
-    assert.match(read("policies/reclaimbay/scoring.ts"), /from "\.\.\/\.\.\/qualification\/policy\.js"/);
-    assert.match(read("policies/reclaimbay/qualification.ts"), /from "\.\.\/\.\.\/qualification\/policy\.js"/);
+  test("ReclaimBay depends on the AOS generic engine, never the reverse", () => {
+    const read = (path: string) => readFileSync(new URL(`../../${path}`, import.meta.url), "utf8");
+    assert.doesNotMatch(read("node_modules/aos/dist/qualification/policy.js"), /policies\/|reclaimbay|scoring\.js/i);
+    assert.match(read("src/policies/reclaimbay/scoring.ts"), /from "aos\/qualification"/);
+    assert.match(read("src/policies/reclaimbay/qualification.ts"), /from "aos\/qualification"/);
   });
 
   const subject = { businessName: "Harbor", website: "https://harbor.example" };

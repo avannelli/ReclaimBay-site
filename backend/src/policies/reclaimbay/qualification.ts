@@ -1,4 +1,4 @@
-import type { QualificationPolicy } from "../../qualification/policy.js";
+import type { QualificationPolicy } from "aos/qualification";
 import { fitBasis, fitConflict, fitEvidenceErrors } from "../../research/repairFit.js";
 import { reclaimBayScoringPolicy, type ScoringInput, type SignalKey } from "./scoring.js";
 

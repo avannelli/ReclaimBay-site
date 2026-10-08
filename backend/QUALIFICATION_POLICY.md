@@ -1,7 +1,8 @@
 # Qualification/scoring policy boundary
 
-`src/qualification/policy.ts` contains the pure, business-independent contract and
-execution. `ScoringPolicy<Input, Key>` supplies identity, criterion definitions,
+The generic engine is the standalone AOS package (`aos/qualification`); it contains
+the pure, business-independent contract and execution.
+`ScoringPolicy<Input, Key>` supplies identity, criterion definitions,
 thresholds, labels, observation resolution, explanations and consistency checks.
 `QualificationPolicy<Input, Key, EvidenceInput>` adds evidence validation. Inputs
 are generic types: the executor has no prospect fields or business signal keys.
@@ -44,11 +45,14 @@ Tests:
   excluding only the additive `policyId`. Existing workflow/evidence tests remain
   the regression authority for write and sending behavior.
 
-Engine isolation (reusable by an external AOS, still in this repository):
+Engine isolation (consumed from the standalone AOS repository):
 
-- `src/qualification/` is the generic engine. It imports nothing outside itself
-  and has no business vocabulary; a test scans every file in the directory, and
-  another checks the direction (ReclaimBay imports the engine, never the reverse).
+- The generic engine is AOS's `aos/qualification`, installed from the packed
+  tarball `vendor/aos-0.1.0.tgz` (AOS commit `74d5f32`, pinned by lockfile
+  integrity). ReclaimBay has no local copy. To update it, re-pack AOS into
+  `vendor/` and reinstall. It imports nothing outside itself and has no business
+  vocabulary; tests scan the installed package, and another checks the direction
+  (ReclaimBay imports the engine, never the reverse).
 - The engine fails closed: an observation a policy omits or can't state as
   yes/no is `unknown`, so it can never satisfy a required criterion. ReclaimBay's
   resolver always returns every key, so its results are unchanged (the 177,147
