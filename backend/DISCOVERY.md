@@ -363,6 +363,13 @@ yields no evidence returns to Discovered; Needs review stays Needs review;
 approved, rejected, and duplicate candidates are not researched.
 
 **Failure, retries, and safety controls.**
+- Real research HTTP uses `src/research/publicWeb.ts` through the AOS `HttpGet`
+  seam. Initial URLs and every redirect are checked; the socket's DNS lookup
+  rejects non-public addresses (including mixed public/private answers) and
+  returns only validated addresses directly to the connector. Native fetch
+  keeps decoding/byte caps and one timeout across the chain. This applies to
+  research, shadow and smoke defaults; explicitly injected fixture transports
+  remain available for local tests. There is no environment bypass flag.
 - Site-reading mechanics are AOS `@avannelli/aos/crawl` (`readSite`): initial read, root fallback, sequential selected-page reads and readability status. ReclaimBay supplies `parseHtml`, its `pickPages` policy and `RESEARCH_LIMITS.maxPages`. Research enables root fallback; the AI-shadow page reader uses the same primitive with fallback disabled and retains its existing page-result shape. Research outcomes, evidence interpretation, HTTPS analysis and full fetch-source logging remain ReclaimBay responsibilities.
 - The fetcher is the generic AOS `@avannelli/aos/fetch`; it has no identity or
   tuning of its own. ReclaimBay supplies its user agent

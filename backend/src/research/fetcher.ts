@@ -9,6 +9,7 @@
  * The transport, sleep and clock stay injectable so tests never touch the network.
  */
 import { PoliteFetcher, type FetchLimits, type PoliteFetcherOptions } from "@avannelli/aos/fetch";
+import { publicHttpGet } from "./publicWeb.js";
 
 export const RESEARCH_USER_AGENT = "ReclaimBayResearch/1.0 (+https://reclaimbay.com)";
 
@@ -46,7 +47,7 @@ export function researchFetcher(deps: Pick<PoliteFetcherOptions, "get" | "sleep"
     userAgent: RESEARCH_USER_AGENT,
     robotsAgent: RESEARCH_ROBOTS_AGENT,
     limits: FETCH_LIMITS,
-    get: deps.get,
+    get: deps.get ?? publicHttpGet,
     sleep: deps.sleep,
     now: deps.now,
   });
