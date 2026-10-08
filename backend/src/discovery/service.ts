@@ -538,6 +538,10 @@ export async function addManualCandidate(db: Db, raw: Raw) {
 const candidateInclude = { signals: true, evidence: true } as const;
 type CandidateWithResearch = Prisma.DiscoveryCandidateGetPayload<{ include: typeof candidateInclude }>;
 
+/** Candidate before run/child rows: shared lock order for edits and research. */
+export const lockCandidate = (tx: Prisma.TransactionClient, id: string) =>
+  tx.$queryRaw`SELECT id FROM "DiscoveryCandidate" WHERE id = ${id}::uuid FOR UPDATE`;
+
 /** Edits facts and signals with the prospect validators. Approved candidates are frozen. */
 export async function updateCandidate(db: Db, id: string, raw: Raw) {
   const { input, errors } = parseProspectInput(raw);
@@ -548,6 +552,7 @@ export async function updateCandidate(db: Db, id: string, raw: Raw) {
   const now = new Date();
 
   return db.$transaction(async (tx) => {
+    await lockCandidate(tx, id);
     const current = await tx.discoveryCandidate.findUnique({ where: { id }, include: candidateInclude });
     if (!current) throw notFound();
     if (isFrozen(current.status)) throw frozenError();
@@ -582,6 +587,7 @@ export async function updateCandidate(db: Db, id: string, raw: Raw) {
       where: { id },
       data: {
         ...f,
+        researchRevision: { increment: 1 },
         businessName: f.businessName!,
         ...storedKeysOf({ ...f, businessName: f.businessName!, providerPhone: current.providerPhone }),
         // A different website is no longer the one research verified.
@@ -603,6 +609,7 @@ export async function changeCandidateStatus(db: Db, id: string, toRaw: string, r
   }
 
   return db.$transaction(async (tx) => {
+    await lockCandidate(tx, id);
     const current = await tx.discoveryCandidate.findUnique({ where: { id }, include: candidateInclude });
     if (!current) throw notFound();
     const errors = candidateTransitionErrors(
@@ -619,6 +626,7 @@ export async function changeCandidateStatus(db: Db, id: string, toRaw: string, r
       where: { id, status: current.status },
       data: {
         status: to,
+        researchRevision: { increment: 1 },
         statusChangedAt: now,
         // From here on the status is a person's: a later duplicate answer won't lift it.
         duplicateHold: false,
@@ -655,6 +663,7 @@ export async function resolveDuplicate(db: Db, id: string, answerRaw: string) {
   const answer: DuplicateAnswer = answerRaw;
 
   return db.$transaction(async (tx) => {
+    await lockCandidate(tx, id);
     const c = await tx.discoveryCandidate.findUnique({ where: { id }, include: candidateInclude });
     if (!c) throw notFound();
     if (isFrozen(c.status)) throw frozenError();
@@ -679,7 +688,7 @@ export async function resolveDuplicate(db: Db, id: string, answerRaw: string) {
       if (errors.length) throw new ProspectError(errors);
       const { count } = await tx.discoveryCandidate.updateMany({
         where: { id, status: c.status },
-        data: { status: to, statusChangedAt: now, decisionReason: reason, decidedAt: now, duplicateDecision: null, duplicateDecidedAt: now, duplicateHold: false },
+        data: { researchRevision: { increment: 1 }, status: to, statusChangedAt: now, decisionReason: reason, decidedAt: now, duplicateDecision: null, duplicateDecidedAt: now, duplicateHold: false },
       });
       if (count !== 1) throw new ProspectError(["The candidate changed meanwhile. Reload and try again."], "conflict");
       note = `Marked a duplicate of ${matchName} by a person (${why}).`;
@@ -692,6 +701,7 @@ export async function resolveDuplicate(db: Db, id: string, answerRaw: string) {
         where: { id, status: c.status, duplicateHold: c.duplicateHold },
         data: {
           duplicateDecision: answer,
+          researchRevision: { increment: 1 },
           duplicateDecidedAt: now,
           ...(answer === "not_duplicate" ? { duplicateHold: false } : {}),
           ...(lift ? { status: to, statusChangedAt: now, ...(to === "researched" && !c.researchedAt ? { researchedAt: now } : {}) } : {}),
@@ -736,6 +746,7 @@ export async function setCandidateCategory(db: Db, id: string, verdictRaw: strin
   if (errors.length) throw new ProspectError(errors);
 
   return db.$transaction(async (tx) => {
+    await lockCandidate(tx, id);
     const c = await tx.discoveryCandidate.findUnique({ where: { id } });
     if (!c) throw notFound();
     if (isFrozen(c.status)) throw frozenError();
@@ -744,7 +755,7 @@ export async function setCandidateCategory(db: Db, id: string, verdictRaw: strin
       verdictRaw === "automatic"
         ? nameCategory({ businessName: c.businessName, category: c.providerCategory, categoryTier: c.categoryTier })
         : { verdict: verdictRaw as CategoryResult["verdict"], source: "manual", reason, sourceUrl: null, rules: "" };
-    await tx.discoveryCandidate.update({ where: { id }, data: categoryFields(next, now) });
+    await tx.discoveryCandidate.update({ where: { id }, data: { ...categoryFields(next, now), researchRevision: { increment: 1 } } });
     const body =
       verdictRaw === "automatic"
         ? `Category check handed back to the rules: ${CATEGORY_VERDICT_LABELS[next.verdict]} (${next.reason}) Reason: ${reason}`
@@ -814,7 +825,7 @@ export async function backfillCategoryCheck(db: Db, opts: { apply: boolean }): P
         c.categoryVerdict === next.verdict && c.categorySource === next.source && c.categoryReason === next.reason && c.categoryRules === next.rules;
       if (unchanged) continue;
       out.changes.push({ id: c.id, name: c.businessName, city: c.city, from: c.categoryVerdict, to: next.verdict, reason: next.reason });
-      if (opts.apply) await db.discoveryCandidate.update({ where: { id: c.id }, data: categoryFields(next, new Date()) });
+      if (opts.apply) await db.discoveryCandidate.update({ where: { id: c.id }, data: { ...categoryFields(next, new Date()), researchRevision: { increment: 1 } } });
     }
   }
 }
@@ -835,12 +846,17 @@ async function loadEditable(tx: Db | Tx, id: string) {
 export async function addCandidateEvidence(db: Db, id: string, raw: Raw) {
   const { evidence, errors } = parseEvidence(raw);
   if (!evidence) throw new ProspectError(errors);
-  await loadEditable(db, id);
-  return db.candidateEvidence.create({ data: { candidateId: id, ...evidence } });
+  return db.$transaction(async (tx) => {
+    await lockCandidate(tx, id);
+    await loadEditable(tx, id);
+    await tx.discoveryCandidate.update({ where: { id }, data: { researchRevision: { increment: 1 } } });
+    return tx.candidateEvidence.create({ data: { candidateId: id, ...evidence } });
+  });
 }
 
 export async function deleteCandidateEvidence(db: Db, id: string, evidenceId: string) {
   await db.$transaction(async (tx) => {
+    await lockCandidate(tx, id);
     const c = await loadEditable(tx, id);
     if (!c.evidence.some((e) => e.id === evidenceId)) throw new ProspectError(["Evidence not found."], "not_found");
     if (c.status === "researched") {
@@ -848,6 +864,7 @@ export async function deleteCandidateEvidence(db: Db, id: string, evidenceId: st
       const gaps = researchGateErrors(c.signals, remaining);
       if (gaps.length) throw new ProspectError([...gaps, "Move the candidate out of Researched first."]);
     }
+    await tx.discoveryCandidate.update({ where: { id }, data: { researchRevision: { increment: 1 } } });
     await tx.candidateEvidence.delete({ where: { id: evidenceId } });
   });
 }
@@ -885,6 +902,7 @@ export async function applyResearchFindings(db: Db, id: string, findings: Resear
   if (errors.length) throw new ProspectError(errors);
 
   return db.$transaction(async (tx) => {
+    await lockCandidate(tx, id);
     const c = await loadEditable(tx, id);
     if (c.status === "rejected" || c.status === "duplicate") {
       throw new ProspectError([`Reopen this ${c.status} candidate before researching it.`]);
@@ -940,6 +958,7 @@ export async function applyResearchFindings(db: Db, id: string, findings: Resear
       where: { id },
       data: {
         phone: facts.phone,
+        researchRevision: { increment: 1 },
         phoneSourceUrl: facts.phoneSourceUrl,
         email: facts.email,
         emailSourceUrl: facts.emailSourceUrl,
@@ -972,6 +991,7 @@ export async function applyResearchFindings(db: Db, id: string, findings: Resear
  */
 export async function approveCandidate(db: Db, id: string, opts: { automatic?: boolean } = {}) {
   return db.$transaction(async (tx) => {
+    await lockCandidate(tx, id);
     const c = await tx.discoveryCandidate.findUnique({ where: { id }, include: candidateInclude });
     if (!c) throw notFound();
     if (c.status === "approved" || c.prospectId) throw new ProspectError(["Already approved."], "conflict");
@@ -1014,6 +1034,7 @@ export async function approveCandidate(db: Db, id: string, opts: { automatic?: b
       where: { id, status: { in: automatic ? ["researched"] : [...APPROVABLE_FROM] }, prospectId: null },
       data: {
         status: "approved",
+        researchRevision: { increment: 1 },
         statusChangedAt: now,
         approvedAt: now,
         decidedAt: now,
@@ -1102,6 +1123,7 @@ export interface AutoApprovalOutcome {
  */
 export async function autoRejectCandidate(db: Db, id: string): Promise<AutoApprovalOutcome | null> {
   return db.$transaction(async (tx) => {
+    await lockCandidate(tx, id);
     const c = await tx.discoveryCandidate.findUnique({ where: { id }, include: candidateInclude });
     if (!c) return null;
     const assessment = assessAutoApproval(await decisionFacts(tx, c));
@@ -1109,7 +1131,7 @@ export async function autoRejectCandidate(db: Db, id: string): Promise<AutoAppro
     const now = new Date();
     const { count } = await tx.discoveryCandidate.updateMany({
       where: { id, status: "researched", prospectId: null },
-      data: { status: "rejected", statusChangedAt: now, decidedAt: now, decisionReason: assessment.approvalNote!.slice(0, 500) },
+      data: { researchRevision: { increment: 1 }, status: "rejected", statusChangedAt: now, decidedAt: now, decisionReason: assessment.approvalNote!.slice(0, 500) },
     });
     if (count !== 1) return { candidateId: id, businessName: c.businessName, assessment };
     await tx.candidateNote.create({ data: { candidateId: id, body: assessment.approvalNote! } });

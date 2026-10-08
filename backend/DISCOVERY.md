@@ -267,6 +267,30 @@ The data model enforces this rather than relying on discipline:
 
 ## Automated research (Milestone 6)
 
+Research completion owns a specific run ID, start time, candidate
+`researchRevision`, website, and lifecycle status. Claiming a new run advances
+the revision and stores its `candidateRevision` and `subjectWebsite`. Relevant
+candidate edits, manual evidence changes, category/duplicate decisions, and
+lifecycle transitions also advance the revision. This avoids timestamp
+collisions and invalidates work even when a website or status changes back.
+
+Success and failure both use the same conditional candidate UPDATE inside
+a transaction before writing any results. Candidate locks precede run and
+child-row locks; the lock spans the freshness check and all result writes.
+Zero affected rows means obsolete work: return `null`, emit a
+`research_obsolete` diagnostic, and retire only an unchanged running lease
+as `failed` / `superseded`. Recovered or replaced runs and newer candidate
+state are left untouched. Supersession is not a transient research failure
+and is not automatically retried; an explicit new research request is allowed.
+
+Recovery conditionally fails only still-stale running runs and resets a
+candidate only when the stored revision/website still match and no work is
+pending. Pre-migration running rows lack that snapshot: recovery fails them
+without guessing at candidate state. When deploying this additive migration,
+stop/drain workers running older code before starting the new workers; an old
+binary does not enforce these guards. Such legacy candidates may need a manual
+status decision before automatic selection can resume.
+
 Automated research turns a candidate into an evidence-backed one by reading
 **the business's own website**, and feeds what it verifies into the EXISTING
 signals, evidence, and contact, so the existing qualification and opportunity

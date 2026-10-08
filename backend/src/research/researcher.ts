@@ -22,6 +22,7 @@ import { readSite } from "@avannelli/aos/crawl";
 export const RESEARCH_VERSION = "r14";
 
 export type ResearchOutcome =
+  | "superseded"
   | "website_verified"
   | "website_unconfirmed"
   | "website_mismatch"
@@ -32,6 +33,7 @@ export type ResearchOutcome =
   | "robots_disallowed";
 
 export const OUTCOME_LABELS: Record<ResearchOutcome, string> = {
+  superseded: "Superseded by a newer candidate state",
   website_verified: "Website verified",
   website_unconfirmed: "Website not confirmed",
   website_mismatch: "Website looks like another business",

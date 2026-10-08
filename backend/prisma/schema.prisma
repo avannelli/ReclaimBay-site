@@ -482,6 +482,8 @@ model DiscoveryCandidate {
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+  // Monotonic freshness token for research-relevant edits and transitions.
+  researchRevision Int @default(0)
 
   run      DiscoveryRun?       @relation(fields: [runId], references: [id], onDelete: SetNull)
   prospect Prospect?           @relation(fields: [prospectId], references: [id], onDelete: SetNull)
@@ -553,6 +555,9 @@ model CandidateResearch {
   startedAt    DateTime?
   heartbeatAt  DateTime?
   finishedAt   DateTime?
+  // Candidate snapshot claimed by this run; null only for pre-freshness history.
+  candidateRevision Int?
+  subjectWebsite String? @db.VarChar(200)
 
   candidate DiscoveryCandidate  @relation(fields: [candidateId], references: [id], onDelete: Cascade)
   sources   ResearchSource[]

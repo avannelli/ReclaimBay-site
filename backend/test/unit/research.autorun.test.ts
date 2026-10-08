@@ -21,6 +21,11 @@ const hoursAgo = (h: number) => new Date(NOW.getTime() - h * 60 * 60 * 1000);
 const run = (over: Partial<RunHistoryEntry> = {}): RunHistoryEntry => ({ status: "failed", outcome: null, queuedAt: hoursAgo(26), finishedAt: hoursAgo(25), ...over });
 
 describe("retryDecision: bounded retries of transient failures", () => {
+  test("superseded work is obsolete, not a transient failure to retry", () => {
+    const decision = retryDecision([run({ outcome: "superseded" })], NOW);
+    assert.equal(decision.retry, false);
+    assert.match(decision.reason, /superseded/);
+  });
   test("a failed or interrupted run, 24 hours or more ago: retried", () => {
     assert.equal(retryDecision([run()], NOW).retry, true);
     assert.equal(retryDecision([run({ finishedAt: hoursAgo(24) })], NOW).retry, true, "exactly 24 hours");

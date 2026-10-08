@@ -23,11 +23,11 @@
  */
 import { createDb, type Db } from "../db.js";
 import { researchGateErrors } from "../discovery/approval.js";
-import { autoDecideCandidate } from "../discovery/service.js";
+import { autoDecideCandidate, lockCandidate } from "../discovery/service.js";
 import { CATEGORY_VERDICT_LABELS, automatedMayReplace } from "@avannelli/aos/categories";
 import { categoryFields, isOutsideTarget } from "../discovery/categoryCheck.js";
 import { phoneKey } from "../discovery/normalize.js";
-import type { Prisma } from "../generated/prisma/client.js";
+import type { CandidateStatus, Prisma } from "../generated/prisma/client.js";
 import { isPhoneNumber, parseProspectInput } from "../prospects.js";
 import type { PoliteFetcher } from "@avannelli/aos/fetch";
 import { researchFetcher } from "./fetcher.js";
@@ -57,13 +57,13 @@ export async function enqueueResearch(db: Db, candidateIds: readonly string[], t
   for (const candidateId of [...new Set(candidateIds)].slice(0, max)) {
     await db.$transaction(async (tx) => {
       // One queueing decision per candidate at a time: a concurrent request waits, then sees the run this one made.
-      await tx.$queryRaw`SELECT id FROM "DiscoveryCandidate" WHERE id = ${candidateId}::uuid FOR UPDATE`;
-      const c = await tx.discoveryCandidate.findUnique({ where: { id: candidateId }, select: { status: true } });
+      await lockCandidate(tx, candidateId);
+      const c = await tx.discoveryCandidate.findUnique({ where: { id: candidateId }, select: { status: true, researchRevision: true, website: true } });
       if (!c) return void out.skipped.push({ candidateId, reason: "not found" });
       if (NOT_RESEARCHABLE.has(c.status)) return void out.skipped.push({ candidateId, reason: `candidate is ${c.status}` });
       const pending = await tx.candidateResearch.findFirst({ where: { candidateId, status: { in: ["queued", "running"] } }, select: { id: true } });
       if (pending) return void out.skipped.push({ candidateId, reason: "research already queued or running" });
-      const run = await tx.candidateResearch.create({ data: { candidateId, version: RESEARCH_VERSION, trigger } });
+      const run = await tx.candidateResearch.create({ data: { candidateId, version: RESEARCH_VERSION, trigger, candidateRevision: c.researchRevision, subjectWebsite: c.website } });
       out.queued.push({ candidateId, researchId: run.id });
     });
   }
@@ -83,29 +83,43 @@ const redact = (m: string) => m.replace(/https?:\/\/\S+/g, "[url]").slice(0, 300
 
 /**
  * Runs one queued research run. Returns null when it wasn't queued (already
- * claimed by another worker, or finished).
+ * claimed by another worker, finished, or invalidated while it was working).
  */
 export async function processResearch(db: Db, researchId: string, deps: ProcessDeps = {}) {
-  const now = new Date();
-  const claimed = await db.candidateResearch.updateMany({
-    where: { id: researchId, status: "queued" },
-    data: { status: "running", startedAt: now, heartbeatAt: now },
-  });
-  if (claimed.count !== 1) return null;
-  const run = await db.candidateResearch.findUniqueOrThrow({ where: { id: researchId } });
-  const c = await db.discoveryCandidate.findUniqueOrThrow({ where: { id: run.candidateId } });
-
-  if (NOT_RESEARCHABLE.has(c.status)) {
-    return db.candidateResearch.update({
-      where: { id: researchId },
-      data: { status: "failed", error: `The candidate became ${c.status} before research ran.`, finishedAt: new Date() },
+  const queued = await db.candidateResearch.findUnique({ where: { id: researchId }, select: { candidateId: true } });
+  if (!queued) return null;
+  const claim = await db.$transaction(async (tx) => {
+    await lockCandidate(tx, queued.candidateId);
+    const c = await tx.discoveryCandidate.findUnique({ where: { id: queued.candidateId } });
+    if (!c) return null;
+    const now = new Date();
+    const claimed = await tx.candidateResearch.updateMany({
+      where: { id: researchId, status: "queued" },
+      data: { status: "running", startedAt: now, heartbeatAt: now,
+        candidateRevision: c.researchRevision + (NOT_RESEARCHABLE.has(c.status) ? 0 : 1), subjectWebsite: c.website },
     });
-  }
-  // Show that research is under way.
-  const movedToResearching = c.status === "discovered";
-  if (movedToResearching) {
-    await db.discoveryCandidate.update({ where: { id: c.id }, data: { status: "researching", statusChangedAt: now } });
-  }
+    if (claimed.count !== 1) return null;
+    if (NOT_RESEARCHABLE.has(c.status)) {
+      const stopped = await tx.candidateResearch.update({ where: { id: researchId }, data: {
+        status: "failed", error: `The candidate became ${c.status} before research ran.`, finishedAt: now,
+      } });
+      return { stopped };
+    }
+    const movedToResearching = c.status === "discovered";
+    // Every new claim advances the revision, so even a replacement run made
+    // outside enqueueResearch supersedes older workers for this candidate.
+    const current = await tx.discoveryCandidate.update({ where: { id: c.id }, data: {
+      researchRevision: { increment: 1 },
+      ...(movedToResearching ? { status: "researching", statusChangedAt: now } : {}),
+    } });
+    return { c: current, movedToResearching, owner: {
+      researchId, candidateId: c.id, candidateRevision: current.researchRevision,
+      website: c.website, status: current.status, startedAt: now,
+    } };
+  });
+  if (!claim) return null;
+  if ("stopped" in claim) return claim.stopped ?? null;
+  const { c, owner, movedToResearching } = claim;
 
   let stored;
   try {
@@ -126,23 +140,71 @@ export async function processResearch(db: Db, researchId: string, deps: ProcessD
       fetcher,
       deps.today ?? new Date(),
     );
-    stored = await store(db, researchId, c.id, result, movedToResearching);
+    stored = await store(db, owner, result, movedToResearching);
   } catch (err) {
-    if (movedToResearching) await db.discoveryCandidate.update({ where: { id: c.id }, data: { status: "discovered", statusChangedAt: new Date() } });
-    return db.candidateResearch.update({
-      where: { id: researchId },
-      data: { status: "failed", error: redact(`Research error: ${err instanceof Error ? err.message : "unknown"}`), finishedAt: new Date() },
+    return db.$transaction(async (tx) => {
+      if (!await authorizeCompletion(tx, owner)) return null;
+      if (movedToResearching) await tx.discoveryCandidate.update({ where: { id: c.id }, data: { status: "discovered", statusChangedAt: new Date() } });
+      return tx.candidateResearch.update({
+        where: { id: researchId },
+        data: { status: "failed", error: redact(`Research error: ${err instanceof Error ? err.message : "unknown"}`), finishedAt: new Date() },
+      });
     });
   }
   // Separate from the run: the run is stored whatever the approval decides.
-  if (deps.autoApprove !== false && stored.status === "completed") await autoDecideCandidate(db, c.id);
+  if (deps.autoApprove !== false && stored?.status === "completed") await autoDecideCandidate(db, c.id);
   return stored;
 }
 
 type Tx = Prisma.TransactionClient;
+const lockResearchRun = (tx: Tx, id: string) =>
+  tx.$queryRaw`SELECT id FROM "CandidateResearch" WHERE id = ${id}::uuid FOR UPDATE`;
 
-async function store(db: Db, researchId: string, candidateId: string, r: ResearchResult, movedToResearching: boolean) {
+interface ResearchOwner {
+  researchId: string;
+  candidateId: string;
+  candidateRevision: number;
+  website: string | null;
+  status: CandidateStatus;
+  startedAt: Date;
+}
+
+/**
+ * All candidate/run writers take the candidate lock first. The conditional
+ * UPDATE both checks the complete snapshot and claims this state mutation;
+ * its row lock remains held through every evidence/contact/run write.
+ */
+async function authorizeCompletion(tx: Tx, owner: ResearchOwner): Promise<boolean> {
+  await lockCandidate(tx, owner.candidateId);
+  await lockResearchRun(tx, owner.researchId);
+  const runWhere = {
+    id: owner.researchId, status: "running" as const, startedAt: owner.startedAt,
+    candidateRevision: owner.candidateRevision, subjectWebsite: owner.website,
+  };
+  const { count } = await tx.discoveryCandidate.updateMany({
+    where: {
+      id: owner.candidateId, researchRevision: owner.candidateRevision,
+      website: owner.website, status: owner.status,
+      research: { some: runWhere },
+    },
+    data: { researchRevision: { increment: 1 } },
+  });
+  if (count === 1) return true;
+  // Retire only this still-running lease. Never rewrite a recovered/replaced
+  // run or the newer candidate. No sources, facts, signals or notes are stored.
+  const retired = await tx.candidateResearch.updateMany({
+    where: runWhere,
+    data: { status: "failed", outcome: "superseded", error: "Superseded: the candidate changed while research was running.", finishedAt: new Date() },
+  });
+  console.info({ event: "research_obsolete", researchId: owner.researchId, candidateId: owner.candidateId,
+    reason: retired.count ? "candidate_changed" : "run_invalidated" });
+  return false;
+}
+
+async function store(db: Db, owner: ResearchOwner, r: ResearchResult, movedToResearching: boolean) {
   return db.$transaction(async (tx) => {
+    if (!await authorizeCompletion(tx, owner)) return null;
+    const { researchId, candidateId } = owner;
     // Sources first, so facts can point at them.
     const sourceIds = new Map<string, string>();
     for (const s of r.sources) {
@@ -325,15 +387,29 @@ export async function failStaleResearch(db: Db, staleAfterMs = STALE_RESEARCH_MS
   const cutoff = new Date(Date.now() - staleAfterMs);
   const stale = await db.candidateResearch.findMany({ where: { status: "running", heartbeatAt: { lt: cutoff } }, select: { id: true, candidateId: true } });
   if (!stale.length) return 0;
-  const now = new Date();
-  const { count } = await db.candidateResearch.updateMany({
-    where: { id: { in: stale.map((r) => r.id) }, status: "running", heartbeatAt: { lt: cutoff } },
-    data: { status: "failed", error: "Interrupted: the research stopped before it finished. Run it again.", finishedAt: now },
-  });
-  for (const candidateId of new Set(stale.map((r) => r.candidateId))) {
-    await db.discoveryCandidate.updateMany({
-      where: { id: candidateId, status: "researching", research: { none: { status: { in: ["queued", "running"] } } } },
-      data: { status: "discovered", statusChangedAt: now },
+  let count = 0;
+  for (const run of stale) {
+    count += await db.$transaction(async (tx) => {
+      await lockCandidate(tx, run.candidateId);
+      await lockResearchRun(tx, run.id);
+      const current = await tx.candidateResearch.findUnique({ where: { id: run.id } });
+      if (!current) return 0;
+      const now = new Date();
+      const recovered = await tx.candidateResearch.updateMany({
+        where: { id: run.id, status: "running", heartbeatAt: { lt: cutoff },
+          startedAt: current.startedAt, candidateRevision: current.candidateRevision, subjectWebsite: current.subjectWebsite },
+        data: { status: "failed", error: "Interrupted: the research stopped before it finished. Run it again.", finishedAt: now },
+      });
+      if (recovered.count !== 1) return 0;
+      // Pre-migration running rows have no ownership snapshot. Fail the run
+      // but leave the candidate alone rather than guess whose state it is.
+      if (current.candidateRevision !== null) await tx.discoveryCandidate.updateMany({
+        where: { id: run.candidateId, researchRevision: current.candidateRevision,
+          website: current.subjectWebsite, status: "researching",
+          research: { none: { status: { in: ["queued", "running"] } } } },
+        data: { researchRevision: { increment: 1 }, status: "discovered", statusChangedAt: now },
+      });
+      return 1;
     });
   }
   return count;
