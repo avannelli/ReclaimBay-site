@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { analyze } from "@/lib/analyze";
 import { trackEvent, trackLandingView } from "@/lib/analytics";
 import { detectColumns, normalizeRows } from "@/lib/normalize";
-import { FileParseError, parseFile } from "@/lib/parseFile";
+import { confirmHeader, FileParseError, parseFile } from "@/lib/parseFile";
 import { applyRememberedMappings, rememberConfirmedMappings } from "@/lib/prefs";
 import { prefersReducedMotion, scrollPageTo } from "@/lib/scroll";
 import type {
@@ -20,6 +20,7 @@ import BrandTransition, {
   TRANSITION_SHORT_HOLD_MS,
 } from "./BrandTransition";
 import ColumnMapper from "./ColumnMapper";
+import HeaderChooser from "./HeaderChooser";
 import Dashboard from "./Dashboard";
 import EmptyResult from "./EmptyResult";
 import { buildSampleTable } from "@/lib/sampleData";
@@ -36,6 +37,7 @@ interface Matching {
 type Stage =
   | { name: "upload" }
   | { name: "parsing" }
+  | { name: "header"; table: ParsedTable }
   | { name: "mapping"; matching: Matching; suggested: ColumnMapping }
   | { name: "empty"; matching: Matching; mapping: ColumnMapping }
   | {
@@ -126,7 +128,7 @@ export default function ScannerApp() {
       setError(null);
       if (!analysis) return { name: "empty", matching, mapping };
       if (confirmedByUser) {
-        rememberConfirmedMappings(table.headers, mapping, matching.detection);
+        rememberConfirmedMappings(table, mapping, matching.detection);
       }
       trackEvent("scan_completed", isSample);
       return {
@@ -172,8 +174,9 @@ export default function ScannerApp() {
       trackEvent("upload_started");
       try {
         const table = await parseFile(file);
+        if (table.pendingHeaderRows) return { name: "header", table };
         const detection = detectColumns(table);
-        const { mapping, applied } = applyRememberedMappings(table.headers, detection);
+        const { mapping, applied } = applyRememberedMappings(table, detection);
         const matching = { table, detection, remembered: applied };
         return detection.confident
           ? analyzeToStage(matching, mapping)
@@ -191,6 +194,14 @@ export default function ScannerApp() {
   return (
     <main className="mx-auto w-full max-w-300 flex-1 px-4 py-8 sm:px-6 sm:py-12 lg:px-8">
         {transition && <BrandTransition leaving={transition === "out"} />}
+        {stage.name === "header" && (
+          <HeaderChooser table={stage.table} onCancel={reset} onConfirm={(index) => {
+            const table = confirmHeader(stage.table, index);
+            const detection = detectColumns(table);
+            const { mapping, applied } = applyRememberedMappings(table, detection);
+            setStage({ name: "mapping", matching: { table, detection, remembered: applied }, suggested: mapping });
+          }} />
+        )}
         {(stage.name === "upload" || stage.name === "parsing") && (
           <UploadPanel
             focusOnMount={focusUpload}

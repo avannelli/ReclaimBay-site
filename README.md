@@ -61,8 +61,20 @@ need no database.
 
 ### Checks
 
-Site: `npm run lint`, `npx tsc --noEmit`, `npm run build`. Backend: see
+Site: `npm test`, `npm run lint`, `npx tsc --noEmit`, `npm run build`. Backend: see
 [backend/README.md](backend/README.md#local-development).
+
+Report imports automatically accept a single row in the first ten nonblank
+rows containing exact recognized service and amount labels in distinct
+columns. Blank header cells become numbered columns. Competing or unknown
+headers, and numeric rows above a candidate header, require a header choice;
+every nonblank row stays in memory until that choice. Users can choose no
+header to retain all rows, then map columns manually.
+
+Remembered mappings require established headers and exact recognized header
+labels. Unknown custom labels remain manually mappable but are not persisted.
+The old v1 mapping preference is removed because its provenance cannot be
+trusted; safe confirmed mappings use v2. Report contents remain browser-only.
 
 ## Structure
 

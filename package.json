@@ -7,6 +7,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
+    "test": "tsx --test test/*.test.ts test/*.test.tsx",
     "dev:admin": "npm --prefix backend run dev:db -- migrate && npm --prefix backend run dev",
     "dev:admin:setup": "npm --prefix backend run dev:setup --",
     "dev:admin:reset": "npm --prefix backend run dev:db -- reset",
@@ -29,6 +30,7 @@
     "eslint": "^9",
     "eslint-config-next": "16.3.7",
     "tailwindcss": "^4",
+    "tsx": "4.23.15",
     "typescript": "^5"
   }
 }

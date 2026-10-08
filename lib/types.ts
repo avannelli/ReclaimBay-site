@@ -5,6 +5,10 @@ export interface ParsedTable {
   fileName: string;
   headers: string[];
   rows: RawCell[][];
+  /** Imported headers must be established before analysis or preference use. */
+  headerSource?: "detected" | "confirmed" | "none";
+  /** All nonblank rows, retained until the user establishes the header. */
+  pendingHeaderRows?: RawCell[][];
 }
 
 export type FieldKey =

@@ -1,5 +1,6 @@
-import { CONFIDENT_SCORE, FIELD_DEFS, normalizeHeader } from "./normalize";
-import type { ColumnMapping, DetectionResult, FieldKey } from "./types";
+import { CONFIDENT_SCORE, FIELD_DEFS } from "./normalize";
+import { verifiedHeaderLabel } from "./headerLabels";
+import type { ColumnMapping, DetectionResult, FieldKey, ParsedTable } from "./types";
 
 /*
  * Browser-only preferences. Only UI state and column-header patterns are
@@ -9,7 +10,7 @@ import type { ColumnMapping, DetectionResult, FieldKey } from "./types";
  */
 
 const TOUR_KEY = "reclaimbay_report_tour_v1";
-const MAPPINGS_KEY = "reclaimbay_column_mappings_v1";
+const MAPPINGS_KEY = "reclaimbay_column_mappings_v2";
 /** Oldest remembered headers are dropped past this many. */
 const MAX_REMEMBERED = 200;
 
@@ -45,6 +46,9 @@ export const saveTourState = (state: TourState) => write(TOUR_KEY, state);
 /** Normalized header -> field, oldest first. Malformed data reads as empty. */
 function loadRemembered(): Map<string, FieldKey> {
   const out = new Map<string, FieldKey>();
+  try {
+    if (typeof window !== "undefined") window.localStorage.removeItem("reclaimbay_column_mappings_v1");
+  } catch { /* Storage may be blocked. Legacy entries are never read. */ }
   const raw = read(MAPPINGS_KEY);
   if (!raw) return out;
   try {
@@ -54,8 +58,7 @@ function loadRemembered(): Map<string, FieldKey> {
       if (
         typeof field === "string" &&
         Object.hasOwn(FIELD_DEFS, field) &&
-        header.length > 0 &&
-        header.length <= 200
+        verifiedHeaderLabel(header) === header
       ) {
         out.set(header, field as FieldKey);
       }
@@ -66,25 +69,26 @@ function loadRemembered(): Map<string, FieldKey> {
   return out;
 }
 
-/** Placeholder names for blank headers say nothing about the column. */
-const rememberable = (key: string) => key !== "" && !/^column \d+$/.test(key);
-
 /**
  * Prefills fields from headers the user matched by hand before. A strong
  * built-in match always wins, for the field and for the column.
  */
 export function applyRememberedMappings(
-  headers: string[],
+  table: ParsedTable,
   detection: DetectionResult,
 ): { mapping: ColumnMapping; applied: number } {
   const remembered = loadRemembered();
   const mapping: ColumnMapping = { ...detection.mapping };
+  if (table.pendingHeaderRows || !table.headerSource || table.headerSource === "none") {
+    return { mapping, applied: 0 };
+  }
   const strong = (f: FieldKey) => (detection.scores[f] ?? 0) >= CONFIDENT_SCORE;
   const filled = new Set<FieldKey>();
   let applied = 0;
 
-  headers.forEach((header, col) => {
-    const field = remembered.get(normalizeHeader(header));
+  table.headers.forEach((header, col) => {
+    const key = verifiedHeaderLabel(header);
+    const field = key === null ? undefined : remembered.get(key);
     if (!field || filled.has(field) || mapping[field] === col || strong(field)) return;
     const holder = (Object.keys(mapping) as FieldKey[]).find((f) => mapping[f] === col);
     if (holder && strong(holder)) return;
@@ -102,15 +106,16 @@ export function applyRememberedMappings(
  * skipped, and a remembered header the user left unmapped is forgotten.
  */
 export function rememberConfirmedMappings(
-  headers: string[],
+  table: ParsedTable,
   confirmed: ColumnMapping,
   detection: DetectionResult,
 ) {
   const remembered = loadRemembered();
+  if (table.pendingHeaderRows || !table.headerSource || table.headerSource === "none") return;
   const fields = Object.keys(confirmed) as FieldKey[];
-  headers.forEach((header, col) => {
-    const key = normalizeHeader(header);
-    if (!rememberable(key)) return;
+  table.headers.forEach((header, col) => {
+    const key = verifiedHeaderLabel(header);
+    if (key === null) return;
     const field = fields.find((f) => confirmed[f] === col);
     if (!field) {
       remembered.delete(key);
