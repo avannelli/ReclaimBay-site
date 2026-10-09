@@ -25,7 +25,7 @@
  * this volume.
  */
 import type { Db } from "../db.js";
-import { OUTREACH_HEADER, headerOf, type GmailClient, type GmailMessage, type GmailPart } from "./gmail.js";
+import { GmailError, OUTREACH_HEADER, headerOf, type GmailClient, type GmailMessage, type GmailPart } from "./gmail.js";
 import { normalizeEmail } from "./lifecycle.js";
 import { applyProviderEvent, recordInboundReply } from "./service.js";
 import { ingestEmailedUnsubscribe } from "./emailedUnsubscribe.js";
@@ -140,11 +140,31 @@ export interface InboxItem {
 export interface InboxReport {
   checked: number;
   items: InboxItem[];
+  /** Messages whose Gmail thread couldn't be read: each left for a person, nothing recorded. */
+  unreadableThreads?: number;
 }
 
+/**
+ * The other messages in a message's thread, or null when Gmail refuses this one
+ * thread (a 4xx such as failedPrecondition, or a thread gone since the listing).
+ * Authorization, quota, server and network failures aren't about one thread:
+ * they still throw and end the run.
+ */
+async function otherThreadMessages(client: GmailClient, m: GmailMessage): Promise<string[] | null> {
+  try {
+    const thread = await client.getThread(m.threadId);
+    return (thread.messages ?? []).map((x) => x.id).filter((id) => id !== m.id);
+  } catch (err) {
+    if (err instanceof GmailError && err.kind === "invalid") return null;
+    throw err;
+  }
+}
+
+/** Without its thread, a message can't be attributed: the existing fail-closed review result, nothing recorded. */
+const unreadableThread = (): InboxAttribution => ({ status: "unresolved", reason: "invalid_identity", outreachId: null, candidateOutreachIds: [] });
+
 /** SMTP parent identity is not Gmail's API message ID. Resolve it against provider metadata. */
-async function inboxEvidence(db: Db, client: GmailClient, m: GmailMessage, kind: "reply" | "bounce", receivedAt: Date | null): Promise<InboxEvidence> {
-  const thread = await client.getThread(m.threadId);
+async function inboxEvidence(db: Db, client: GmailClient, m: GmailMessage, kind: "reply" | "bounce", receivedAt: Date | null, threadMessageIds: string[] | null): Promise<InboxEvidence> {
   const text = messageText(m.payload);
   const recipientEmails = kind === "bounce" ? [...new Set([...text.matchAll(/^[ \t]*(?:Final|Original)-Recipient:[ \t]*([^\r\n]*)/gim)].map((v) => {
     const value = /^rfc822;[ \t]*(.+)$/i.exec(v[1]!);
@@ -159,8 +179,8 @@ async function inboxEvidence(db: Db, client: GmailClient, m: GmailMessage, kind:
   const malformedIds = [...parentValues, ...referenceValues].some((v) => !v.trim() || Boolean(v.replace(/<[^<>\s]+>/g, "").trim()));
   const rfcIds = idsOf(parentValues);
   const evidence: InboxEvidence = { kind, receivedAt, fromEmail: inboxSender(m), recipientEmails: recipientEmails.filter(Boolean),
-    threadMessageIds: (thread.messages ?? []).map((v) => v.id).filter((id) => id !== m.id), markerOutreachIds: unsubscribeMarkers(m),
-    relatedProviderMessageIds: [], invalidEvidence: recipientEmails.includes("") || parents.length > 1 || references.length > 1 || malformedIds };
+    threadMessageIds: threadMessageIds ?? [], markerOutreachIds: unsubscribeMarkers(m),
+    relatedProviderMessageIds: [], invalidEvidence: threadMessageIds === null || recipientEmails.includes("") || parents.length > 1 || references.length > 1 || malformedIds };
   const ancestors = idsOf(referenceValues);
   const allIds = [...new Set([...rfcIds, ...ancestors])];
   // Bound work and prevent mailbox-query syntax from entering an opaque message ID.
@@ -203,7 +223,7 @@ export async function pollGmailInbox(
   // Mail from the account itself or from its Send As address is ours, never a reply.
   const own = [client.sender, client.account];
   const max = opts.max ?? 200;
-  const report: InboxReport = { checked: 0, items: [] };
+  const report: InboxReport = { checked: 0, items: [], unreadableThreads: 0 };
   let pageToken: string | undefined;
   do {
     const list = await client.listMessages({ q: `newer_than:${opts.lookbackDays ?? 7}d -from:me -in:chats`, maxResults: "100", ...(pageToken ? { pageToken } : {}) });
@@ -220,18 +240,27 @@ export async function pollGmailInbox(
       report.items.push(item);
       if (c.kind === "own" || c.kind === "auto_reply" || c.kind === "delay") continue;
 
+      // One thread Gmail won't return affects only its message; the run goes on.
+      const threadMessageIds = await otherThreadMessages(client, m);
+      if (threadMessageIds === null) report.unreadableThreads = (report.unreadableThreads ?? 0) + 1;
+
       if (c.kind === "unsubscribe") {
+        // Its candidates can't all be known: no opt-out is inferred from partial evidence.
+        if (threadMessageIds === null) {
+          item.result = "unresolved";
+          item.attribution = unreadableThread();
+          continue;
+        }
         // Gmail reads remain outside the gate; this operation rechecks all DB candidates under it.
-        const thread = await client.getThread(m.threadId);
         const result = await ingestEmailedUnsubscribe(db, { mailboxAccount: client.account, gmailMessageId: m.id,
           senderEmail: unsubscribeSender(m), receivedAt, markerOutreachIds: unsubscribeMarkers(m),
-          threadMessageIds: (thread.messages ?? []).map((x) => x.id).filter((x) => x !== m.id) }, opts.apply, at);
+          threadMessageIds }, opts.apply, at);
         item.result = result.result;
         item.outreachId = result.outreachId;
         continue;
       }
 
-      const evidence = await inboxEvidence(db, client, m, c.kind === "reply" ? "reply" : "bounce", receivedAt);
+      const evidence = await inboxEvidence(db, client, m, c.kind === "reply" ? "reply" : "bounce", receivedAt, threadMessageIds);
       const attribution = await resolveInboxAttribution(db, evidence);
       const { identity, ...safeAttribution } = attribution;
       item.attribution = safeAttribution;

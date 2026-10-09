@@ -63,6 +63,8 @@ export class FakeGoogle {
   /** Overrides every token-endpoint answer (refresh and code exchange). */
   tokenAnswer: Answer | null = null;
   listAnswer: Answer | null = null;
+  /** threads.get answers by thread id, for a thread Gmail won't return (e.g. 400 failedPrecondition). */
+  readonly threadAnswers = new Map<string, Answer>();
   /** The Google account the consent screen and Gmail's profile report. */
   account = MAILBOX;
   /** The account's Send As addresses besides its own (which Gmail always lists, as primary). */
@@ -170,6 +172,8 @@ export class FakeGoogle {
     }
     const thread = /^\/threads\/([^?]+)\?/.exec(path)?.[1];
     if (thread) {
+      const answer = this.threadAnswers.get(decodeURIComponent(thread));
+      if (answer) return reply(answer);
       const ids = [...this.sent.filter((s) => s.threadId === thread).map((s) => s.id), ...this.inbox.filter((m) => m.threadId === thread).map((m) => m.id)];
       return reply({ status: 200, body: { id: thread, messages: ids.map((id) => ({ id })) } });
     }
