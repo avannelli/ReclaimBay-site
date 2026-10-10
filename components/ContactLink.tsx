@@ -1,21 +1,31 @@
 "use client";
 
+import { useState } from "react";
 import { trackEvent } from "@/lib/analytics";
-import { contactMailto } from "@/lib/contact";
+import ContactDialog from "./ContactDialog";
 
 /**
- * The quiet "Questions? Talk to ReclaimBay" link: the fixed contact mailto
- * (nothing from the report or invitation in it), recorded as contact_clicked.
- * The caller sets the colors for its background.
+ * "Talk to ReclaimBay": opens the contact form (ContactDialog) in place, with
+ * nothing from the report or invitation in it, recorded as contact_clicked.
+ * By default it looks like the quiet "Questions? Talk to ReclaimBay" link and
+ * the caller sets its colors; `unstyled` leaves all styling to `className`.
  */
-export default function ContactLink({ isSample = false, className = "", label = "Questions? Talk to ReclaimBay" }: { isSample?: boolean; className?: string; label?: string }) {
+export default function ContactLink({ isSample = false, className = "", label = "Questions? Talk to ReclaimBay", unstyled = false }: { isSample?: boolean; className?: string; label?: string; unstyled?: boolean }) {
+  const [open, setOpen] = useState(false);
   return (
-    <a
-      href={contactMailto()}
-      onClick={() => trackEvent("contact_clicked", isSample)}
-      className={`rounded-md text-sm underline decoration-1 underline-offset-4 transition-colors focus-visible:outline-2 focus-visible:outline-offset-4 print:hidden ${className}`}
-    >
-      {label}
-    </a>
+    <>
+      <button
+        type="button"
+        aria-haspopup="dialog"
+        onClick={() => {
+          trackEvent("contact_clicked", isSample);
+          setOpen(true);
+        }}
+        className={unstyled ? className : `cursor-pointer rounded-md text-sm underline decoration-1 underline-offset-4 transition-colors focus-visible:outline-2 focus-visible:outline-offset-4 print:hidden ${className}`}
+      >
+        {label}
+      </button>
+      {open && <ContactDialog onClose={() => setOpen(false)} />}
+    </>
   );
 }

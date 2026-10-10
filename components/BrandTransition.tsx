@@ -27,7 +27,7 @@ export default function BrandTransition({ leaving }: { leaving: boolean }) {
       <div className="relative">
         <BrandLogo className="h-10 sm:h-12" eager />
         <span className="processing-line mx-auto mt-8" aria-hidden />
-        <p className="mt-5 text-center text-sm text-ink-3">Reading your report on this device…</p>
+        <p className="mt-5 text-center text-sm text-ink-3">Reviewing your report on this device…</p>
       </div>
     </div>
   );

@@ -19,7 +19,7 @@ export default function HeaderChooser({ table, onConfirm, onCancel }: {
       <h1 className="mt-3 text-3xl tracking-tight text-navy">Choose the header row</h1>
       <p className="mt-3 text-ink-2">
         We couldn&apos;t safely identify the headers. All {rows.length} nonblank rows are still here.
-        Choose the row containing column names, or keep every row if your file has no header.
+        Choose the row containing column names, or keep every row if your report has no header.
         Rows above a chosen header are treated as titles and excluded.
       </p>
       <label htmlFor="header-row" className="mt-6 block font-semibold text-ink">Column names</label>
@@ -34,9 +34,9 @@ export default function HeaderChooser({ table, onConfirm, onCancel }: {
         ))}
       </select>
       <div className="mt-6 flex flex-col-reverse justify-between gap-3 sm:flex-row">
-        <button type="button" onClick={onCancel} className={`${button.secondaryStrong} ${size.lg}`}>Upload a different file</button>
+        <button type="button" onClick={onCancel} className={`${button.secondaryStrong} ${size.lg}`}>Choose another report</button>
         <button type="button" disabled={!choice} onClick={() => onConfirm(choice === "none" ? null : Number(choice))}
-          className={`${button.primary} ${size.lg}`}>Confirm header and map columns</button>
+          className={`${button.primary} ${size.lg}`}>Confirm and match columns</button>
       </div>
     </div>
   );

@@ -42,3 +42,6 @@ yarn-error.log*
 next-env.d.ts
 
 backend/node_modules/
+
+# Cloudflare Pages Functions local secrets (wrangler pages dev)
+.dev.vars*

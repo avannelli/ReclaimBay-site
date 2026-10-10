@@ -6,6 +6,14 @@ Files are parsed in the browser and held only in React state. The file and its c
 
 Optional anonymous analytics (event names, a random browser ID, and referral codes only; never report data) go to the separate service in [`backend/`](backend/README.md). Set `NEXT_PUBLIC_ANALYTICS_API_URL` at build time to turn them on (see `.env.example`). With it unset, the site sends nothing.
 
+## Contact form
+
+"Talk to ReclaimBay" opens an in-site form (`components/ContactDialog.tsx`) that posts only its own fields (name, shop name, email, shop software, message) to `POST /api/contact`, a Cloudflare Pages Function in [`functions/api/contact.js`](functions/api/contact.js). The function checks everything again, ignores a filled honeypot, rate-limits by hashed IP, and sends a plain-text email through Resend to `hello@reclaimbay.com`, from `ReclaimBay Website <contact@reclaimbay.com>`, with Reply-To set to the visitor. It has nothing to do with the Railway backend, Gmail, outreach, or any database, and nothing from a report can be sent through it.
+
+Keep `functions/` at the repository root; Cloudflare Pages deploys it alongside the static `out/` export. In the Pages project (**Settings → Variables and Secrets**), add `RESEND_API_KEY` as a **Secret** (Production, and Preview to test there), and under **Settings → Bindings** bind a Workers KV namespace as `CONTACT_RATE_LIMIT`. Without either, the endpoint answers 503 and sends nothing; the form then shows its error and the visible address still works. The sender's domain, `reclaimbay.com`, must be verified in Resend.
+
+Before promoting, deploy a Preview with the secret and binding, send a real message, and check delivery and Reply-To. KV is eventually consistent, so the five-per-ten-minutes limit is approximate; add a Cloudflare WAF rate-limiting rule for `POST /api/contact` if strict enforcement is needed. Locally: `npx wrangler pages dev out --kv CONTACT_RATE_LIMIT` with a gitignored `.dev.vars` holding `RESEND_API_KEY` (`npm run dev` alone cannot serve the function).
+
 ## Local development
 
 ### Which thing am I looking at?
@@ -65,8 +73,11 @@ Site: `npm test`, `npm run lint`, `npx tsc --noEmit`, `npm run build`. Backend: 
 [backend/README.md](backend/README.md#local-development).
 
 Report imports automatically accept a single row in the first ten nonblank
-rows containing exact recognized service and amount labels in distinct
-columns. Blank header cells become numbered columns. Competing or unknown
+rows containing recognized service and amount labels in distinct columns.
+A label may carry currency marks, dots, `#` or a plural ("Amount ($)",
+"Est. Total", "Declined Services"), but never digits. Blank header cells
+become numbered columns. A service column is matched automatically only when
+its values read as descriptions, so a dollar column such as "Labor" never is. Competing or unknown
 headers, and numeric rows above a candidate header, require a header choice;
 every nonblank row stays in memory until that choice. Users can choose no
 header to retain all rows, then map columns manually.

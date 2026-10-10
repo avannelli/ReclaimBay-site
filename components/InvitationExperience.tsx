@@ -140,7 +140,7 @@ export default function InvitationExperience() {
       </ul>
       <div className="mt-9">
         <Link href="/" className={`${primaryLink} w-full sm:w-auto sm:min-w-56`}>
-          Get started free
+          Start a free analysis
         </Link>
       </div>
       <div className="mt-5">

@@ -17,8 +17,8 @@ interface Step {
 const STEPS: Step[] = [
   {
     target: "total",
-    title: "Your total opportunity",
-    body: "This totals the declined estimates included from your file. Review current job status before following up; recovery is not tracked.",
+    title: "Reported declined value",
+    body: "This totals the declined estimates included from your report. Review current job status before following up; recovery is not tracked.",
   },
   {
     target: "opportunities",
@@ -37,8 +37,8 @@ const STEPS: Step[] = [
   },
   {
     target: "exports",
-    title: "Save or work from the results",
-    body: "Download the report or export the opportunity list for follow-up.",
+    title: "Keep your review",
+    body: "Download a PDF summary or the full job list as CSV for your own review and follow-up.",
   },
 ];
 

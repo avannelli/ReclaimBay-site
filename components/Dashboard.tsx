@@ -9,7 +9,7 @@ import {
   undatedSplitNote,
 } from "@/lib/format";
 import { trackEvent, trackExport } from "@/lib/analytics";
-import { CONTACT_EMAIL, contactMailto } from "@/lib/contact";
+import { CONTACT_EMAIL } from "@/lib/contact";
 import { buildOpportunitiesCsv, exportFileName } from "@/lib/exportCsv";
 import { downloadSummaryPdf } from "@/lib/pdfReport";
 import { saveTourState, type TourState } from "@/lib/prefs";
@@ -300,13 +300,14 @@ const UTILITY_ICONS = {
   tour: actionIcon("M10 17.5a7.5 7.5 0 1 0 0-15 7.5 7.5 0 0 0 0 15zM12.9 7.1l-1.6 4.2-4.2 1.6 1.6-4.2z"),
 };
 
-// Links (not buttons) never match :enabled, so their hover is set here.
+// The report's primary contact action; it opens the shared contact form.
 const contactButton = `${button.primary} ${size.md} hover:bg-opportunity-hover active:brightness-95`;
 
 /**
- * The report's closing next step: talk to ReclaimBay. The mailto link and
- * the address are fixed constants (lib/contact.ts); nothing from the report
- * goes into either. Clicking the button or copying the address records
+ * The report's closing next step: talk to ReclaimBay. The button opens the
+ * shared contact form (ContactDialog), which sends only its own fields; the
+ * address is a fixed constant (lib/contact.ts). Nothing from the report goes
+ * into either. Opening the form or copying the address records
  * contact_clicked, with the report's usual sample flag.
  */
 function ContactCard({ isSample }: { isSample: boolean }) {
@@ -338,13 +339,11 @@ function ContactCard({ isSample }: { isSample: boolean }) {
         <p className="mt-1.5 text-sm leading-relaxed text-pretty text-ink-2">
           Tell us about your shop and how you handle declined work. We can
           talk through the next step. Your report stays on this device;
-          nothing from it is included in the contact link.
+          nothing from it is included in the contact form.
         </p>
       </div>
       <div className="flex flex-col gap-2.5 sm:flex-row sm:items-center sm:gap-4 lg:shrink-0 lg:flex-col lg:items-end lg:gap-2">
-        <a href={contactMailto()} onClick={() => trackEvent("contact_clicked", isSample)} className={contactButton}>
-          Talk to ReclaimBay
-        </a>
+        <ContactLink unstyled isSample={isSample} label="Talk to ReclaimBay" className={contactButton} />
         <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
           <span className="text-sm font-medium text-ink-2">{CONTACT_EMAIL}</span>
           <UtilityAction onClick={copyAddress} icon={copied === "copied" ? UTILITY_ICONS.check : UTILITY_ICONS.copy}>
@@ -354,7 +353,7 @@ function ContactCard({ isSample }: { isSample: boolean }) {
                 Copied
               </span>
               <span className="col-start-1 row-start-1 text-left">
-                {copied === "copied" ? "Copied" : copied === "failed" ? "Copy failed" : "Copy"}
+                {copied === "copied" ? "Copied" : copied === "failed" ? "Couldn't copy" : "Copy"}
               </span>
             </span>
           </UtilityAction>
@@ -381,7 +380,7 @@ export default function Dashboard({
   const { recency } = a;
   // One money format for the whole report: cents everywhere, or nowhere.
   const money = moneyFormat(a.showCents);
-  const uploadLabel = isSample ? "Upload your own report" : "Upload another report";
+  const uploadLabel = isSample ? "Analyze your report" : "Analyze another report";
 
   // The report lives only in this tab, so replacing it asks first. The
   // sample has nothing worth keeping and is replaced straight away.
@@ -562,7 +561,7 @@ export default function Dashboard({
                   {copyStatus === "copied"
                     ? "Summary copied"
                     : copyStatus === "failed"
-                      ? "Copy failed"
+                      ? "Couldn't copy"
                       : "Copy summary"}
                 </span>
               </span>
@@ -597,15 +596,14 @@ export default function Dashboard({
               <path d="M8 7.25v3.5M8 5.25h.01" />
             </svg>
             <span className="flex-1">
-              You&apos;re viewing a sample report built from made-up data.
-              Upload your own file to see your shop&apos;s numbers.
+              Sample report with made-up data.
             </span>
             <button
               type="button"
               onClick={onReset}
               className="shrink-0 rounded font-semibold text-navy underline-offset-2 hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-navy print:hidden"
             >
-              Upload your own report
+              Analyze yours
             </button>
           </p>
         </Reveal>
@@ -636,7 +634,7 @@ export default function Dashboard({
                   durationMs={600}
                 />
               </p>
-              <p className="mt-4 max-w-lg text-sm leading-relaxed text-slate-300">The value of included declined jobs, as reported in your file. Current job status and any recovery need your review.</p>
+              <p className="mt-4 max-w-lg text-sm leading-relaxed text-slate-300">Included declined work from your report. Current job status and any recovery need your review.</p>
               <div className="mt-7 flex flex-col gap-2 border-t border-white/10 pt-5 text-base text-slate-300 sm:flex-row sm:flex-wrap sm:items-center sm:gap-x-8">
                 <p>
                   <span className="font-semibold text-white">
@@ -717,7 +715,7 @@ export default function Dashboard({
             tone="neutral"
             label="Declined opportunities"
             value={a.count.toLocaleString("en-US")}
-            note="Opportunities included in this analysis"
+            note="Jobs included in this review"
           />
         </Reveal>
         <Reveal delay={280}>
@@ -756,8 +754,8 @@ export default function Dashboard({
       </div>
 
       <section className="report-guidance" aria-label="How to use this review">
-        <div><h2>Start with a job worth revisiting.</h2><p>Open its report details below. Confirm the work is still needed, check whether it was completed elsewhere, and choose a suitable follow-up.</p></div>
-        <div><h2>Know what the numbers mean.</h2><p>These are reported estimates, not independently verified findings or recovered revenue. File-quality notes explain what was included and left out.</p></div>
+        <div><h2>Start with a job worth revisiting.</h2><p>Open its source evidence below. Confirm the work is still needed, check whether it was completed elsewhere, and choose a suitable follow-up.</p></div>
+        <div><h2>Know what the numbers mean.</h2><p>These are reported estimates, not independently verified findings or recovered revenue. Report checks explain what was included and left out.</p></div>
       </section>
 
       <Reveal delay={200}>
@@ -867,7 +865,7 @@ export default function Dashboard({
         >
           <summary className="flex cursor-pointer list-none items-center justify-between gap-3 rounded-xl px-5 py-3.5 transition-colors hover:bg-surface focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-navy sm:px-6 [&::-webkit-details-marker]:hidden">
             <span className="inline-flex items-center gap-2 font-medium text-ink">
-              About this analysis
+              About this review
               <svg
                 aria-hidden
                 viewBox="0 0 16 16"
@@ -883,13 +881,13 @@ export default function Dashboard({
             </span>
             <span className="text-xs text-ink-3">
               {notes.length === 0
-                ? "No file-quality issues detected"
-                : plural(notes.length, "file note", "file notes")}
+                ? "No issues found in report checks"
+                : plural(notes.length, "report note", "report notes")}
             </span>
           </summary>
           <div className="border-t border-line px-5 py-4 sm:px-6">
             {notes.length === 0 ? (
-              <p>No file-quality issues detected.</p>
+              <p>No issues found in report checks.</p>
             ) : (
               <ul className="list-disc space-y-1 pl-5">
                 {notes.map((n) => (
@@ -912,7 +910,7 @@ export default function Dashboard({
         >
           <div>
             <h2 className="text-base font-semibold tracking-tight text-navy">
-              Save or share this analysis
+              Keep or share this review
             </h2>
             <p className="mt-0.5 text-sm text-ink-3">
               A PDF summary and a CSV of every opportunity, created on this
@@ -944,7 +942,7 @@ export default function Dashboard({
 
       {confirmReplace && (
         <Dialog
-          title="Replace this report?"
+          title="Start another review?"
           onClose={() => setConfirmReplace(false)}
           actions={
             <>
@@ -954,16 +952,16 @@ export default function Dashboard({
                 onClick={() => setConfirmReplace(false)}
                 className={dialogSecondary}
               >
-                Cancel
+                Keep this review
               </button>
               <button type="button" onClick={onReset} className={dialogPrimary}>
-                Replace report
+                Analyze another report
               </button>
             </>
           }
         >
-          This report only exists in your browser. Uploading another file will
-          clear the current analysis.
+          Continuing clears this review from your browser. Download a PDF or CSV
+          first if you want to keep it.
         </Dialog>
       )}
 

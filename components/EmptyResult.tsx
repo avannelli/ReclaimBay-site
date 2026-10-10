@@ -50,7 +50,7 @@ export default function EmptyResult({
         </p>
 
         <div className="mt-6 rounded-xl border border-line bg-canvas/70 px-4 py-3.5 text-sm text-ink-2">
-          <p className="font-medium text-ink">File notes</p>
+          <p className="font-medium text-ink">Report checks</p>
           <ul className="mt-1.5 list-disc space-y-1 pl-5">
             <li>
               {rowCount.toLocaleString("en-US")} {rowCount === 1 ? "row was" : "rows were"} read
@@ -77,7 +77,7 @@ export default function EmptyResult({
             onClick={onReset}
             className={`${button.primary} ${size.lg}`}
           >
-            Upload another report
+            Analyze another report
           </button>
           <button
             type="button"

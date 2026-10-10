@@ -86,14 +86,20 @@ export function useFocusTrap(
 export const dialogPrimary = `${button.primary} ${size.md}`;
 export const dialogSecondary = `${button.secondary} ${size.md}`;
 
-/** Centered modal dialog. Escape and the backdrop call `onClose`. */
+/**
+ * Centered modal dialog. Escape and the backdrop call `onClose`. With a
+ * `description`, only it describes the dialog (a form's fields don't), and
+ * `children` follow it; otherwise `children` are the description.
+ */
 export function Dialog({
   title,
+  description,
   children,
   actions,
   onClose,
 }: {
   title: string;
+  description?: ReactNode;
   children: ReactNode;
   actions: ReactNode;
   onClose: () => void;
@@ -116,14 +122,21 @@ export function Dialog({
         aria-modal="true"
         aria-labelledby={titleId}
         aria-describedby={bodyId}
-        className="w-full max-w-md rounded-2xl bg-surface p-6 shadow-lift ring-1 ring-line animate-dialog-in motion-reduce:animate-none"
+        className="max-h-[calc(100dvh-2rem)] w-full max-w-md overflow-y-auto rounded-2xl bg-surface p-6 shadow-lift ring-1 ring-line animate-dialog-in motion-reduce:animate-none"
       >
         <h2 id={titleId} className="text-lg font-semibold tracking-tight text-navy">
           {title}
         </h2>
-        <div id={bodyId} className="mt-2 text-sm leading-relaxed text-ink-2">
-          {children}
-        </div>
+        {description ? (
+          <>
+            <p id={bodyId} className="mt-2 text-sm leading-relaxed text-ink-2">{description}</p>
+            <div className="mt-5 text-sm leading-relaxed text-ink-2">{children}</div>
+          </>
+        ) : (
+          <div id={bodyId} className="mt-2 text-sm leading-relaxed text-ink-2">
+            {children}
+          </div>
+        )}
         <div className="mt-6 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
           {actions}
         </div>

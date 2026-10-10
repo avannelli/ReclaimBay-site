@@ -1,6 +1,7 @@
 /*
- * The public contact path: a mailto link to ReclaimBay with a fixed subject
- * and a blank template the shop fills in. Everything here is a constant and
+ * The public contact address, and the mailto fallback the contact form
+ * (components/ContactDialog.tsx) offers beside it: a fixed subject and a
+ * blank template the shop fills in. Everything here is a constant and
  * contactMailto() takes no arguments, so nothing from a report (totals,
  * opportunities, customers, vehicles, categories, the file name) or from an
  * invitation can ever reach the link. Nothing here is sent anywhere; the

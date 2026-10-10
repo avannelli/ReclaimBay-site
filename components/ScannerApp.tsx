@@ -25,6 +25,7 @@ import Dashboard from "./Dashboard";
 import EmptyResult from "./EmptyResult";
 import { buildDemoTable } from "@/lib/demoReport";
 import UploadPanel from "./UploadPanel";
+import { useReportHistory } from "./useReportHistory";
 
 /** What the file's columns were matched to, and how. */
 interface Matching {
@@ -66,7 +67,30 @@ export default function ScannerApp() {
   // Anonymous and best effort; see lib/analytics.ts for what is sent.
   useEffect(() => trackLandingView(), []);
 
+  // Back and Forward move between the landing page and the report workspace
+  // (lib/navigation.ts). The last workspace screen stays in memory for Forward.
+  const inWorkspace = stage.name !== "upload" && stage.name !== "parsing";
+  const workspace = useRef<Stage | null>(null);
+  useEffect(() => { if (inWorkspace) workspace.current = stage; }, [inWorkspace, stage]);
+  // Where a screen brought back by Back or Forward should open.
+  const pendingScroll = useRef<{ section: string } | { y: number } | null>(null);
+  const navigation = useReportHistory(inWorkspace, (destination) => {
+    pendingScroll.current = destination.scroll ?? null;
+    if (destination.view === "report") {
+      if (workspace.current) setStage(workspace.current);
+      return;
+    }
+    setError(null);
+    setFocusUpload(false);
+    setStage({ name: "upload" });
+  });
+
+  // Starting over or cancelling clears the report; only Back and links keep it for Forward.
   const reset = () => {
+    if (inWorkspace) {
+      workspace.current = null;
+      navigation.clearingReport();
+    }
     setError(null);
     setFocusUpload(true);
     setStage({ name: "upload" });
@@ -78,6 +102,15 @@ export default function ScannerApp() {
   useEffect(() => {
     if (firstStage.current) {
       firstStage.current = false;
+      return;
+    }
+    const pending = pendingScroll.current;
+    if (pending) {
+      // Back or Forward: where the visitor left that screen, or the section a link named.
+      pendingScroll.current = null;
+      const section = "section" in pending ? document.getElementById(pending.section) : null;
+      if (section) scrollToElement(section, 24, { instant: true });
+      else scrollPageTo("y" in pending ? pending.y : 0, { instant: true });
       return;
     }
     if (stage.name === "upload" && (focusUpload || error)) {
@@ -154,7 +187,7 @@ export default function ScannerApp() {
       };
     } catch {
       setError(
-        "We couldn\u2019t analyze this file. Try exporting it again from your shop software, or save it as CSV.",
+        "We couldn\u2019t review this report. Try exporting it again from your shop software, or save it as CSV.",
       );
       return { name: "upload" };
     }
@@ -164,6 +197,7 @@ export default function ScannerApp() {
   const startScan = async (compute: () => Stage | Promise<Stage>) => {
     if (processing.current) return;
     processing.current = true;
+    if (!inWorkspace) navigation.leavingHome();
     setFocusUpload(false);
     setError(null);
     try {
@@ -199,7 +233,7 @@ export default function ScannerApp() {
         setError(
           err instanceof FileParseError
             ? err.message
-            : "We couldn\u2019t read this file. Try exporting it again from your shop software.",
+            : "We couldn\u2019t read this report. Try exporting it again from your shop software.",
         );
         return { name: "upload" };
       }
@@ -212,7 +246,7 @@ export default function ScannerApp() {
         {stage.name !== "upload" && stage.name !== "parsing" && (
           <ol className="scan-progress" aria-label="Report progress">
             <li aria-current={stage.name === "mapping" || stage.name === "header" ? "step" : undefined}>01 <span>Match your report</span></li>
-            <li aria-current={stage.name === "results" || stage.name === "empty" ? "step" : undefined}>02 <span>Review the opportunity</span></li>
+            <li aria-current={stage.name === "results" || stage.name === "empty" ? "step" : undefined}>02 <span>Review declined work</span></li>
           </ol>
         )}
         {stage.name === "header" && (

@@ -7,6 +7,7 @@ import { analyze } from "../lib/analyze";
 import { buildSampleTable } from "../lib/sampleData";
 import { buildOpportunitiesCsv } from "../lib/exportCsv";
 import { applyRememberedMappings, rememberConfirmedMappings } from "../lib/prefs";
+import { verifiedHeaderLabel } from "../lib/headerLabels";
 import type { DetectionResult, ParsedTable } from "../lib/types";
 
 // Exercise the real browser entry points, without changing frontend code.
@@ -151,4 +152,82 @@ test("existing demo report still analyzes all sample rows", () => {
   const table = buildSampleTable();
   assert.equal(report(table)?.count, table.rows.length);
   assert.equal(detectColumns(table).confident, true);
+});
+
+// Pass 20A export audit: a dollar column is never the service, and headers the
+// matcher already understands don't need a header-row choice.
+const LABOR_ROWS = "640,645,Timing belt and water pump,1285\n520,620,Front struts and mounts,1140\n310,610,Radiator replacement,920";
+const services = (table: ParsedTable) => normalizeRows(table, detectColumns(table).mapping).opportunities.map((o) => o.service);
+const serviceTable = (values: (string | number | null)[]): ParsedTable => ({
+  fileName: "t.csv", headers: ["Service", "Amount"], rows: values.map((v, i) => [v, 100 + i]), headerSource: "detected",
+});
+
+test("a Labor dollar column is never matched as the service, even before the real service column", async () => {
+  for (const header of ["Recommendation", "Description"]) {
+    const table = await csv(`Labor,Parts,${header},Total\n${LABOR_ROWS}`);
+    assert.equal(table.pendingHeaderRows, undefined);
+    const detection = detectColumns(table);
+    assert.equal(table.headers[detection.mapping.service!], header);
+    assert.equal(table.headers[detection.mapping.amount!], "Total");
+    assert.deepEqual(services(table), ["Timing belt and water pump", "Front struts and mounts", "Radiator replacement"]);
+  }
+  // With no text column at all, nothing is guessed: the person matches the columns.
+  const laborOnly = await csv("Labor,Total\n640,1285\n520,1140");
+  const detection = detectColumns(laborOnly);
+  assert.equal(detection.confident, false);
+  assert.equal(detection.mapping.service, undefined);
+});
+
+test("a service column must mostly read as descriptions; numbers inside one are fine", () => {
+  // A: ordinary descriptions; B: descriptions with occasional numbers.
+  for (const values of [["Front brake pads", "Timing belt and water pump", "Transmission service", "Oil leak diagnosis"], ["Brake service 2 axle", "Replace 4 tires", "Battery group 48 replacement"]]) {
+    const detection = detectColumns(serviceTable(values));
+    assert.equal(detection.confident, true, values.join(" | "));
+    assert.equal(detection.mapping.service, 0);
+  }
+  // C: numbers or prices under a service header; E: half numbers. Never automatic.
+  for (const values of [["640", "520", "$640.00", "$520.00", "640.00"], [640, 520], ["640", "Front brakes", "520", "Transmission service"], ["2026-09-18", "09/18/2026"]]) {
+    const detection = detectColumns(serviceTable(values));
+    assert.equal(detection.confident, false, values.join(" | "));
+    assert.equal(detection.mapping.service, undefined);
+  }
+  // D: an entirely blank service column isn't trusted; a sparse one with real descriptions still is,
+  // and its blank rows keep their existing "Unspecified service" handling.
+  assert.equal(detectColumns(serviceTable([null, "", null])).confident, false);
+  const sparse = serviceTable(["Front brakes", null, "", null]);
+  assert.equal(detectColumns(sparse).confident, true);
+  assert.deepEqual(services(sparse), ["Front brakes", "Unspecified service", "Unspecified service", "Unspecified service"]);
+});
+
+test("headers with currency marks, abbreviation dots, plurals and Job Total need no header-row choice", async () => {
+  for (const [headers, amountHeader] of [
+    ["Declined Service,Amount ($),Declined Date", "Amount ($)"],
+    ["Declined Service,Est. Total,Declined Date", "Est. Total"],
+    ["Declined Service,Total $,Declined Date", "Total $"],
+    ["Declined Services,Estimate Total,Declined Date", "Estimate Total"],
+    ["Job Description,Job Total", "Job Total"],
+  ] as const) {
+    const rows = headers.split(",").length === 3 ? "Brake repair,100,09/18/2026\nTransmission,900,08/20/2026" : "Brake repair,100\nTransmission,900";
+    const table = await csv(`${headers}\n${rows}`);
+    assert.equal(table.pendingHeaderRows, undefined, headers);
+    assert.equal(table.headerSource, "detected");
+    const detection = detectColumns(table);
+    assert.equal(detection.confident, true, headers);
+    assert.equal(table.headers[detection.mapping.amount!], amountHeader);
+    assert.equal(report(table)?.total, 1000);
+  }
+});
+
+test("dated, numeric, and prose title rows still can't pass as the header row", async () => {
+  for (const title of ["September 18, 2026", "Report generated 09/18/2026", "Totals for 2026,100"]) {
+    const table = await csv(`${title}\nService,Amount\nBrake repair,100\nTransmission,900`);
+    assert.ok(table.pendingHeaderRows, title);
+  }
+  // Prose around label words, or label-like cells with digits or other punctuation, are not header labels.
+  for (const row of ["Service total for the month,Amount owed by customers", "Service: brakes,Total: 100", "Service 2,Total (2026)", "Service & repair,Total!"]) {
+    const table = await csv(`${row}\nBrake repair,100\nTransmission,900`);
+    assert.ok(table.pendingHeaderRows, row);
+  }
+  // What may be remembered between uploads is unchanged: exact plain labels only.
+  for (const label of ["Amount ($)", "Est. Total", "Total $", "Declined Services"]) assert.equal(verifiedHeaderLabel(label), null, label);
 });

@@ -19,11 +19,11 @@ export function buildSummaryText({
   analyzedAt: Date;
 }): string {
   const money = moneyFormat(a.showCents);
-  const lines = [`${BRAND.name} declined-work summary`];
+  const lines = [`${BRAND.name} declined-work review`];
   if (isSample) lines.push("SAMPLE REPORT: made-up data, not a real shop");
   lines.push(
     "",
-    `Total declined work: ${money(a.total)}`,
+    `Reported declined value: ${money(a.total)}`,
     `Opportunities: ${a.count.toLocaleString("en-US")}`,
     `Average opportunity: ${formatAverage(a.average, a.showCents)}`,
     "Values are reported declined estimates. Recovery is not tracked.",
@@ -39,7 +39,7 @@ export function buildSummaryText({
       .slice(0, 3)
       .map((o, i) => `${i + 1}. ${o.service} — ${money(o.amount)}`),
     "",
-    "Generated from:",
+    "Source report:",
     fileName,
     `Analyzed ${formatDateTime(analyzedAt)}`,
   );

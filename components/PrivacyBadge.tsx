@@ -26,7 +26,7 @@ export default function PrivacyBadge({
       trigger={
         <>
           <LockIcon className="h-3.5 w-3.5 shrink-0" />
-          Private scan · Processed locally
+          Private review · On this device
         </>
       }
     >
@@ -39,7 +39,7 @@ export default function PrivacyBadge({
       </p>
       <p className="text-ink-3">
         ReclaimBay records limited product-usage events, such as visits,
-        completed scans, and exports, to understand how the product is used.
+        completed reviews, and exports, to understand how the product is used.
         Your uploaded report, customer information, and declined-work data are
         never sent to ReclaimBay.
       </p>

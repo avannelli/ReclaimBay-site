@@ -21,7 +21,7 @@ interface FieldDef {
   /** Headers containing any of these tokens are never a match. */
   exclude?: string[];
   /** Content check: the column's values must parse as this kind of data. */
-  check?: "amount" | "date" | "unique";
+  check?: "amount" | "date" | "unique" | "text";
 }
 
 export const FIELD_DEFS: Record<FieldKey, FieldDef> = {
@@ -35,7 +35,7 @@ export const FIELD_DEFS: Record<FieldKey, FieldDef> = {
       "deferred amount", "deferred total", "estimate amount", "estimate total",
       "estimated total", "estimated amount", "recommended amount", "line total",
       "grand total", "total price", "total amount", "est total", "quoted amount",
-      "dollar amount", "declined price", "declined cost", "estimate price",
+      "dollar amount", "declined price", "declined cost", "estimate price", "job total",
     ],
     weak: ["amount", "total", "price", "cost", "value", "estimate", "quote", "declined", "deferred", "dollars", "charge", "revenue", "sales"],
     exclude: ["date", "number", "no", "num", "id", "tax", "qty", "quantity", "hours", "hrs", "phone", "year", "mileage", "odometer", "miles"],
@@ -44,6 +44,8 @@ export const FIELD_DEFS: Record<FieldKey, FieldDef> = {
     label: "Service / repair",
     required: true,
     ui: true,
+    // A "Labor" or "Job" header can hold dollars: the values must read as descriptions.
+    check: "text",
     strong: [
       "service description", "job description", "repair description", "work description",
       "declined service", "declined work", "declined repair", "deferred service",
@@ -212,11 +214,21 @@ const cellText = (cell: RawCell | undefined): string | undefined => {
 
 // ---------- detection ----------
 
+/**
+ * A service description: words, not a number, price, or date. Numbers inside
+ * a description are fine ("Replace 4 tires", "Battery group 48").
+ */
+const describesService = (cell: RawCell) => {
+  if (typeof cell !== "string") return false;
+  const s = cell.trim();
+  return (s.match(/[a-z]/gi) ?? []).length >= 2 && parseAmount(s) === null && parseDate(s) === null;
+};
+
 /** Share of non-empty sampled cells in a column that parse as the given kind. */
 function contentMatchRatio(
   table: ParsedTable,
   col: number,
-  kind: "amount" | "date" | "unique",
+  kind: "amount" | "date" | "unique" | "text",
 ): number {
   if (kind === "unique") {
     // Trusted as a unique ID only if nearly every row has a value and most
@@ -228,14 +240,14 @@ function contentMatchRatio(
     if (values.length < table.rows.length * 0.9) return 0;
     return new Set(values).size / values.length >= 0.75 ? 1 : 0;
   }
-  const parse = kind === "amount" ? parseAmount : parseDate;
+  const matches = kind === "text" ? describesService : (cell: RawCell) => (kind === "amount" ? parseAmount : parseDate)(cell) !== null;
   let filled = 0;
   let ok = 0;
   for (const row of table.rows.slice(0, SAMPLE_SIZE)) {
     const cell = row[col];
     if (cell === null || cell === undefined || cellText(cell) === undefined && !(cell instanceof Date)) continue;
     filled++;
-    if (parse(cell) !== null) ok++;
+    if (matches(cell)) ok++;
   }
   return filled === 0 ? 0 : ok / filled;
 }

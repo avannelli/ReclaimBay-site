@@ -1,770 +1,594 @@
 import type { jsPDF } from "jspdf";
-import { RECENT_DAYS } from "./analyze";
 import { BRAND } from "./brand";
-import {
-  allocatePercents,
-  formatAge,
-  formatAverage,
-  formatDate,
-  formatDateTime,
-  moneyFormat,
-  undatedSplitNote,
-} from "./format";
-import type { Analysis, Bucket, Opportunity } from "./types";
+import { formatDate, formatDateTime, moneyFormat } from "./format";
+import type { Analysis, Opportunity } from "./types";
 
-/*
- * One-click executive-summary PDF, drawn directly with jsPDF (not a
- * screenshot). Runs entirely in the browser; nothing is sent anywhere.
- */
-
-// Mirrors the color tokens in app/globals.css.
+/* A print-native review, drawn locally with jsPDF. No DOM capture or network requests. */
 const C = {
-  navy: "#0c253b",
-  navyDeep: "#071725",
-  amber: "#d9901a",
-  amberHover: "#b96f0d",
-  amberSoft: "#fff5df",
-  amberInk: "#975e0b",
-  amberLight: "#eecd98", // amber at 45% on white, as used for 31–90 days
-  emerald: "#168a5b",
-  emeraldBright: "#3cc18a",
-  ink: "#0f172a",
-  ink2: "#475569",
-  ink3: "#64748b",
-  line: "#e2e8f0",
-  canvas: "#f7f9fc",
-  slate100: "#f1f5f9",
-  slate300: "#cbd5e1",
-  slate400: "#94a3b8",
-  navyBar: "#30465a", // navy at 85% on white
-  white: "#ffffff",
+  navy: "#0b2238",
+  amber: "#f2a51a",
+  ink: "#10263c",
+  muted: "#44576b",
+  line: "#dee2dd",
 };
-
 const PAGE_W = 612; // US Letter, points
-const PAGE_H = 792;
-const M = 40;
+const M = 48;
 const W = PAGE_W - M * 2;
-const BOTTOM = PAGE_H - 52; // content stops above the footer
-const TOP_CONT = 52; // content start on continuation pages
-const TABLE_ROWS = 25;
-
-const AGE_COLORS = [C.amber, C.amberLight, C.slate400, C.slate300, C.slate300];
-const categoryColor = (i: number) =>
-  i === 0 ? C.amber : i < 4 ? C.navyBar : C.slate400;
+const BOTTOM = 716;
+const BODY_TOP = 100;
+const CALCULATION_NOTE =
+  "Readable, positive declined amounts are totaled. Included jobs are ranked by value, then newer date on ties. Identical records sharing a unique record ID are counted once. Matching records without a unique ID remain in the total and are flagged for review.";
+const FINAL_NOTE =
+  "Before following up, confirm job status and whether the work was completed elsewhere. These are reported estimates, not recovered revenue. ReclaimBay does not track recovery or contact your customers.";
 
 export interface SummaryInput {
   analysis: Analysis;
   fileName: string;
   isSample: boolean;
-  /** File-quality notes, exactly as shown on the results page. */
+  /** Report checks, exactly as shown in the browser report. */
   notes: string[];
   /** When the report was analyzed, in the viewer's local time. */
   analyzedAt: Date;
 }
 
-// Built-in PDF fonts cover Latin-1 plus a few typographic marks. Anything
-// else (emoji, other scripts) becomes "?" rather than garbled output.
+// Reliable built-in PDF fonts: Helvetica body/data, Times for editorial headings.
+// Preserve the existing Latin-1 fallback; unsupported characters become "?".
 const EXTRA_OK = new Set("–—‘’“”•…€™");
 const clean = (s: string) =>
   Array.from(s)
-    .map((ch) => (ch.charCodeAt(0) <= 0xff || EXTRA_OK.has(ch) ? ch : "?"))
+    .map((ch) => {
+      if (ch === "\n") return ch;
+      if (ch.charCodeAt(0) < 32 || ch.charCodeAt(0) === 127) return " ";
+      return ch.charCodeAt(0) <= 0xff || EXTRA_OK.has(ch) ? ch : "?";
+    })
     .join("");
 
-const plural = (n: number, one: string, many: string) =>
-  `${n.toLocaleString("en-US")} ${n === 1 ? one : many}`;
+/** Also used by PDF tests; the same local document is passed to the download. */
+export async function createSummaryPdf(input: SummaryInput): Promise<jsPDF> {
+  const [{ jsPDF: JsPDF }, { PDF_LOGO_LOCKUP }] = await Promise.all([
+    import("jspdf"),
+    import("./brandRaster"),
+  ]);
+  const doc = new JsPDF({ unit: "pt", format: "letter", compress: true });
+  doc.setProperties({
+    title: `${BRAND.name} — Declined Work Revenue Review`,
+    creator: BRAND.name,
+  });
+  new SummaryWriter(doc, input, PDF_LOGO_LOCKUP).write();
+  return doc;
+}
 
 export async function downloadSummaryPdf(input: SummaryInput, saveAs: string) {
-  const [{ jsPDF: JsPDF }, logos] = await Promise.all([import("jspdf"), import("./brandRaster")]);
-  const doc = new JsPDF({ unit: "pt", format: "letter", compress: true });
-  doc.setProperties({ title: `${BRAND.name} declined-work report`, creator: BRAND.name });
-  new SummaryWriter(doc, input, { full: logos.PDF_LOGO_FULL, lockup: logos.PDF_LOGO_LOCKUP }).write();
+  const doc = await createSummaryPdf(input);
   doc.save(saveAs);
 }
 
-/** A PNG render of the logo (lib/brandRaster.ts). */
 interface LogoImage {
   data: string;
   width: number;
   height: number;
 }
-
-/** Where the wordmark's baseline sits, as a fraction of the logo's height. */
-const LOGO_BASELINE = 0.709;
-
 interface TextOpts {
   size: number;
   color?: string;
   bold?: boolean;
-  align?: "left" | "right" | "center";
-  charSpace?: number;
+  editorial?: boolean;
+  align?: "left" | "right";
+}
+interface RowLine {
+  text: string;
+  size: number;
+  bold?: boolean;
+  color: string;
+  leading: number;
 }
 
 class SummaryWriter {
-  private y = M;
+  private y = BODY_TOP;
   private readonly a: Analysis;
-  /** The report's money format, matching the on-screen results. */
   private readonly money: (n: number) => string;
+  private readonly col = {
+    job: M + 28,
+    jobW: 300,
+    date: M + 344,
+    value: M + W,
+    valueW: 90,
+  };
 
   constructor(
     private readonly doc: jsPDF,
     private readonly input: SummaryInput,
-    private readonly logos: { full: LogoImage; lockup: LogoImage },
+    private readonly logo: LogoImage,
   ) {
     this.a = input.analysis;
-    this.money = moneyFormat(input.analysis.showCents);
+    this.money = moneyFormat(this.a.showCents);
   }
 
-  // ------------------------------------------------------------ primitives
-
-  private font(size: number, bold = false) {
-    this.doc.setFont("helvetica", bold ? "bold" : "normal");
+  private font(size: number, bold = false, editorial = false) {
+    this.doc.setFont(
+      editorial ? "times" : "helvetica",
+      editorial ? "italic" : bold ? "bold" : "normal",
+    );
     this.doc.setFontSize(size);
   }
 
-  private text(str: string, x: number, y: number, o: TextOpts) {
-    this.font(o.size, o.bold);
-    this.doc.setTextColor(o.color ?? C.ink);
-    const s = clean(str);
-    if (o.align === "right" && o.charSpace) x -= o.charSpace * (s.length - 1);
-    this.doc.text(s, x, y, {
-      align: o.align ?? "left",
-      charSpace: o.charSpace ?? 0,
+  private text(str: string, x: number, y: number, opts: TextOpts) {
+    this.font(opts.size, opts.bold, opts.editorial);
+    this.doc.setTextColor(opts.color ?? C.ink);
+    this.doc.text(clean(str), x, y, {
+      align: opts.align ?? "left",
       baseline: "alphabetic",
     });
   }
 
-  private width(str: string, size: number, bold = false, charSpace = 0) {
+  private width(str: string, size: number, bold = false) {
     this.font(size, bold);
-    const s = clean(str);
-    return this.doc.getTextWidth(s) + charSpace * Math.max(s.length - 1, 0);
+    return this.doc.getTextWidth(clean(str));
   }
 
-  /** Largest font size (down to `min`) at which the text fits `maxW`. */
-  private fit(str: string, maxW: number, start: number, min: number, bold = true) {
+  private fit(str: string, width: number, start: number, min = 9) {
     let size = start;
-    while (size > min && this.width(str, size, bold) > maxW) size -= 0.5;
+    while (size > min && this.width(str, size, true) > width) size -= 0.5;
     return size;
   }
 
-  private wrap(str: string, maxW: number, size: number, bold = false, maxLines?: number) {
+  private wrap(
+    str: string,
+    width: number,
+    size: number,
+    bold = false,
+    maxLines?: number,
+  ): string[] {
     this.font(size, bold);
-    let lines = this.doc.splitTextToSize(clean(str), maxW) as string[];
-    if (maxLines && lines.length > maxLines) {
-      lines = lines.slice(0, maxLines);
-      let last = lines[maxLines - 1];
-      while (last.length > 1 && this.doc.getTextWidth(`${last}...`) > maxW) {
-        last = last.slice(0, -1);
-      }
-      lines[maxLines - 1] = `${last.trimEnd()}...`;
-    }
-    return lines;
+    const lines = this.doc.splitTextToSize(clean(str), width - 3) as string[];
+    if (!maxLines || lines.length <= maxLines) return lines;
+    const result = lines.slice(0, maxLines);
+    let last = result[maxLines - 1];
+    while (last.length && this.width(`${last}...`, size, bold) > width)
+      last = last.slice(0, -1);
+    result[maxLines - 1] = `${last.trimEnd()}...`;
+    return result;
   }
 
-  private truncate(str: string, maxW: number, size: number, bold = false) {
-    return this.wrap(str, maxW, size, bold, 1)[0] ?? "";
-  }
-
-  private rect(x: number, y: number, w: number, h: number, fill: string, r = 0) {
-    this.doc.setFillColor(fill);
-    if (r > 0) this.doc.roundedRect(x, y, w, h, r, r, "F");
-    else this.doc.rect(x, y, w, h, "F");
-  }
-
-  private hline(y: number, color = C.line, x1 = M, x2 = M + W, weight = 0.6) {
+  private rule(
+    y: number,
+    color = C.line,
+    weight = 0.6,
+    left = M,
+    right = M + W,
+  ) {
     this.doc.setDrawColor(color);
     this.doc.setLineWidth(weight);
-    this.doc.line(x1, y, x2, y);
+    this.doc.line(left, y, right, y);
   }
 
-  /**
-   * The ReclaimBay logo in its reverse version, for the navy bands. Placed so
-   * its wordmark sits on `baseline`; `h` is its height. Returns its width.
-   */
-  private logo(img: LogoImage, x: number, baseline: number, h: number) {
-    const w = (h * img.width) / img.height;
-    this.doc.addImage(img.data, "PNG", x, baseline - LOGO_BASELINE * h, w, h, undefined, "NONE");
-    return w;
+  private pageHeader() {
+    // Reuse the approved reverse logo on a compact navy label, rather than a full-page band.
+    this.doc.setFillColor(C.navy);
+    this.doc.rect(M, 36, 128, 30, "F");
+    const height = 21;
+    this.doc.addImage(
+      this.logo.data,
+      "PNG",
+      M + 10,
+      40,
+      (height * this.logo.width) / this.logo.height,
+      height,
+    );
+    this.text("DECLINED-WORK REVIEW", M + W, 49, {
+      size: 9,
+      color: C.muted,
+      align: "right",
+    });
+    this.text(
+      this.input.isSample
+        ? "SAMPLE REPORT · FICTIONAL DATA"
+        : "LOCAL REPORT ANALYSIS",
+      M + W,
+      65,
+      {
+        size: 8,
+        color: C.muted,
+        align: "right",
+      },
+    );
+    this.rule(82);
+    this.y = BODY_TOP;
   }
-
-  private dot(x: number, y: number, color: string, r = 2.4) {
-    this.doc.setFillColor(color);
-    this.doc.circle(x, y, r, "F");
-  }
-
-  // ------------------------------------------------------------ pagination
 
   private newPage() {
     this.doc.addPage();
-    this.rect(0, 0, PAGE_W, 26, C.navy);
-    this.rect(0, 26, PAGE_W, 1.2, C.amber);
-    const lw = this.logo(this.logos.lockup, M, 17, 15);
-    this.text("Declined-work review", M + lw + 8, 17, {
-      size: 8,
-      color: C.slate400,
+    this.pageHeader();
+  }
+  private ensure(height: number) {
+    if (this.y + height > BOTTOM) this.newPage();
+  }
+
+  /** Paragraphs flow at line boundaries; callers reserve headings with their first lines. */
+  private paragraph(
+    str: string,
+    opts: TextOpts = { size: 10.5, color: C.muted },
+    width = W,
+    leading = 13,
+  ) {
+    const lines = this.wrap(str, width, opts.size, opts.bold);
+    for (const line of lines) {
+      this.ensure(leading);
+      this.text(line, M, this.y + opts.size, opts);
+      this.y += leading;
+    }
+    this.y += 8;
+  }
+
+  private section(title: string, minimumBody = 28) {
+    this.ensure(32 + minimumBody);
+    this.y += 8;
+    this.text(title, M, this.y + 16, {
+      size: 19,
+      editorial: true,
+      color: C.navy,
     });
-    if (this.input.isSample) {
-      this.text("SAMPLE REPORT", M + W, 17, {
-        size: 7.5,
-        bold: true,
-        color: C.amber,
-        align: "right",
-        charSpace: 0.8,
-      });
-    }
-    this.y = TOP_CONT;
+    this.y += 24;
   }
-
-  /** Starts a new page unless `h` more points fit on this one. */
-  private ensure(h: number) {
-    if (this.y + h > BOTTOM) this.newPage();
-  }
-
-  private footers() {
-    const pages = this.doc.getNumberOfPages();
-    for (let p = 1; p <= pages; p++) {
-      this.doc.setPage(p);
-      const fy = PAGE_H - 30;
-      this.hline(fy - 10);
-      let x = M;
-      if (this.input.isSample) {
-        this.text("SAMPLE REPORT", x, fy, {
-          size: 7,
-          bold: true,
-          color: C.amberInk,
-          charSpace: 0.6,
-        });
-        x += this.width("SAMPLE REPORT", 7, true, 0.6) + 8;
-      }
-      this.text(
-        `${BRAND.name} · Reported declined estimates. Recovery is not tracked. Generated on your device.`,
-        x,
-        fy,
-        { size: 7, color: C.ink3 },
-      );
-      this.text(`Page ${p} of ${pages}`, M + W, fy, {
-        size: 7,
-        color: C.ink3,
-        align: "right",
-      });
-    }
-  }
-
-  // ------------------------------------------------------------ sections
 
   write() {
-    this.header();
-    this.hero();
-    this.kpis();
-    if (this.a.hasDates) {
-      this.recency();
-      this.breakdown(
-        "When the work was declined",
-        "Declined value by days since the estimate.",
-        this.a.ageBuckets,
-        (_, i) => AGE_COLORS[i] ?? C.slate300,
-        false,
-        this.a.undated,
-      );
-    }
-    this.breakdown(
-      "Where declined value is concentrated",
-      "Grouped by service category.",
-      this.a.categories,
-      (_, i) => categoryColor(i),
-      true,
-    );
+    this.pageHeader();
+    this.summary();
+    this.shortlist();
+    // The findings page is followed by a complete working list, never capped at 25 jobs.
+    this.newPage();
     this.table();
-    this.notes();
+    this.evidence();
+    this.methodology();
+    this.nextStep();
     this.footers();
   }
 
-  private header() {
-    const { isSample, fileName, analyzedAt } = this.input;
-    this.rect(0, 0, PAGE_W, 78, C.navy);
-    this.rect(0, 78, PAGE_W, 2, C.amber);
-
-    // The full logo, tagline included.
-    this.logo(this.logos.full, M, 48, 44);
-
-    this.text(`Analyzed ${formatDateTime(analyzedAt)}`, M + W, 36, {
-      size: 8.5,
-      color: C.slate300,
-      align: "right",
+  private summary() {
+    this.text("Declined Work Revenue Review", M, this.y + 25, {
+      size: 25,
+      color: C.navy,
     });
-    this.text(this.truncate(`Source: ${fileName}`, 230, 8), M + W, 50, {
-      size: 8,
-      color: C.slate400,
-      align: "right",
+    this.y += 46;
+    this.paragraph(`Analyzed ${formatDateTime(this.input.analyzedAt)}`, {
+      size: 10,
+      color: C.muted,
     });
-    this.y = 98;
-
-    if (isSample) {
-      this.rect(M, this.y, W, 26, C.amberSoft, 5);
-      this.rect(M, this.y, 3, 26, C.amber);
-      this.text("SAMPLE REPORT", M + 14, this.y + 16.5, {
-        size: 8,
-        bold: true,
-        color: C.amberInk,
-        charSpace: 1,
-      });
-      this.text(
-        "Built from made-up data to show what a scan looks like. These are not real customer records.",
-        M + 14 + this.width("SAMPLE REPORT", 8, true, 1) + 10,
-        this.y + 16.5,
-        { size: 8, color: C.ink2 },
+    this.paragraph(`Source report: ${this.input.fileName}`, {
+      size: 10,
+      color: C.muted,
+    });
+    if (this.input.isSample)
+      this.paragraph(
+        "Fictional data for a sample review. These are not real customer jobs.",
+        { size: 10, color: C.muted },
       );
-      this.y += 38;
-    }
-  }
-
-  private hero() {
-    const a = this.a;
-    const h = 128;
-    const x = M;
-    const y = this.y;
-    this.rect(x, y, W, h, C.navyDeep, 10);
-    this.rect(x + 16, y + h - 2, W - 32, 2, C.amber);
-
-    const lead = a.ranked.slice(0, 5);
-    const showLead = a.count > 5;
-    const leftW = showLead ? W - 220 : W - 48;
-
-    this.text("DECLINED WORK IDENTIFIED", x + 24, y + 30, {
-      size: 7.5,
+    this.ensure(135);
+    const top = this.y + 4;
+    this.rule(top, C.navy, 1);
+    this.rule(top, C.amber, 2, M, M + 32);
+    this.text("REPORTED DECLINED VALUE", M, top + 22, {
+      size: 9,
       bold: true,
-      color: C.amber,
-      charSpace: 1.4,
+      color: C.muted,
     });
-    const total = this.money(a.total);
-    this.text(total, x + 24, y + 72, {
-      size: this.fit(total, leftW, 40, 20),
+    this.text("OPPORTUNITIES TO REVIEW", M + 354, top + 22, {
+      size: 9,
       bold: true,
-      color: C.white,
+      color: C.muted,
     });
-
-    // "38 opportunities found  ·  $10,456 declined in the last 90 days"
-    let tx = x + 24;
-    const ty = y + 100;
-    const count = a.count.toLocaleString("en-US");
-    this.text(count, tx, ty, { size: 9.5, bold: true, color: C.white });
-    tx += this.width(count, 9.5, true) + 3;
-    const found = `${a.count === 1 ? "opportunity" : "opportunities"} found`;
-    this.text(found, tx, ty, { size: 9.5, color: C.slate300 });
-    tx += this.width(found, 9.5);
-    if (a.hasDates && a.recency.recent.count > 0) {
-      tx += 14;
-      this.dot(tx, ty - 3, C.emeraldBright, 2);
-      tx += 7;
-      const recent = this.money(a.recency.recent.value);
-      this.text(recent, tx, ty, { size: 9.5, bold: true, color: C.emeraldBright });
-      tx += this.width(recent, 9.5, true) + 3;
-      this.text(`declined in the last ${RECENT_DAYS} days`, tx, ty, {
-        size: 9.5,
-        color: C.slate300,
-      });
-    }
-
-    if (showLead) {
-      const leadValue = lead.reduce((s, o) => s + o.amount, 0);
-      const pct = Math.round((leadValue / a.total) * 100);
-      const px = x + W - 196;
-      const py = y + 18;
-      const pw = 176;
-      this.rect(px, py, pw, h - 36, C.navy, 8);
-      this.text("LARGEST 5 OPPORTUNITIES", px + 14, py + 20, {
-        size: 6.5,
-        bold: true,
-        color: C.slate400,
-        charSpace: 1,
-      });
-      const lv = this.money(leadValue);
-      this.text(lv, px + 14, py + 46, {
-        size: this.fit(lv, pw - 28, 20, 11),
-        bold: true,
-        color: C.white,
-      });
-      this.rect(px + 14, py + 58, pw - 28, 4, "#1c3148", 2);
-      this.rect(px + 14, py + 58, Math.max((pw - 28) * (pct / 100), 3), 4, C.amber, 2);
-      this.text(`${pct}%`, px + 14, py + 78, { size: 8, bold: true, color: C.amber });
-      this.text(
-        "of all declined value",
-        px + 14 + this.width(`${pct}%`, 8, true) + 3,
-        py + 78,
-        { size: 8, color: C.slate400 },
-      );
-    }
-    this.y = y + h + 14;
-  }
-
-  private kpis() {
-    const a = this.a;
-    const [recentPct] = allocatePercents([a.recency.recent.value, a.recency.older.value]);
-    const cards: { label: string; value: string; note?: string; accent: string; color: string }[] = [
-      {
-        label: "Declined opportunities",
-        value: a.count.toLocaleString("en-US"),
-        note: "Opportunities included in this analysis",
-        accent: C.slate400,
-        color: C.ink,
-      },
-      {
-        label: "Average opportunity",
-        value: formatAverage(a.average, a.showCents),
-        note: "Per declined job",
-        accent: C.navy,
-        color: C.navy,
-      },
-      {
-        label: "Highest-value opportunity",
-        value: this.money(a.highest.amount),
-        note: a.highest.service,
-        accent: C.amber,
-        color: C.amberHover,
-      },
-    ];
-    if (a.hasDates) {
-      cards.push({
-        label: `Declined in last ${RECENT_DAYS} days`,
-        value: this.money(a.recency.recent.value),
-        note: `${recentPct}% of dated declined value`,
-        accent: C.emerald,
-        color: C.emerald,
-      });
-    }
-
-    const gap = 10;
-    const cw = (W - gap * (cards.length - 1)) / cards.length;
-    const h = 86;
-    cards.forEach((c, i) => {
-      const x = M + i * (cw + gap);
-      const y = this.y;
-      this.rect(x, y, cw, h, C.line, 6);
-      this.rect(x + 0.7, y + 0.7, cw - 1.4, h - 1.4, C.white, 5.5);
-      this.rect(x + 6, y + 0.7, cw - 12, 2.2, c.accent);
-      const inner = cw - 24;
-      const labelLines = this.wrap(c.label.toUpperCase(), inner - 14, 6.5, true, 2);
-      labelLines.forEach((l, j) =>
-        this.text(l, x + 12, y + 18 + j * 8.5, { size: 6.5, bold: true, color: C.ink3, charSpace: 0.4 }),
-      );
-      this.text(c.value, x + 12, y + 50, {
-        size: this.fit(c.value, inner, 17, 9),
-        bold: true,
-        color: c.color,
-      });
-      if (c.note) {
-        this.wrap(c.note, inner, 7, false, 2).forEach((l, j) =>
-          this.text(l, x + 12, y + 64 + j * 9, { size: 7, color: C.ink3 }),
-        );
-      }
+    const total = this.money(this.a.total);
+    this.text(total, M, top + 65, {
+      size: this.fit(total, 328, 36, 18),
+      bold: true,
+      color: C.navy,
     });
-    this.y += h + 22;
-  }
-
-  private sectionTitle(title: string, subtitle?: string) {
-    this.rect(M, this.y - 1, 3, 12, C.navy, 1.5);
-    this.text(title, M + 10, this.y + 9, { size: 11, bold: true, color: C.navy });
-    if (subtitle) this.text(subtitle, M + 10, this.y + 22, { size: 8, color: C.ink3 });
-    this.y += subtitle ? 34 : 22;
-  }
-
-  private recency() {
-    const { recent, older } = this.a.recency;
-    const [rp, op] = allocatePercents([recent.value, older.value]);
-    const undatedNote =
-      this.a.undatedCount > 0
-        ? undatedSplitNote(this.a.undatedCount, this.a.undated.value, this.money)
-        : undefined;
-    this.ensure(undatedNote ? 128 : 110);
-    this.sectionTitle(
-      "How recently the work was declined",
-      `Split at ${RECENT_DAYS} days since the work was declined.`,
+    this.text(this.a.count.toLocaleString("en-US"), M + 354, top + 65, {
+      size: 32,
+      color: C.navy,
+    });
+    this.y = top + 88;
+    this.paragraph(
+      "Included declined work from your report. Current job status and any recovery need your review.",
     );
-    const y = this.y;
-    this.rect(M, y, W, 8, C.slate100, 4);
-    const total = recent.value + older.value || 1;
-    const rw = recent.value > 0 ? Math.max((W - 3) * (recent.value / total), 4) : 0;
-    const ow = older.value > 0 ? W - 3 - rw : 0;
-    if (rw) this.rect(M, y, rw + (ow ? 0 : 3), 8, C.amber, 4);
-    if (ow) this.rect(M + rw + 3, y, ow, 8, C.slate300, 4);
-
-    const cols: [Bucket, number, string, boolean][] = [
-      [recent, rp, C.amber, false],
-      [older, op, C.slate300, true],
-    ];
-    for (const [b, pct, color, right] of cols) {
-      const x = right ? M + W : M;
-      const align = right ? "right" : "left";
-      const label = b.label;
-      const lw = this.width(label, 8);
-      this.dot(right ? x - lw - 7 : x + 3, y + 25, color);
-      this.text(label, right ? x : x + 10, y + 28, { size: 8, color: C.ink2, align });
-      this.text(this.money(b.value), x, y + 50, { size: 17, bold: true, color: C.ink, align });
-      this.text(
-        `${b.count ? pct : 0}% of value · ${plural(b.count, "opportunity", "opportunities")}`,
-        x,
-        y + 63,
-        { size: 8, color: C.ink3, align },
-      );
-    }
-    if (undatedNote) {
-      this.hline(y + 74, C.line);
-      this.text(undatedNote, M, y + 88, { size: 8, color: C.ink3 });
-      this.y = y + 106;
-      return;
-    }
-    this.y = y + 88;
+    this.paragraph("Reported declined value is not recovered revenue.", {
+      size: 10.5,
+      bold: true,
+      color: C.navy,
+    });
   }
 
-  private breakdown(
-    title: string,
-    subtitle: string,
-    buckets: Bucket[],
-    color: (b: Bucket, i: number) => string,
-    withDots = false,
-    /** Undated work: listed after the bars without one, plus a total row. */
-    unknown?: Bucket,
-  ) {
-    const rowH = 19;
-    const extra = unknown && unknown.count > 0 ? unknown : undefined;
-    const all = extra ? [...buckets, extra] : buckets;
-    // Keep short sections together; long ones flow row by row.
-    this.ensure(Math.min(34 + (all.length + (extra ? 1 : 0)) * rowH + 8, 260));
-    this.sectionTitle(title, subtitle);
-    const shares = allocatePercents(all.map((b) => b.value));
-    const max = Math.max(...buckets.map((b) => b.value), 1);
-    const labelW = 130;
-    const barX = M + labelW + 8;
-    const barW = 190;
-    const amountX = barX + barW + 72;
-
-    buckets.forEach((b, i) => {
-      this.ensure(rowH);
-      const y = this.y;
-      const c = color(b, i);
-      let lx = M;
-      if (withDots) {
-        this.dot(M + 3, y + 5.5, c);
-        lx += 11;
-      }
-      this.text(this.truncate(b.label, labelW - (lx - M), 8.5), lx, y + 8.5, {
-        size: 8.5,
-        color: C.ink,
-      });
-      this.rect(barX, y + 3, barW, 5, C.slate100, 2.5);
-      this.rect(barX, y + 3, Math.max(barW * (b.value / max), b.value > 0 ? 3 : 0), 5, c, 2.5);
-      this.text(this.money(b.value), amountX, y + 8.5, {
-        size: 8.5,
+  private rowLines(
+    job: Opportunity,
+    width: number,
+    summary = false,
+  ): RowLine[] {
+    const service = this.wrap(
+      job.service,
+      width,
+      11,
+      true,
+      summary ? 3 : undefined,
+    );
+    const who =
+      [job.customer, job.vehicle].filter(Boolean).join(" / ") ||
+      "Customer / vehicle not provided";
+    const people = this.wrap(who, width, 10, false, summary ? 2 : undefined);
+    return [
+      ...service.map((text) => ({
+        text,
+        size: 11,
         bold: true,
         color: C.ink,
+        leading: 14,
+      })),
+      ...people.map((text) => ({
+        text,
+        size: 10,
+        color: C.muted,
+        leading: 13,
+      })),
+      ...(job.possibleDuplicate
+        ? [
+            {
+              text: "Possible duplicate — included in total",
+              size: 9.5,
+              color: C.muted,
+              leading: 13,
+            },
+          ]
+        : []),
+    ];
+  }
+
+  private shortlist() {
+    this.section("What deserves a second look", 75);
+    this.paragraph(
+      "Highest reported value first. Review the details before following up.",
+      { size: 10.5, color: C.muted },
+    );
+    this.a.ranked.slice(0, 3).forEach((job, index) => {
+      const lines = this.rowLines(job, 332, true);
+      const height = Math.max(
+        65,
+        lines.reduce((sum, line) => sum + line.leading, 0) + 21,
+      );
+      this.ensure(height);
+      const top = this.y;
+      this.text(String(index + 1).padStart(2, "0"), M, top + 17, {
+        size: 10,
+        color: C.muted,
+      });
+      let baseline = top + 17;
+      for (const line of lines) {
+        this.text(line.text, M + 28, baseline, line);
+        baseline += line.leading;
+      }
+      const value = this.money(job.amount);
+      this.text(value, M + W, top + 18, {
+        size: this.fit(value, 140, 13),
+        bold: true,
+        color: C.navy,
         align: "right",
       });
       this.text(
-        `${plural(b.count, "opportunity", "opportunities")} · ${shares[i]}% of value`,
+        job.date ? formatDate(job.date) : "Date not provided",
         M + W,
-        y + 8.5,
-        { size: 7.5, color: C.ink3, align: "right" },
+        top + 36,
+        { size: 9.5, color: C.muted, align: "right" },
       );
-      if (i < buckets.length - 1) this.hline(y + 14, C.slate100);
-      this.y += rowH;
+      this.y += height;
+      this.rule(this.y);
     });
-
-    if (extra) {
-      const summary = (
-        label: string,
-        b: Bucket,
-        pct: number,
-        bold: boolean,
-      ) => {
-        this.ensure(rowH);
-        const y = this.y;
-        this.hline(y - 5, C.line);
-        this.text(label, M, y + 8.5, { size: 8.5, bold, color: bold ? C.ink : C.ink2 });
-        this.text(this.money(b.value), amountX, y + 8.5, {
-          size: 8.5,
-          bold: true,
-          color: C.ink,
-          align: "right",
-        });
-        this.text(
-          `${plural(b.count, "opportunity", "opportunities")} · ${pct}% of value`,
-          M + W,
-          y + 8.5,
-          { size: 7.5, color: C.ink3, align: "right" },
-        );
-        this.y += rowH;
-      };
-      this.y += 4;
-      summary(extra.label, extra, shares[buckets.length], false);
-      summary(
-        "Total",
-        {
-          label: "Total",
-          count: all.reduce((s, b) => s + b.count, 0),
-          value: all.reduce((s, b) => s + b.value, 0),
-        },
-        shares.reduce((s, p) => s + p, 0),
-        true,
-      );
-    }
-    this.y += 18;
+    this.y += 14;
+    this.paragraph(
+      "The complete ranked list follows, with the source details retained for each job and the report's calculation notes.",
+    );
   }
-
-  // ------------------------------------------------------------ table
-
-  private readonly col = {
-    rank: M,
-    opp: M + 26,
-    oppW: 226,
-    cat: M + 264,
-    catW: 104,
-    date: M + 378,
-    dateW: 78,
-    amountR: M + W - 6,
-  };
 
   private tableHeader() {
-    const y = this.y;
-    this.rect(M, y, W, 20, C.canvas);
-    this.hline(y + 20);
-    const o = { size: 6.5, bold: true, color: C.ink3, charSpace: 0.8 } as const;
-    this.text("#", this.col.rank + 8, y + 13, o);
-    this.text("OPPORTUNITY", this.col.opp, y + 13, o);
-    this.text("CATEGORY", this.col.cat, y + 13, o);
-    this.text("DECLINED", this.col.date, y + 13, o);
-    this.text("AMOUNT", this.col.amountR, y + 13, { ...o, align: "right" });
-    this.y += 20;
+    const top = this.y;
+    this.rule(top, C.navy, 0.8);
+    const opts = { size: 8.5, bold: true, color: C.muted };
+    this.text("JOB", M, top + 18, opts);
+    this.text("SERVICE / CUSTOMER / VEHICLE", this.col.job, top + 18, opts);
+    this.text("DECLINED", this.col.date, top + 18, opts);
+    this.text("REPORTED", this.col.value, top + 12, {
+      ...opts,
+      align: "right",
+    });
+    this.text("VALUE", this.col.value, top + 23, { ...opts, align: "right" });
+    this.rule(top + 31);
+    this.y += 31;
   }
 
-  private rowLayout(o: Opportunity) {
-    const k = this.col;
-    const service = this.wrap(o.service, k.oppW, 9, true, 3);
-    const who = [o.customer, o.vehicle].filter(Boolean).join(" · ");
-    const whoLines = who ? this.wrap(who, k.oppW, 8, false, 2) : [];
-    const contact = [o.phone, o.email].filter(Boolean).join(" · ");
-    const contactLines = contact ? this.wrap(contact, k.oppW, 7, false, 1) : [];
-    const recent = o.ageDays !== undefined && o.ageDays <= RECENT_DAYS;
-    const tags = [recent && `Last ${RECENT_DAYS} days`, o.possibleDuplicate && "Possible duplicate"].filter(
-      Boolean,
-    ) as string[];
-    const catLines = this.wrap(o.category, k.catW - 10, 8, false, 2);
-    const left =
-      service.length * 11 + whoLines.length * 10 + contactLines.length * 9 + (tags.length ? 12 : 0);
-    const height = Math.max(left, catLines.length * 10, 22) + 16;
-    return { service, whoLines, contactLines, tags, catLines, height };
+  private tablePage() {
+    this.newPage();
+    this.text("Opportunities to review — continued", M, this.y + 17, {
+      size: 18,
+      editorial: true,
+      color: C.navy,
+    });
+    this.y += 32;
+    this.tableHeader();
   }
 
   private table() {
-    const a = this.a;
-    const rows = a.ranked.slice(0, TABLE_ROWS);
-    const first = this.rowLayout(rows[0]);
-    this.ensure(34 + 20 + first.height);
-    this.sectionTitle(
-      "Highest-value opportunities",
-      a.count > TABLE_ROWS
-        ? `The ${TABLE_ROWS} largest declined jobs in this report.`
-        : "The largest declined jobs in this report.",
+    const first = this.a.ranked[0];
+    this.section(
+      "Opportunities to review",
+      first
+        ? Math.min(
+            100,
+            this.rowLines(first, this.col.jobW).reduce(
+              (sum, l) => sum + l.leading,
+              0,
+            ) + 60,
+          )
+        : 60,
+    );
+    this.paragraph(
+      `All ${this.a.count.toLocaleString("en-US")} included jobs, in the report's existing ranking. Job numbers refer to this list.`,
+      { size: 10.5, color: C.muted },
     );
     this.tableHeader();
-
-    rows.forEach((o, i) => {
-      const L = this.rowLayout(o);
-      if (this.y + L.height > BOTTOM) {
-        this.newPage();
-        this.tableHeader();
-      }
-      const y = this.y;
-      const k = this.col;
-      const top = i < 3;
-
-      if (top) this.rect(M, y + 6, 2.5, L.height - 12, C.amber, 1);
-      this.rect(k.rank + 5, y + 8, 16, 16, top ? C.amberSoft : C.slate100, 4);
-      this.text(String(i + 1), k.rank + 13, y + 19, {
-        size: 7.5,
-        bold: true,
-        color: top ? C.amberInk : C.ink2,
-        align: "center",
-      });
-
-      let ly = y + 18;
-      L.service.forEach((l) => {
-        this.text(l, k.opp, ly, { size: 9, bold: true, color: C.ink });
-        ly += 11;
-      });
-      L.whoLines.forEach((l) => {
-        this.text(l, k.opp, ly, { size: 8, color: C.ink2 });
-        ly += 10;
-      });
-      L.contactLines.forEach((l) => {
-        this.text(l, k.opp, ly, { size: 7, color: C.ink3 });
-        ly += 9;
-      });
-      if (L.tags.length) {
-        let tx = k.opp;
-        L.tags.forEach((t, j) => {
-          const recentTag = j === 0 && t.startsWith("Last");
-          if (recentTag) {
-            this.dot(tx + 2, ly - 2.2, C.amber, 1.8);
-            tx += 7;
-          }
-          this.text(t, tx, ly, { size: 7, color: recentTag ? C.amberInk : C.ink3 });
-          tx += this.width(t, 7) + 10;
+    this.a.ranked.forEach((job, index) => {
+      const pending = this.rowLines(job, this.col.jobW);
+      const value = this.money(job.amount);
+      const valueSize = this.fit(value, this.col.valueW, 11);
+      const valueLines = this.wrap(value, this.col.valueW, valueSize, true);
+      const metadataHeight = Math.max(42, valueLines.length * 13 + 16);
+      const height = Math.max(
+        metadataHeight,
+        pending.reduce((sum, line) => sum + line.leading, 0) + 16,
+      );
+      // Normal rows remain intact. A row taller than a whole page continues at a text-line boundary.
+      if (this.y + height > BOTTOM && height <= BOTTOM - BODY_TOP - 63)
+        this.tablePage();
+      let continued = false;
+      do {
+        if (this.y + metadataHeight > BOTTOM) this.tablePage();
+        const capacity = BOTTOM - this.y - 16 - (continued ? 14 : 0);
+        let used = 0;
+        const lines: RowLine[] = [];
+        while (pending.length && used + pending[0].leading <= capacity) {
+          const line = pending.shift()!;
+          lines.push(line);
+          used += line.leading;
+        }
+        const top = this.y;
+        this.text(String(index + 1).padStart(2, "0"), M, top + 16, {
+          size: 9.5,
+          color: C.muted,
         });
-      }
-
-      this.dot(k.cat + 3, y + 15.5, C.slate400, 2);
-      L.catLines.forEach((l, j) =>
-        this.text(l, k.cat + 10, y + 18 + j * 10, { size: 8, color: C.ink2 }),
-      );
-
-      if (o.date && o.ageDays !== undefined) {
-        this.text(formatDate(o.date), k.date, y + 18, { size: 8, color: C.ink2 });
-        this.text(`${formatAge(o.ageDays)} ago`, k.date, y + 28, { size: 7, color: C.ink3 });
-      } else {
-        this.text("No date", k.date, y + 18, { size: 8, color: C.ink3 });
-      }
-
-      const amount = this.money(o.amount);
-      const amountW = k.amountR - (k.date + k.dateW + 6);
-      this.text(amount, k.amountR, y + 18.5, {
-        size: this.fit(amount, amountW, top ? 10.5 : 9.5, 6.5),
-        bold: true,
-        color: C.ink,
-        align: "right",
-      });
-
-      this.y += L.height;
-      this.hline(this.y, C.line);
+        let baseline = top + 16;
+        if (continued) {
+          this.text("Same job — continued", this.col.job, baseline, {
+            size: 9.5,
+            color: C.muted,
+          });
+          baseline += 14;
+        }
+        for (const line of lines) {
+          this.text(line.text, this.col.job, baseline, line);
+          baseline += line.leading;
+        }
+        this.text(
+          job.date ? formatDate(job.date) : "Not provided",
+          this.col.date,
+          top + 16,
+          { size: 9, color: C.muted },
+        );
+        valueLines.forEach((line, i) => {
+          this.text(line, this.col.value, top + 16 + i * 13, {
+            size: valueSize,
+            bold: true,
+            color: C.navy,
+            align: "right",
+          });
+        });
+        this.y += Math.max(metadataHeight, used + 16 + (continued ? 14 : 0));
+        this.rule(this.y);
+        if (pending.length) {
+          this.tablePage();
+          continued = true;
+        }
+      } while (pending.length);
     });
-
-    if (a.count > rows.length) {
-      this.ensure(22);
-      this.text(
-        `Showing the ${rows.length} largest of ${a.count.toLocaleString("en-US")} opportunities. Download the CSV for the full list.`,
-        M,
-        this.y + 14,
-        { size: 7.5, color: C.ink3 },
-      );
-      this.y += 22;
-    }
-    this.y += 18;
+    this.y += 8;
   }
 
-  private notes() {
-    const notes = this.input.notes;
-    const lines = notes.map((n) => this.wrap(n, W - 14, 8.5));
-    const h = 34 + (notes.length ? lines.reduce((s, l) => s + l.length * 11 + 4, 0) : 14);
-    this.ensure(Math.min(h, 200));
-    this.sectionTitle("About this analysis", "File-quality notes from this scan.");
-    if (!notes.length) {
-      this.text("No file-quality issues detected.", M, this.y + 4, { size: 8.5, color: C.ink2 });
-      this.y += 16;
-      return;
+  private evidence() {
+    this.section("Where the numbers come from", 56);
+    this.paragraph(
+      "Jobs show the service and reported amount retained from each included record, with customer, vehicle and date when available. Original row numbers, raw cells and record IDs are not retained; job numbers refer to this ranked list. Compare these details with your source export.",
+    );
+  }
+
+  private methodology() {
+    // Preserve the supplied checks, while making browser-only and positional references explicit in print.
+    const notes = this.input.notes.map((note) =>
+      note
+        .replace(
+          /Review (it|them) in the list below\./g,
+          "Review $1 in the opportunity list.",
+        )
+        .replace(
+          'shown as "Unknown / invalid date" in the age breakdown',
+          'shown as "Unknown / invalid date" in the browser report\'s age breakdown',
+        ),
+    );
+    const checksHeight = notes.length
+      ? 22 +
+        notes.reduce(
+          (height, note) => height + this.wrap(note, W, 10).length * 13 + 8,
+          0,
+        )
+      : 34;
+    const endingHeight =
+      32 +
+      this.wrap(CALCULATION_NOTE, W, 10.5).length * 13 +
+      8 +
+      checksHeight +
+      8 +
+      this.wrap(FINAL_NOTE, W, 10.5).length * 13 +
+      8;
+    // Keep a short calculation/closing block together instead of creating a page for only the final note.
+    if (endingHeight <= BOTTOM - BODY_TOP) this.ensure(endingHeight);
+    this.section("How the report was calculated", 56);
+    this.paragraph(CALCULATION_NOTE);
+    if (notes.length) {
+      const firstNoteHeight = this.wrap(notes[0], W, 10).length * 13 + 8;
+      this.ensure(22 + Math.min(firstNoteHeight, BOTTOM - BODY_TOP - 22));
+      this.text("Report checks", M, this.y + 11, {
+        size: 11,
+        bold: true,
+        color: C.navy,
+      });
+      this.y += 22;
+      for (const [index, note] of notes.entries()) {
+        const height = this.wrap(note, W, 10).length * 13 + 8;
+        if (index > 0) this.ensure(Math.min(height, BOTTOM - BODY_TOP));
+        this.paragraph(note, { size: 10, color: C.muted }, W, 13);
+      }
+    } else {
+      const q = this.a.quality;
+      this.paragraph(
+        q.skippedRows || q.confirmedDuplicateRows || q.possibleDuplicateRows
+          ? `Report checks: excluded amount rows ${q.skippedRows}; confirmed duplicates removed ${q.confirmedDuplicateRows}; extra matching rows retained ${q.possibleDuplicateRows}.`
+          : "Report checks: no amount exclusions or duplicate flags.",
+        { size: 10, color: C.muted },
+        W,
+        13,
+      );
     }
-    lines.forEach((ls) => {
-      this.ensure(ls.length * 11 + 4);
-      this.dot(M + 3, this.y + 1.5, C.slate400, 1.6);
-      ls.forEach((l, j) => this.text(l, M + 12, this.y + 4 + j * 11, { size: 8.5, color: C.ink2 }));
-      this.y += ls.length * 11 + 4;
-    });
+  }
+
+  private nextStep() {
+    this.ensure(8 + this.wrap(FINAL_NOTE, W, 10.5).length * 13 + 8);
+    this.rule(this.y + 4);
+    this.y += 8;
+    this.paragraph(FINAL_NOTE, { size: 10.5, color: C.navy });
+  }
+
+  private footers() {
+    const total = this.doc.getNumberOfPages();
+    for (let page = 1; page <= total; page++) {
+      this.doc.setPage(page);
+      this.rule(741);
+      this.text("Reported declined value is not recovered revenue.", M, 755, {
+        size: 8.5,
+        color: C.muted,
+      });
+      this.text(`Page ${page} of ${total}`, M + W, 755, {
+        size: 8.5,
+        color: C.muted,
+        align: "right",
+      });
+      this.text(`${BRAND.name} · Generated on your device.`, M, 769, {
+        size: 8,
+        color: C.muted,
+      });
+    }
   }
 }

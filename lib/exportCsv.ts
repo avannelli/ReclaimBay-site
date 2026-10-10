@@ -10,7 +10,7 @@ const HEADERS = [
   "Vehicle",
   "Phone",
   "Email",
-  "Declined amount",
+  "Reported declined value",
   "Declined date",
   "Age (days)",
   "Possible duplicate",

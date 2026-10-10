@@ -108,7 +108,7 @@ export default function SummaryBar({
       <div className="mx-auto flex h-14 max-w-300 items-center justify-between gap-3 px-4 sm:px-6 lg:px-8">
         <p className="flex min-w-0 items-baseline gap-2.5">
           <span className="eyebrow hidden text-opportunity xl:inline">
-            Declined work identified
+            Reported declined value
           </span>
           <span className="text-lg font-semibold tracking-tight tabular-nums">
             {format(total)}

@@ -22,6 +22,8 @@ export const BRAND = {
  *   app/icon.svg, favicon.ico, apple-icon.png   the mark on a navy tile
  */
 export const LOGO = {
+  /** Header: original letterforms with a smaller, optically aligned mark. */
+  header: { src: "/brand/reclaimbay-header.svg?v=balanced-mark", width: 140, height: 26 },
   /** Mark and wordmark: headers, footers, compact places. */
   lockup: { src: "/brand/reclaimbay-lockup.svg", width: 1824, height: 361 },
   /** The full logo with its tagline: where it is large enough to read. */

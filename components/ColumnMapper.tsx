@@ -105,7 +105,7 @@ export default function ColumnMapper({
           className="h-11 w-full rounded-lg border border-slate-300 bg-surface px-3 text-sm text-ink transition-colors hover:border-slate-400 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-navy"
         >
           <option value="">
-            {def.required ? "Select a column…" : "Not in my file"}
+            {def.required ? "Select a column…" : "Not in my report"}
           </option>
           {table.headers.map((h, i) => (
             <option key={i} value={i}>
@@ -130,8 +130,8 @@ export default function ColumnMapper({
             We couldn&apos;t identify this as a declined-work report.
           </h1>
           <p className="mt-3 text-ink-2">
-            Upload the correct report, or map the columns manually if this
-            file uses unusual headers.
+            Choose another report, or match the columns below if this
+            report uses unusual headers.
           </p>
         </>
       ) : (
@@ -143,7 +143,7 @@ export default function ColumnMapper({
             {/* After a failed scan, `initial` is the user's own mapping. */}
             {autoMatched > 0 && !error ? (
               <>
-                We matched {autoMatched} of {MAPPER_FIELDS.length} fields in{" "}
+                We matched {autoMatched} of {MAPPER_FIELDS.length} details in{" "}
                 <span className="font-medium text-ink">{table.fileName}</span>{" "}
                 automatically. Check the matches below and fill in anything
                 missing. Only the declined amount and service are required.
@@ -152,7 +152,7 @@ export default function ColumnMapper({
               <>
                 We weren&apos;t sure which columns in{" "}
                 <span className="font-medium text-ink">{table.fileName}</span>{" "}
-                hold what. Match them below. Only the declined amount and
+                describe each job. Match them below. Only the declined amount and
                 service are required.
               </>
             )}
@@ -186,10 +186,10 @@ export default function ColumnMapper({
         >
           <div>
             <p className="font-semibold text-ink">
-              This file doesn&apos;t look like a declined-work export.
+              We couldn&apos;t match the required columns.
             </p>
             <p className="mt-1 text-sm text-ink-2">
-              You can map the columns manually below, or upload the correct
+              Match the columns below, or choose another declined-work
               report.
             </p>
           </div>
@@ -198,7 +198,7 @@ export default function ColumnMapper({
             onClick={onCancel}
             className={`shrink-0 ${veryUnlikely ? primaryButton : secondaryButton}`}
           >
-            Upload a different file
+            Choose another report
           </button>
         </div>
       )}
@@ -215,12 +215,12 @@ export default function ColumnMapper({
       {veryUnlikely ? (
         <>
           <h2 className="mt-8 text-sm font-semibold text-ink-2">
-            Or map the columns manually
+            Or match the columns below
           </h2>
           <div className={`mt-3 ${card}`}>{REQUIRED_FIELDS.map(renderField)}</div>
           <details className="group mt-3 rounded-2xl border border-line bg-surface/70">
             <summary className="flex cursor-pointer list-none items-center justify-between gap-3 rounded-2xl px-4 py-3.5 text-sm font-medium text-ink transition-colors hover:bg-surface focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-navy sm:px-5 [&::-webkit-details-marker]:hidden">
-              Optional fields
+              Optional details
               <svg
                 aria-hidden
                 viewBox="0 0 16 16"
@@ -245,7 +245,7 @@ export default function ColumnMapper({
 
       <div className="mt-6 flex flex-col-reverse gap-3 sm:flex-row sm:justify-between">
         <button type="button" onClick={onCancel} className={secondaryButton}>
-          Upload a different file
+          Choose another report
         </button>
         <button
           type="button"
@@ -253,7 +253,7 @@ export default function ColumnMapper({
           onClick={() => onConfirm(mapping)}
           className={primaryButton}
         >
-          Scan for declined revenue
+          Review declined work
         </button>
       </div>
     </div>
