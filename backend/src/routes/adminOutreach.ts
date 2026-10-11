@@ -1,5 +1,5 @@
 import type { FastifyInstance, FastifyReply } from "fastify";
-import { outreachControlPage, outreachDetailPage, outreachMessagesPage, unsubscribeReviewsPage, type MessagesPageData } from "../admin/outreachViews.js";
+import { outreachControlPage, outreachDetailPage, outreachMessagesPage, unsubscribeReviewsPage, type CampaignApprovalForm, type MessagesPageData } from "../admin/outreachViews.js";
 import { sendingVerdict, type ProviderCheckMemo } from "../admin/sendingState.js";
 import type { Config } from "../config.js";
 import type { Db } from "../db.js";
@@ -121,7 +121,7 @@ export async function outreachRoutes(
     return html(reply, outreachDetailPage({ detail, invitation, canReconcile: sender.name === "gmail" && !!sender.lookupSent, ...extra }), reply.statusCode);
   };
 
-  const renderControl = async (reply: FastifyReply, extra: { notice?: string; errors?: string[] } = {}) => {
+  const renderControl = async (reply: FastifyReply, extra: { notice?: string; errors?: string[]; campaignForm?: CampaignApprovalForm } = {}) => {
     const now = new Date();
     const [sw, grouped, stuck, eligible, metrics, gmail, capacity, attention, activity, queue, openedInvitations, unsubscribeReviewCount] = await Promise.all([
       sendingSwitch(db),
@@ -234,12 +234,13 @@ export async function outreachRoutes(
   app.post<{ Body: Form }>("/admin/outreach/campaign/start", writeLimit, async (req, reply) => {
     const body = req.body ?? {};
     const messageIds = Object.keys(body).filter(k => k.startsWith("m:") && body[k] === "1").map(k => k.slice(2));
+    const campaignForm = { ...pick(body, ["name", "reason"]), messageIds, confirm: body.confirm === "1" };
     try {
       if (messageIds.some(id => !UUID_RE.test(id))) throw new ProspectError(["Choose existing messages from the list."]);
       await startCampaign(db, { name: body.name, reason: body.reason, confirm: body.confirm === "1", messageIds }, config);
       return reply.redirect("/admin/outreach?done=campaign_started", 303);
     } catch (err) {
-      return handleError(err, reply, (errors) => renderControl(reply, { errors }));
+      return handleError(err, reply, (errors) => renderControl(reply, { errors, campaignForm }));
     }
   });
 

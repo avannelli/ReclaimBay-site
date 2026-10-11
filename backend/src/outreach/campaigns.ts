@@ -31,9 +31,15 @@ export async function startCampaign(db: Db, input: { name: unknown; messageIds: 
   const name = typeof input.name === "string" ? input.name.trim() : "";
   const reason = typeof input.reason === "string" ? input.reason.trim().slice(0, 500) : "";
   const ids = [...new Set(input.messageIds)];
-  if (!input.confirm || !name || name.length > 120 || !reason || !ids.length || ids.length > MAX_CAMPAIGN_MESSAGES || ids.length !== input.messageIds.length) {
-    throw new ProspectError(["Name the campaign, choose 1–250 distinct existing messages, give a reason, and explicitly confirm approval."]);
-  }
+  const errors: string[] = [];
+  if (!name) errors.push("Campaign name is required.");
+  else if (name.length > 120) errors.push("Campaign name is too long (max 120).");
+  if (!reason) errors.push("Approval reason is required.");
+  if (!ids.length) errors.push("Select at least one existing message to approve.");
+  else if (ids.length > MAX_CAMPAIGN_MESSAGES) errors.push(`Select at most ${MAX_CAMPAIGN_MESSAGES} messages to approve.`);
+  if (ids.length !== input.messageIds.length) errors.push("Selected message IDs must be distinct; a message was selected more than once.");
+  if (!input.confirm) errors.push("You must explicitly confirm approval of the selected messages and recipients.");
+  if (errors.length) throw new ProspectError(errors);
   return db.$transaction(async (tx) => {
     await lockSendGate(tx);
     if ((await sendingPolicy(tx)).enabled) throw new ProspectError(["Switch sending OFF before starting or changing a campaign."]);

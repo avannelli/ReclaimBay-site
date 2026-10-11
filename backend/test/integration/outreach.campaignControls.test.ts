@@ -11,6 +11,7 @@ import { CFG, OPTS, mockSender } from "./outreachHelpers.js";
 import { buildApp } from "../../src/app.js";
 import { loadConfig } from "../../src/config.js";
 import { issueToken } from "../../src/admin/auth.js";
+import { browserCampaignPayload, FORM_BROWSER } from "./browserForm.js";
 
 describe("persisted admin campaign controls", { skip: skipReason }, () => {
   let db: Db;
@@ -23,6 +24,7 @@ describe("persisted admin campaign controls", { skip: skipReason }, () => {
     await addFixtureCollisionEvidence(db, p);
     return (await createOutreachDraft(db, p.id, OPTS)).outreach;
   };
+  const drafts = async (n: number) => { const rows = []; for (let i = 0; i < n; i++) rows.push(await draft()); return rows; };
   const start = (ids: string[], confirm = true) => startCampaign(db, { name: "Batch 1", messageIds: ids, confirm, reason: "Reviewed recipients and copy" }, CFG);
   const on = (sender: ReturnType<typeof mockSender>) => setSendingSwitch(db, true, "Explicit send authorization", CFG, sender);
   const clock = () => { let t = Date.now(); return () => new Date(t += 61_000); };
@@ -55,15 +57,24 @@ describe("persisted admin campaign controls", { skip: skipReason }, () => {
     assert.equal(await db.outreach.count({ where: { status: "queued" } }), 0);
   });
 
-  test("admin persists limits and explicitly approves only selected drafts; authentication and origin checks apply", async () => {
-    const o = await draft(), outside = await draft();
+  const adminApp = async () => {
     const secret = "campaign-test-secret-0123456789";
     const cfg = loadConfig({ DATABASE_URL: "postgres://localhost/test", ADMIN_SECRET: secret, TRUST_PROXY_HOPS: "0",
       OUTREACH_SENDING_ENABLED: "1", OUTREACH_SENDER_NAME: CFG.outreachSender.name!, OUTREACH_SENDER_EMAIL: CFG.outreachSender.email!,
       OUTREACH_POSTAL_ADDRESS: CFG.outreachSender.postalAddress!, PUBLIC_API_URL: CFG.publicApiUrl! });
     const sender = mockSender(), app = await buildApp(cfg, db, false, { outreachSender: sender });
     const headers = { cookie: `rb_admin=${issueToken(secret)}`, "content-type": "application/x-www-form-urlencoded" };
-    const post = (url: string, values: Record<string, string>, extra: Record<string, string> = {}) => app.inject({ method: "POST", url, headers: { ...headers, ...extra }, payload: new URLSearchParams(values).toString() });
+    const post = (url: string, values: Record<string, string> | URLSearchParams, extra: Record<string, string> = {}) => app.inject({ method: "POST", url, headers: { ...headers, ...extra }, payload: new URLSearchParams(values).toString() });
+    const controlPage = async () => (await app.inject({ method: "GET", url: "/admin/outreach", headers })).body;
+    return { app, sender, headers, post, controlPage };
+  };
+  /** The campaign form's message checkboxes as a browser submits them: a missing value attribute is sent as "on". */
+  const campaignCheckboxes = (page: string) => [...page.matchAll(/<input type="checkbox" name="(m:[^"]+)"([^>]*)>/g)]
+    .map(([, name, attrs]) => ({ name: name!, value: /\bvalue="([^"]*)"/.exec(attrs!)?.[1] ?? "on", checked: /\bchecked\b/.test(attrs!) }));
+
+  test("admin persists limits and explicitly approves only selected drafts; authentication and origin checks apply", async () => {
+    const o = await draft(), outside = await draft();
+    const { app, sender, headers, post } = await adminApp();
     try {
       assert.equal((await app.inject({ method: "POST", url: "/admin/outreach/limit", headers: { "content-type": "application/x-www-form-urlencoded" }, payload: "dailyLimit=25" })).statusCode, 303);
       assert.equal((await post("/admin/outreach/limit", { dailyLimit: "25", reason: "Launch" }, { origin: "https://evil.example" })).statusCode, 403);
@@ -82,6 +93,77 @@ describe("persisted admin campaign controls", { skip: skipReason }, () => {
       assert.match(page.body, /Campaign: Batch &#60;1&#62;/);
       assert.equal((await sendingPolicy(db)).enabled, false);
       assert.equal(sender.calls.length, 0, "admin routes queue only; no provider call");
+    } finally { await app.close(); }
+  });
+
+  test("admin form transmits nine selected existing messages by ID and queues exactly those nine", async () => {
+    const rows = await drafts(9);
+    const outside = await draft();
+    const { app, sender, post, controlPage } = await adminApp();
+    try {
+      const boxes = campaignCheckboxes(await controlPage());
+      assert.equal(boxes.length, 10);
+      assert.ok(boxes.every(b => b.value === "1" && !b.checked), "every message checkbox submits 1 and none is preselected");
+      const selected = boxes.filter(b => rows.some(o => b.name === `m:${o.id}`));
+      assert.equal(selected.length, 9);
+      const payload = new URLSearchParams({ name: "Batch 1 — October 2026", reason: "Reviewed recipients and copy" });
+      for (const b of selected) payload.append(b.name, b.value);
+      payload.append("confirm", "1");
+      const res = await post("/admin/outreach/campaign/start", payload);
+      assert.equal(res.statusCode, 303, res.body);
+      assert.equal(res.headers.location, "/admin/outreach?done=campaign_started");
+      assert.deepEqual((await db.outreach.findMany({ where: { status: "queued" }, select: { id: true } })).map(o => o.id).sort(), rows.map(o => o.id).sort());
+      assert.equal((await db.outreach.findUniqueOrThrow({ where: { id: outside.id } })).status, "draft");
+      assert.equal((await campaignControls(db)).active?.approved, 9);
+      assert.equal((await sendingPolicy(db)).enabled, false);
+      assert.equal(sender.calls.length, 0, "approval queues only; no provider call");
+    } finally { await app.close(); }
+  });
+
+  test("rejected approval names the problem, keeps the form open with entered values, and queues nothing", async () => {
+    const rows = await drafts(9), campaignsBefore = await db.outreachCampaign.count();
+    const { app, sender, post } = await adminApp();
+    try {
+      // The pre-fix browser payload: checked boxes without a value attribute arrive as "on" and select nothing.
+      const legacy = new URLSearchParams({ name: "Batch <1>", reason: "Reviewed", confirm: "1" });
+      for (const o of rows) legacy.append(`m:${o.id}`, "on");
+      const empty = await post("/admin/outreach/campaign/start", legacy);
+      assert.equal(empty.statusCode, 400);
+      assert.match(empty.body, /Select at least one existing message to approve\./);
+
+      const unconfirmed = new URLSearchParams({ name: "Batch <1>", reason: 'Reviewed "copy"' });
+      for (const o of rows) unconfirmed.append(`m:${o.id}`, "1");
+      const res = await post("/admin/outreach/campaign/start", unconfirmed);
+      assert.equal(res.statusCode, 400);
+      assert.match(res.body, /You must explicitly confirm approval/);
+      assert.doesNotMatch(res.body, /Select at least one existing message/);
+      assert.match(res.body, /<details open><summary>Approve and start a selected campaign/);
+      assert.match(res.body, /id="campaign-name"[^>]*value="Batch &#60;1&#62;"/);
+      assert.match(res.body, /id="campaign-reason"[^>]*value="Reviewed &#34;copy&#34;"/);
+      assert.equal(campaignCheckboxes(res.body).filter(b => b.checked).length, 9);
+      assert.doesNotMatch(res.body, /name="confirm" value="1" checked/);
+      assert.equal(await db.outreach.count({ where: { status: "queued" } }), 0);
+      assert.equal(await db.outreachCampaign.count(), campaignsBefore);
+      assert.equal((await sendingPolicy(db)).activeCampaignId, null);
+      assert.equal(sender.calls.length, 0);
+    } finally { await app.close(); }
+  });
+
+  test("a real browser serializes the rendered form so nine selected messages are accepted", { skip: FORM_BROWSER ? false : "no Chromium browser found (set FORM_BROWSER)" }, async () => {
+    const rows = await drafts(9);
+    const outside = await draft();
+    const { app, sender, post, controlPage } = await adminApp();
+    try {
+      const payload = await browserCampaignPayload(await controlPage(), { name: "Batch 1 — October 2026",
+        reason: "Reviewed recipients and copy", messageIds: rows.map(o => o.id), confirm: true });
+      const fields = [...payload].filter(([k]) => k.startsWith("m:"));
+      assert.deepEqual(fields.map(([k]) => k.slice(2)).sort(), rows.map(o => o.id).sort());
+      assert.ok(fields.every(([, v]) => v === "1"), `checkbox values: ${fields.map(([, v]) => v).join(",")}`);
+      assert.equal((await post("/admin/outreach/campaign/start", payload)).statusCode, 303);
+      assert.equal(await db.outreach.count({ where: { status: "queued" } }), 9);
+      assert.equal((await db.outreach.findUniqueOrThrow({ where: { id: outside.id } })).status, "draft");
+      assert.equal((await sendingPolicy(db)).enabled, false);
+      assert.equal(sender.calls.length, 0);
     } finally { await app.close(); }
   });
 
