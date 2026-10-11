@@ -173,7 +173,7 @@ local site through.
 | `GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_OAUTH_CLIENT_SECRET` | with gmail | The Google OAuth client (Web application) used to authorize the outreach mailbox. The secret goes in the host's secret store |
 | `GMAIL_TOKEN_ENCRYPTION_KEY` | with gmail | 32 random bytes, base64: seals the mailbox's refresh token. A secret |
 | `GMAIL_REFRESH_TOKEN_SEALED` | with gmail | The sealed refresh token from the admin's Gmail authorization (see [OUTREACH.md](OUTREACH.md#google-workspace-gmail)). A secret |
-| `OUTREACH_DAILY_LIMIT` | no | New outreach sends per rolling 24 hours (default 20, at most 500) |
+| `OUTREACH_DAILY_LIMIT` | deprecated | Compatibility field only; actual capacity comes from the persisted Admin → Outreach daily limit (default 25, range 1–500) |
 | `AI_SHADOW_ENABLED` | no | `1` arms `npm run ai:shadow` ([AI.md](AI.md)). Shadow only: nothing acts on its decisions |
 | `AI_SMOKE_ENABLED` | no | `1` arms the one-call provider smoke test, `npm run ai:smoke`. Set only while running it |
 | `AI_PROVIDER`, `AI_API_KEY` | with AI | `anthropic` and its API key (a secret). Unset (default): no AI |

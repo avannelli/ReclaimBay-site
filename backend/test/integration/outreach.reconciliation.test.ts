@@ -8,6 +8,8 @@ import type { Db } from "../../src/db.js";
 import type { Prisma } from "../../src/generated/prisma/client.js";
 import { revokeInvitationForOutreach } from "../../src/invitations/service.js";
 import { confirmStuckSent, dailyCapacity, dispatchQueued, setSendingSwitch } from "../../src/outreach/dispatch.js";
+import { approveFixtureSelection } from "./outreachHelpers.js";
+import { setDailyLimit } from "../../src/outreach/policy.js";
 import { gmailSender } from "../../src/outreach/gmail.js";
 import { pollGmailInbox } from "../../src/outreach/gmailInbox.js";
 import { reconcileSent } from "../../src/outreach/reconcile.js";
@@ -54,6 +56,8 @@ describe("provider-verified send reconciliation (real PostgreSQL, fake Gmail)", 
     await addEvidence(db, p.id, { signalKey: "independent_shop", sourceUrl: `${website}/about`, excerpt: "Family owned." });
     const { outreach: o } = await createOutreachDraft(db, p.id, OPTS);
     await queueOutreach(db, o.id, cfg);
+    await setDailyLimit(db, 1, "Test reconciliation capacity");
+    await approveFixtureSelection(db);
     await setSendingSwitch(db, true, "Local integration test.", cfg, sender);
     return { ...g, cfg, sender, p, o };
   }

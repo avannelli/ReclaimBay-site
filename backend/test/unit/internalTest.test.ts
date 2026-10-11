@@ -39,6 +39,7 @@ describe("internal outreach test: one mark, set once, special-cased only where i
       "admin/stats.ts", // excluded from the analytics summary and prospect intent
       "admin/ui.ts", // the label itself
       "internalTest.ts", // the controlled identity
+      "outreach/campaigns.ts", // read-only selection labels; approval and sending treat tests alike
       "outreach/compose.ts", // its one truthful fact, in place of business facts
       "outreach/eligibility.ts", // passes its identity to the status rules
       "outreach/metrics.ts", // excluded from the funnel

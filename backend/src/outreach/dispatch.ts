@@ -29,20 +29,22 @@ import { canConfirmStuckSent, lockOutreach, lockSendGate, sendInProgress, suppre
 import { ATTEMPTED_STATUSES } from "./lifecycle.js";
 import type { OutgoingMessage, OutreachSender, SendResult } from "./sender.js";
 import type { Prisma } from "../generated/prisma/client.js";
+import { appendSendingControlInTx, DEFAULT_ADMIN_DAILY_LIMIT, MIN_SEND_INTERVAL_MS, sendingPolicy } from "./policy.js";
+import { campaignMessageErrors } from "./campaigns.js";
 
 type Tx = Prisma.TransactionClient;
 export type SendingConfig = Pick<Config, "outreachSender" | "publicApiUrl" | "outreachSendingArmed"> & Partial<Pick<Config, "outreachDailyLimit">>;
 
 export const DEFAULT_BATCH = 20;
-/** New sends allowed per rolling 24 hours when OUTREACH_DAILY_LIMIT isn't set. */
-export const DEFAULT_DAILY_LIMIT = 20;
+/** Default before an admin saves a persisted daily limit. */
+export const DEFAULT_DAILY_LIMIT = DEFAULT_ADMIN_DAILY_LIMIT;
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 // ---------- the global switch ----------
 
 export async function sendingSwitch(tx: Tx | Db) {
-  const last = await tx.outreachControlChange.findFirst({ orderBy: { createdAt: "desc" } });
-  return { enabled: last?.sendingEnabled ?? false, reason: last?.reason ?? "Never switched on.", at: last?.createdAt ?? null };
+  const policy = await sendingPolicy(tx);
+  return { enabled: policy.enabled, reason: policy.reason, at: policy.at, campaignApproved: Boolean(policy.activeCampaignId) };
 }
 
 /** Why sending can't happen now, the switch aside (empty when everything else is ready). */
@@ -56,8 +58,9 @@ export function readinessErrors(cfg: SendingConfig, sender: OutreachSender): str
 
 /** Everything that stops sending now, the switch included. */
 export async function sendingBlockers(db: Db | Tx, cfg: SendingConfig, sender: OutreachSender) {
-  const sw = await sendingSwitch(db);
-  return [...(sw.enabled ? [] : ["The global sending switch is off."]), ...readinessErrors(cfg, sender)];
+  const sw = await sendingPolicy(db);
+  return [...(sw.enabled ? [] : ["The global sending switch is off."]),
+    ...(sw.activeCampaignId ? [] : ["Approve and start a campaign before sending."]), ...readinessErrors(cfg, sender)];
 }
 
 export interface SendingStatus {
@@ -103,7 +106,8 @@ export async function setSendingSwitch(db: Db, enabled: boolean, reasonRaw: unkn
   // Under the send gate: a claim either sees this change or was decided before it.
   return db.$transaction(async (tx) => {
     await lockSendGate(tx);
-    return tx.outreachControlChange.create({ data: { sendingEnabled: enabled, reason: reason || "Switched off.", createdAt: now } });
+    if (enabled && !(await sendingPolicy(tx)).activeCampaignId) throw new ProspectError(["Approve and start a campaign before enabling sending."]);
+    return appendSendingControlInTx(tx, { enabled }, reason || "Switched off.", now);
   });
 }
 
@@ -136,8 +140,8 @@ export interface DispatchReport {
 export const sentInLastDay = (tx: Tx | Db, now: Date) => tx.outreach.count({ where: { sendStartedAt: { gte: new Date(now.getTime() - DAY_MS) } } });
 
 /** The daily limit as it stands now: the same count the dispatcher enforces. */
-export async function dailyCapacity(tx: Tx | Db, cfg: Pick<SendingConfig, "outreachDailyLimit">, now: Date) {
-  const limit = cfg.outreachDailyLimit ?? DEFAULT_DAILY_LIMIT;
+export async function dailyCapacity(tx: Tx | Db, _cfg: Pick<SendingConfig, "outreachDailyLimit">, now: Date) {
+  const { dailyLimit: limit } = await sendingPolicy(tx);
   const used = await sentInLastDay(tx, now);
   return { used, limit, remaining: Math.max(0, limit - used) };
 }
@@ -176,8 +180,10 @@ type Claim =
  * resolve (stuckMessages), never sent again automatically.
  */
 async function candidates(db: Db, limit: number) {
+  const { activeCampaignId } = await sendingPolicy(db);
+  if (!activeCampaignId) return [];
   return db.outreach.findMany({
-    where: { status: "queued", sendStartedAt: null },
+    where: { status: "queued", sendStartedAt: null, campaignMemberships: { some: { campaignId: activeCampaignId } } },
     orderBy: { queuedAt: "asc" },
     take: limit,
     select: { id: true },
@@ -207,6 +213,8 @@ export async function dispatchQueued(db: Db, opts: DispatchOptions): Promise<Dis
       const o = await tx.outreach.findUnique({ where: { id }, include: { prospect: { include: { signals: true } } } });
       // Its send started since the list was read (another dispatcher): never a second send.
       if (!o || o.status !== "queued" || o.sendStartedAt !== null) return { kind: "skip" };
+      const approvalErrors = await campaignMessageErrors(tx, o);
+      if (approvalErrors.length) return { kind: "stop", reason: approvalErrors.join(" ") };
       const errors = await messageEligibilityErrors(tx, o, cfg, "send");
       if (errors.length) {
         if (!opts.dryRun) {
@@ -214,10 +222,14 @@ export async function dispatchQueued(db: Db, opts: DispatchOptions): Promise<Dis
         }
         return { kind: "cancelled", reasons: errors };
       }
-      if (opts.dryRun) return { kind: "wouldSend" };
       // The daily limit, counted under the send gate, so concurrent dispatchers can't both take the last slot.
       const { used, limit, remaining } = await dailyCapacity(tx, cfg, now);
       if (remaining === 0) return { kind: "stop", reason: `The daily sending limit is reached (${used} of ${limit} in the last 24 hours).` };
+      const latest = await tx.outreach.findFirst({ where: { sendStartedAt: { not: null } }, orderBy: { sendStartedAt: "desc" }, select: { sendStartedAt: true } });
+      if (latest?.sendStartedAt && now.getTime() - latest.sendStartedAt.getTime() < MIN_SEND_INTERVAL_MS) {
+        return { kind: "stop", reason: "Sending pace: wait at least 60 seconds between new send attempts." };
+      }
+      if (opts.dryRun) return { kind: "wouldSend" };
       // Compare-and-set: exactly one dispatcher claims it, and only while its send has never started.
       const { count } = await tx.outreach.updateMany({
         where: { id, status: "queued", sendStartedAt: null, sendAttempts: o.sendAttempts },

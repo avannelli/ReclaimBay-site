@@ -15,6 +15,7 @@ import { hideInvitationTokens } from "../invitations/tokens.js";
 import { invitationStatus } from "../invitations/status.js";
 import type { FunnelRow } from "../outreach/metrics.js";
 import type { SendingStatus } from "../outreach/dispatch.js";
+import type { campaignControls } from "../outreach/campaigns.js";
 import { canConfirmStuckSent } from "../outreach/records.js";
 import { canReconcileSent } from "../outreach/reconcile.js";
 import { REVIEW_REASONS, type listUnsubscribeReviews } from "../outreach/emailedUnsubscribe.js";
@@ -391,6 +392,7 @@ ${actions.length ? section("actions", "Actions", `<div class="stack">${actions.j
 // ---------- the outreach control page ----------
 
 export interface ControlPageData {
+  campaigns?: Awaited<ReturnType<typeof campaignControls>>;
   sw: { enabled: boolean; reason: string; at: Date | null };
   /** Whether mail is going out now, and why not (dispatch.ts sendingStatus). */
   status: SendingStatus;
@@ -555,7 +557,7 @@ export function outreachControlPage(d: ControlPageData, opts: { notice?: string;
     <p class="o-status-d">${esc(s.detail)}${providerFix ? ` <a href="#provider">Fix it under Email provider ↓</a>` : ""}</p>
     <p class="small muted" style="margin:0">Switch: ${esc(d.sw.reason)}${d.sw.at ? ` · ${fmtDate(d.sw.at)}` : ""} · Last message sent: ${a.lastSentAt ? fmtDate(a.lastSentAt) : "never"}</p>
   </div>
-  ${action ? `<div class="o-status-act">${d.sw.enabled ? action : `<details class="safety-switch"><summary>Open deliberate sending controls</summary><p>First-five procedure: one reviewed message, empty queue before preparation, at most one attempt per rolling 24 hours. Enabling applies to the whole queue.</p>${action}</details>`}</div>` : ""}
+  ${action ? `<div class="o-status-act">${d.sw.enabled ? action : `<details class="safety-switch"><summary>Open deliberate sending controls</summary><p>Enable only the active approved campaign. Its fixed message selection, the daily ceiling, and all sending checks apply before every attempt.</p>${action}</details>`}</div>` : ""}
   ${notReady}
 </section>`;
 
@@ -701,6 +703,7 @@ ${
     `${notice(opts.notice)}${errorSummary(opts.errors, fe, "Not done")}
 ${pageHead({ title: "Sending", lede: "Sending state, daily capacity and the decisions that keep outreach safe." })}
 ${statusBlock}
+${campaignControlSection(d)}
 ${tiles}
 <div class="review-link"><a href="/admin/outreach/unsubscribe-reviews">Emailed unsubscribe reviews (${d.unsubscribeReviewCount ?? 0} open)</a> <span class="small muted">Ambiguous requests remain unsuppressed until explicitly resolved.</span></div>
 ${attentionBlock}
@@ -710,6 +713,27 @@ ${prepare}
 ${provider}
 ${details}`,
   );
+}
+
+function campaignControlSection(d: ControlPageData): string {
+  if (!d.campaigns) return "";
+  const { policy, active, selectable } = d.campaigns;
+  const summary = active
+    ? `<p><b>Campaign: ${esc(active.name)}</b> · Approved: ${active.approved} · Sent: ${active.sent} · Remaining ready: ${active.remaining}</p>`
+    : `<p>No active approved campaign. Choose existing messages below; none are selected automatically.</p>`;
+  const rows = selectable.map(o => `<tr><td><input type="checkbox" name="m:${esc(o.id)}" id="campaign-${esc(o.id)}"><label for="campaign-${esc(o.id)}">${esc(o.prospect.businessName ?? "Prospect")}${o.prospect.internalTest ? " (internal test)" : ""}</label><a class="small" href="/admin/outreach/${esc(o.id)}">Review message</a></td><td>${esc(o.recipientEmail)}</td><td>${campaignCell(o.campaign)}</td><td>${outreachBadge(o.status)}</td></tr>`).join("");
+  return `<section class="card" id="campaign-controls"><h2>Campaign sending controls</h2>${summary}
+<form method="post" action="/admin/outreach/limit" class="row" style="align-items:flex-end">
+<div class="field"><label for="daily-limit">Daily send limit</label><input id="daily-limit" name="dailyLimit" type="number" min="1" max="500" step="1" value="${policy.dailyLimit}" required></div>
+<div class="field"><label for="limit-reason">Reason</label><input id="limit-reason" name="reason" maxlength="500" required></div><button type="submit">Save daily limit</button></form>
+<p class="small muted">Hard ceiling across all campaigns and internal tests in a rolling 24-hour window, not a calendar day or allowance per job run. Existing attempts count. Saving changes no queue or sending switch. New attempts are at least 60 seconds apart; the scheduled sender continues when capacity becomes available.</p>
+${d.sw.enabled ? "<p>Switch sending OFF before approving another campaign.</p>" : `<details><summary>Approve and start a selected campaign</summary><form method="post" action="/admin/outreach/campaign/start" class="stack">
+<div class="field"><label for="campaign-name">Campaign name</label><input id="campaign-name" name="name" maxlength="120" required></div>
+<div class="field"><label for="campaign-reason">Approval reason</label><input id="campaign-reason" name="reason" maxlength="500" required></div>
+<div class="scroll"><table class="tbl"><caption>Select exactly the reviewed messages from one attribution campaign. Include already-sent messages for campaign totals; they will not be sent again.</caption><thead><tr><th>Approve</th><th>Recipient</th><th>Attribution campaign</th><th>Status</th></tr></thead><tbody>${rows}</tbody></table></div>
+<label><input type="checkbox" name="confirm" value="1" required> I approve only these selected messages and recipients.</label>
+<button type="submit">Approve and queue selected campaign</button><p class="small muted">This explicitly starts the campaign and queues only its unsent selected messages. Sending stays OFF until enabled above. The scheduled deployment must also be armed separately.</p>
+</form></details>`}</section>`;
 }
 
 // ---------- operations views (/admin/outreach/messages) ----------

@@ -7,9 +7,12 @@ import assert from "node:assert/strict";
 import type { Db } from "../../src/db.js";
 import { hashInvitationToken } from "../../src/invitations/tokens.js";
 import { campaignOf } from "../../src/outreach/compose.js";
-import { dispatchQueued, setSendingSwitch, type SendingConfig } from "../../src/outreach/dispatch.js";
+import { dispatchQueued as dispatchOriginal, setSendingSwitch, type SendingConfig, type DispatchOptions } from "../../src/outreach/dispatch.js";
 import type { OutgoingMessage, OutreachSender, SendResult } from "../../src/outreach/sender.js";
 import { queueOutreach } from "../../src/outreach/service.js";
+import { approvedMessageHash } from "../../src/outreach/campaigns.js";
+import { appendSendingControlInTx, sendingPolicy } from "../../src/outreach/policy.js";
+import { lockSendGate } from "../../src/outreach/records.js";
 import { referralUrl } from "../../src/prospects.js";
 
 /** A complete, compliant sender configuration. */
@@ -39,7 +42,44 @@ export function mockSender(answer: (m: OutgoingMessage, call: number) => SendRes
   };
 }
 
-export const switchOn = (db: Db, sender: OutreachSender) => setSendingSwitch(db, true, "Integration test.", CFG, sender);
+/** Fixtures deliberately establish prior approval, including malformed rows
+ * used to test send-time rechecks. Campaign approval itself has separate tests. */
+export async function approveFixtureSelection(db: Db, messageIds?: string[]) {
+  await db.$transaction(async tx => {
+    await lockSendGate(tx);
+    const rows = await tx.outreach.findMany({ where: { status: "queued", ...(messageIds ? { id: { in: messageIds } } : {}) } });
+    const campaign = await tx.outreachCampaign.create({ data: { name: "Reviewed test selection", attributionCampaign: rows[0]?.campaign ?? "outreach-intro-t4",
+      messages: { create: rows.map(o => ({ outreachId: o.id, messageHash: approvedMessageHash(o) })) } } });
+    await appendSendingControlInTx(tx, { activeCampaignId: campaign.id }, "Test fixture approval", new Date());
+  });
+}
+
+/** Older workflow tests assume prior human approval; keep that prerequisite
+ * explicit in their fixtures. The new campaign suite exercises the raw dispatcher. */
+export async function dispatchFixture(db: Db, opts: DispatchOptions) {
+  const policy = await sendingPolicy(db);
+  const queued = await db.outreach.findMany({ where: { status: "queued" }, include: { campaignMemberships: true } });
+  if (!policy.activeCampaignId || queued.some(o => !o.campaignMemberships.some(m => m.campaignId === policy.activeCampaignId && m.messageHash === approvedMessageHash(o)))) {
+    await approveFixtureSelection(db);
+  }
+  return dispatchOriginal(db, opts);
+}
+
+export async function switchOn(db: Db, sender: OutreachSender) {
+  await approveFixtureSelection(db);
+  // Separate fixture turns model the required minute passing. Keep older
+  // interrupted claims old, and retain every claim/attempt so retries stay blocked.
+  const elapsed = new Date(Date.now() - 61_000);
+  await db.outreach.updateMany({ where: { sendStartedAt: { gt: elapsed } }, data: { sendStartedAt: elapsed } });
+  return setSendingSwitch(db, true, "Integration test.", CFG, sender);
+}
+
+/** Simulated elapsed time for multi-message fixture jobs, not a production bypass. */
+export async function pacedFixtureClock(db: Db) {
+  const latest = await db.outreach.findFirst({ where: { sendStartedAt: { not: null } }, orderBy: { sendStartedAt: "desc" } });
+  let at = Math.max(Date.now() - 60 * 60_000, latest?.sendStartedAt?.getTime() ?? 0);
+  return () => new Date(at += 61_000);
+}
 
 /**
  * A drafted first message's own invitation. Drafting makes it (Stage 4D), so
@@ -72,6 +112,9 @@ export const withoutInvitation = (db: Db, outreachId: string) => db.$transaction
 /** Queues a draft and sends it through the real dispatcher with the mock provider. */
 export async function queueAndSend(db: Db, outreachId: string, sender: MockSender = mockSender()) {
   await queueOutreach(db, outreachId, CFG);
-  await switchOn(db, sender);
-  return dispatchQueued(db, { config: CFG, sender });
+  await approveFixtureSelection(db, [outreachId]);
+  await setSendingSwitch(db, true, "Integration test.", CFG, sender);
+  // These helpers represent separate operator/job turns separated by pacing time.
+  await db.outreach.updateMany({ where: { OR: [{ sentAt: { not: null } }, { status: "failed" }], sendStartedAt: { not: null } }, data: { sendStartedAt: new Date(Date.now() - 61_000) } });
+  return dispatchOriginal(db, { config: CFG, sender });
 }

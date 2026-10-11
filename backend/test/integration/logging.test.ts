@@ -8,7 +8,7 @@ import { loadConfig } from "../../src/config.js";
 import type { Db } from "../../src/db.js";
 import { format } from "node:util";
 import { createContentLogger } from "../../src/logging.js";
-import { dispatchQueued } from "../../src/outreach/dispatch.js";
+import { dispatchFixture as dispatchQueued } from "./outreachHelpers.js";
 import type { OutgoingMessage } from "../../src/outreach/sender.js";
 import { revokeInvitation } from "../../src/invitations/service.js";
 import { invitationUrl } from "../../src/invitations/tokens.js";

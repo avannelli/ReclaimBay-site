@@ -67,7 +67,7 @@ const providerProblem = (p: ProviderKnowledge) => (p.kind === "live" || p.kind =
  * stuck behind a stopped sender job, and the mode name. Pure.
  */
 export function sendingVerdict(i: {
-  sw: { enabled: boolean; at: Date | null };
+  sw: { enabled: boolean; at: Date | null; campaignApproved?: boolean };
   readiness: readonly string[];
   provider: ProviderKnowledge;
   capacity: { remaining: number; limit: number };
@@ -77,7 +77,7 @@ export function sendingVerdict(i: {
   now: Date;
 }) {
   const problem = providerProblem(i.provider);
-  const blockers = [...new Set([...i.readiness, ...(problem ? [problem] : [])])];
+  const blockers = [...new Set([...i.readiness, ...(i.sw.campaignApproved === false ? ["Approve and start a campaign before enabling sending."] : []), ...(problem ? [problem] : [])])];
   const status = sendingStatus({ switchOn: i.sw.enabled, blockers, remaining: i.capacity.remaining, limit: i.capacity.limit, queued: i.queued });
   // "Sending is ON" (tone pos) is the one state where a long-waiting queue means the sender job isn't running.
   const stale = queueLooksStale({ sendingLive: status.tone === "pos", switchedAt: i.sw.at, oldestQueuedAt: i.oldestQueuedAt, lastSentAt: i.lastSentAt, now: i.now });

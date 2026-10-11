@@ -23,6 +23,8 @@ import { classifyReply, createOutreachDraft, discardOutreach, getOutreachDetail,
 import { ProspectError } from "../prospects.js";
 import { reconcileSent } from "../outreach/reconcile.js";
 import { listUnsubscribeReviews, resolveUnsubscribeReview } from "../outreach/emailedUnsubscribe.js";
+import { campaignControls, startCampaign } from "../outreach/campaigns.js";
+import { setDailyLimit } from "../outreach/policy.js";
 
 type Form = Record<string, string>;
 type Values = Record<string, string | undefined>;
@@ -47,6 +49,8 @@ const NOTICES: Record<string, string> = {
   ineligible: "Cannot reconcile this state: it must be a claimed message or a recorded send missing its provider ID. Cancelled and failed messages are not reopened.",
   switched_on: "Sending switched on.",
   switched_off: "Sending switched off. No further message will be sent.",
+  limit_saved: "Daily limit saved. No messages were queued or sent; sending state is unchanged.",
+  campaign_started: "Selected messages approved and queued. Sending remains OFF; enable it separately when ready.",
   invitation_revoked: "Invitation revoked. Its link no longer works; everything it recorded is kept.",
   invitation_already_revoked: "This invitation was already revoked; nothing changed.",
 };
@@ -134,7 +138,8 @@ export async function outreachRoutes(
       db.emailedUnsubscribeReview.count({ where: { state: "open" } }),
     ]);
     const counts = Object.fromEntries(grouped.map((g) => [g.status, g._count._all]));
-    const readiness = readinessErrors(config, sender);
+    const campaigns = await campaignControls(db);
+    const readiness = [...readinessErrors(config, sender), ...(campaigns.active ? [] : ["Approve and start a campaign before enabling sending."])];
     // The live check's result, remembered so the top bar and Overview can show it without calling Gmail again.
     if (gmail) opts.providerChecks?.record(gmail.authorized ? null : (gmail.problem ?? "Not authorized."), now);
     // What the dispatcher checks, plus the provider's live check (a revoked authorization): one combination, shared with the top bar.
@@ -152,6 +157,7 @@ export async function outreachRoutes(
     const page = outreachControlPage(
       {
         sw,
+        campaigns,
         status,
         readiness,
         blockers,
@@ -211,6 +217,27 @@ export async function outreachRoutes(
       await setSendingSwitch(db, enabled, req.body?.reason, config, sender);
       req.log.warn({ enabled }, "outreach sending switch changed");
       return reply.redirect(`/admin/outreach?done=${enabled ? "switched_on" : "switched_off"}`, 303);
+    } catch (err) {
+      return handleError(err, reply, (errors) => renderControl(reply, { errors }));
+    }
+  });
+
+  app.post<{ Body: Form }>("/admin/outreach/limit", writeLimit, async (req, reply) => {
+    try {
+      await setDailyLimit(db, req.body?.dailyLimit, req.body?.reason);
+      return reply.redirect("/admin/outreach?done=limit_saved", 303);
+    } catch (err) {
+      return handleError(err, reply, (errors) => renderControl(reply, { errors }));
+    }
+  });
+
+  app.post<{ Body: Form }>("/admin/outreach/campaign/start", writeLimit, async (req, reply) => {
+    const body = req.body ?? {};
+    const messageIds = Object.keys(body).filter(k => k.startsWith("m:") && body[k] === "1").map(k => k.slice(2));
+    try {
+      if (messageIds.some(id => !UUID_RE.test(id))) throw new ProspectError(["Choose existing messages from the list."]);
+      await startCampaign(db, { name: body.name, reason: body.reason, confirm: body.confirm === "1", messageIds }, config);
+      return reply.redirect("/admin/outreach?done=campaign_started", 303);
     } catch (err) {
       return handleError(err, reply, (errors) => renderControl(reply, { errors }));
     }

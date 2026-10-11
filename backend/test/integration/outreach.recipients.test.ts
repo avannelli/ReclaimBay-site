@@ -2,7 +2,7 @@ import { addFixtureCollisionEvidence } from "./helpers.js";
 import assert from "node:assert/strict";
 import { after, afterEach, before, beforeEach, describe, test } from "node:test";
 import type { Db } from "../../src/db.js";
-import { dispatchQueued } from "../../src/outreach/dispatch.js";
+import { dispatchFixture as dispatchQueued } from "./outreachHelpers.js";
 import { createOutreachDraft, discardOutreach, previewOutreachDraft, queueOutreach } from "../../src/outreach/service.js";
 import { ProspectError, addEvidence, changeStatus, createProspect, formValuesOf, updateProspect } from "../../src/prospects.js";
 import { freshDb, readyForm, skipReason, truncate } from "./helpers.js";

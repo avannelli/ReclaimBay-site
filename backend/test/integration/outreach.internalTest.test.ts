@@ -9,7 +9,8 @@ import { loadConfig } from "../../src/config.js";
 import type { Db } from "../../src/db.js";
 import { INTERNAL_TEST_IDENTITY } from "../../src/internalTest.js";
 import { openInvitation } from "../../src/invitations/service.js";
-import { dailyCapacity, dispatchQueued } from "../../src/outreach/dispatch.js";
+import { dailyCapacity } from "../../src/outreach/dispatch.js";
+import { dispatchFixture as dispatchQueued } from "./outreachHelpers.js";
 import { gmailSender } from "../../src/outreach/gmail.js";
 import { pollGmailInbox } from "../../src/outreach/gmailInbox.js";
 import { outreachMetrics } from "../../src/outreach/metrics.js";
@@ -19,6 +20,7 @@ import { INTERNAL_TEST_NOTE, ProspectError, addEvidence, changeStatus, createInt
 import { fakeGmail, inbound } from "../fixtures/fakeGmail.js";
 import { TEST_DATABASE_URL, freshDb, readyForm, skipReason, truncate } from "./helpers.js";
 import { CFG, OPTS, draftedInvitation, mockSender, switchOn } from "./outreachHelpers.js";
+import { setDailyLimit } from "../../src/outreach/policy.js";
 
 /*
  * The internal outreach test: ReclaimBay's own controlled identity, marked
@@ -247,6 +249,7 @@ describe("internal outreach test (service)", { skip: skipReason }, () => {
     const tp = await queuedFor(p);
     await switchOn(db, sender);
     const limitOne = { ...CFG, outreachDailyLimit: 1 };
+    await setDailyLimit(db, 1, "Test shared internal and business ceiling");
     const first = await dispatchQueued(db, { config: limitOne, sender });
     assert.deepEqual(first.sent.map((s) => s.outreachId), [to.id], "the internal test (queued first) is sent through Gmail");
     assert.equal(google.sent.length, 1);
@@ -294,6 +297,9 @@ describe("internal outreach test (service)", { skip: skipReason }, () => {
     const session = await db.analyticsSession.findUniqueOrThrow({ where: { anonymousSessionId: realSession } });
     await db.productEvent.create({ data: { sessionId: session.id, prospectId: p.id, eventType: "scan_completed" } });
 
+    // Model a minute between separate fixture sends while keeping fake Gmail
+    // timestamps consistent with the clock used by its reply attribution.
+    await db.outreach.update({ where: { id: po.id }, data: { sendStartedAt: new Date(Date.now() - 61_000) } });
     const before = { metrics: await outreachMetrics(db), summary: await loadSummary(db), rows: await loadProspectRows(db) };
     assert.equal(before.metrics.find((m) => m.campaign === "all")!.sent, 1);
 

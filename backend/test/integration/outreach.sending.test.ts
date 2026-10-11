@@ -5,7 +5,8 @@ import type { FastifyInstance } from "fastify";
 import { buildApp } from "../../src/app.js";
 import { loadConfig } from "../../src/config.js";
 import type { Db } from "../../src/db.js";
-import { confirmStuckSent, dailyCapacity, dispatchQueued, sendingSwitch, setSendingSwitch, stuckMessages } from "../../src/outreach/dispatch.js";
+import { confirmStuckSent, dailyCapacity, sendingSwitch, setSendingSwitch, stuckMessages } from "../../src/outreach/dispatch.js";
+import { dispatchFixture as dispatchQueued } from "./outreachHelpers.js";
 import { outreachMetrics } from "../../src/outreach/metrics.js";
 import { prepareEligibleOutreach } from "../../src/outreach/prepare.js";
 import { disabledSender } from "../../src/outreach/sender.js";
@@ -478,7 +479,7 @@ describe("outreach sending (service)", { skip: skipReason }, () => {
     const real = await dispatchQueued(db, { config: CFG, sender: disabledSender });
     assert.ok(real.blockers.includes("No email provider is configured."));
     const history = await db.outreachControlChange.findMany({ orderBy: { createdAt: "asc" } });
-    assert.deepEqual(history.map((h) => h.sendingEnabled), [true, false, true]);
+    assert.deepEqual(history.filter(h => h.reason !== "Test fixture approval").map((h) => h.sendingEnabled), [true, false, true]);
   });
 
   test("a message drafted without a postal address or for another sender can't be queued", async () => {
@@ -644,7 +645,7 @@ describe("outreach sending (HTTP)", { skip: skipReason }, () => {
     assert.match(page, /<section class="q-tiles" aria-label="Outreach at a glance">/);
     // The refused business can get a new message (nothing reached it); two sends started count against the limit.
     assert.match(page, /<span class="q-tile-n">1<\/span><span class="q-tile-l"><span aria-hidden="true">✓<\/span> Eligible now<\/span>/);
-    assert.match(page, /<span class="q-tile-n">2 \/ 20<\/span><span class="q-tile-l"><span aria-hidden="true">✉<\/span> Send attempts, last 24 hours<\/span><span class="q-tile-h">started, whether or not the provider sent them · 18 left under the daily limit<\/span>/);
+    assert.match(page, /<span class="q-tile-n">2 \/ 25<\/span><span class="q-tile-l"><span aria-hidden="true">✉<\/span> Send attempts, last 24 hours<\/span><span class="q-tile-h">started, whether or not the provider sent them · 23 left under the daily limit<\/span>/);
     assert.match(page, /Last message sent: \d{4}-\d{2}-\d{2} \d{2}:\d{2} UTC/);
 
     assert.match(page, /<h2 id="attention-h">Needs attention<\/h2>/);

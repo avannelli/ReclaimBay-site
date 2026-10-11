@@ -262,26 +262,31 @@ export async function queueBlockers(tx: Tx | Db, o: Outreach & { prospect: Param
 export async function queueOutreach(db: Db, id: string, cfg: ComplianceConfig, now = new Date()) {
   return db.$transaction(async (tx) => {
     await lockSendGate(tx);
-    // One queueing operation at a time per message: a concurrent click waits, then sees the committed result.
-    await lockOutreach(tx, id);
-    const o = await tx.outreach.findUnique({ where: { id }, include: withProspect });
-    if (!o) throw notFound();
-    if (o.status === "queued") return { outreach: o, changed: false };
-    if (o.status !== "draft") throw new ProspectError(outreachTransitionErrors(o.status, "queued"));
-    const errors = await queueBlockers(tx, o, cfg);
-    if (errors.length) throw new ProspectError(errors);
-    if (o.kind === "initial") {
-      // Eligibility guarantees New, Qualified, or Ready to contact: walk forward one step at a time.
-      const path: Status[] = ["new", "qualified", "ready_to_contact"];
-      for (let at = o.prospect.status; at !== "ready_to_contact"; ) {
-        const next = path[path.indexOf(at) + 1]!;
-        await changeStatusInTx(tx, o.prospectId, next, `Outreach queued (${o.template}).`, now);
-        at = next;
-      }
-    }
-    const scored = scoreProspect(scoringInputFromRecord(o.prospect));
-    return moveOutreachInTx(tx, id, "queued", { queuedAt: now, queuedScore: scored.score, queuedScoreVersion: scored.version }, null, now);
+    return queueOutreachInTx(tx, id, cfg, now);
   });
+}
+
+/** Same validated queue operation inside an already gated campaign transaction. */
+export async function queueOutreachInTx(tx: Tx, id: string, cfg: ComplianceConfig, now: Date) {
+  // One queueing operation at a time per message: a concurrent click waits, then sees the committed result.
+  await lockOutreach(tx, id);
+  const o = await tx.outreach.findUnique({ where: { id }, include: withProspect });
+  if (!o) throw notFound();
+  if (o.status === "queued") return { outreach: o, changed: false };
+  if (o.status !== "draft") throw new ProspectError(outreachTransitionErrors(o.status, "queued"));
+  const errors = await queueBlockers(tx, o, cfg);
+  if (errors.length) throw new ProspectError(errors);
+  if (o.kind === "initial") {
+    // Eligibility guarantees New, Qualified, or Ready to contact: walk forward one step at a time.
+    const path: Status[] = ["new", "qualified", "ready_to_contact"];
+    for (let at = o.prospect.status; at !== "ready_to_contact"; ) {
+      const next = path[path.indexOf(at) + 1]!;
+      await changeStatusInTx(tx, o.prospectId, next, `Outreach queued (${o.template}).`, now);
+      at = next;
+    }
+  }
+  const scored = scoreProspect(scoringInputFromRecord(o.prospect));
+  return moveOutreachInTx(tx, id, "queued", { queuedAt: now, queuedScore: scored.score, queuedScoreVersion: scored.version }, null, now);
 }
 
 // ---------- what the provider reports ----------

@@ -2,7 +2,8 @@ import { addFixtureCollisionEvidence } from "./helpers.js";
 import assert from "node:assert/strict";
 import { after, afterEach, before, beforeEach, describe, test } from "node:test";
 import type { Db } from "../../src/db.js";
-import { confirmStuckSent, dailyCapacity, dispatchQueued } from "../../src/outreach/dispatch.js";
+import { confirmStuckSent, dailyCapacity } from "../../src/outreach/dispatch.js";
+import { dispatchFixture as dispatchQueued } from "./outreachHelpers.js";
 import { revokeInvitationForOutreach } from "../../src/invitations/service.js";
 import { STUCK_AFTER_MS } from "../../src/outreach/records.js";
 import type { SendResult } from "../../src/outreach/sender.js";
@@ -104,7 +105,7 @@ describe("send state while a send is in flight", { skip: skipReason }, () => {
           await pendingConfirmation(o.id);
           assert.deepEqual(await message(o.id), claimed, "a refused confirmation writes nothing");
           assert.deepEqual(await eventsOf(o.id), ["drafted", "queued"]);
-          assert.deepEqual(await dailyCapacity(db, { outreachDailyLimit: 1 }, new Date()), { used: 1, limit: 1, remaining: 0 });
+          assert.deepEqual(await dailyCapacity(db, { outreachDailyLimit: 1 }, new Date()), { used: 1, limit: 25, remaining: 24 });
           const competing = await dispatchQueued(db, { config: CFG, sender: inFlight.sender });
           assert.deepEqual(competing.sent, []);
           assert.equal(inFlight.sender.calls.length, 1, "another dispatcher cannot send a claimed message");
@@ -133,7 +134,7 @@ describe("send state while a send is in flight", { skip: skipReason }, () => {
           assert.equal(resolved.status, "queued");
           assert.equal(resolved.sendStartedAt, null);
           assert.equal(resolved.sendAttempts, 0);
-          assert.deepEqual(await dailyCapacity(db, { outreachDailyLimit: 1 }, new Date()), { used: 0, limit: 1, remaining: 1 });
+          assert.deepEqual(await dailyCapacity(db, { outreachDailyLimit: 1 }, new Date()), { used: 0, limit: 25, remaining: 25 });
           assert.deepEqual(await eventsOf(o.id), ["drafted", "queued"]);
         } else {
           assert.equal(resolved.status, "queued");
@@ -142,7 +143,7 @@ describe("send state while a send is in flight", { skip: skipReason }, () => {
           assert.equal((await confirmStuckSent(db, o.id, "manual")).changed, false);
           assert.deepEqual(await eventsOf(o.id), ["drafted", "queued", "sent"]);
           assert.equal((await message(o.id)).sendAttempts, 1);
-          assert.deepEqual(await dailyCapacity(db, { outreachDailyLimit: 1 }, new Date()), { used: 1, limit: 1, remaining: 0 });
+          assert.deepEqual(await dailyCapacity(db, { outreachDailyLimit: 1 }, new Date()), { used: 1, limit: 25, remaining: 24 });
         }
         assert.equal(inFlight.sender.calls.length, 1);
       });

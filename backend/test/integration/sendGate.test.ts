@@ -4,7 +4,8 @@ import { after, afterEach, before, beforeEach, describe, test } from "node:test"
 import { setTimeout as delay } from "node:timers/promises";
 import type { Db } from "../../src/db.js";
 import { revokeInvitation, revokeInvitationForOutreach } from "../../src/invitations/service.js";
-import { confirmStuckSent, dispatchQueued, setSendingSwitch } from "../../src/outreach/dispatch.js";
+import { confirmStuckSent, setSendingSwitch } from "../../src/outreach/dispatch.js";
+import { dispatchFixture as dispatchQueued } from "./outreachHelpers.js";
 import { SEND_GATE } from "../../src/outreach/records.js";
 import type { SendResult } from "../../src/outreach/sender.js";
 import {
@@ -20,6 +21,7 @@ import {
 import { ProspectError, addEvidence, changeStatus, createProspect, formValuesOf, updateProspect } from "../../src/prospects.js";
 import { freshDb, readyForm, skipReason, truncate } from "./helpers.js";
 import { CFG, OPTS, mockSender, queueAndSend, switchOn } from "./outreachHelpers.js";
+import { pacedFixtureClock } from "./outreachHelpers.js";
 
 /*
  * Stage 5D Phase A: the send gate (outreach/records.ts lockSendGate), against
@@ -126,6 +128,7 @@ describe("the send gate (real PostgreSQL)", { skip: skipReason }, () => {
     // Queueing, discarding, and revoking, on drafts.
     let o = await draft((await prospect()).id);
     assert.equal((await waitsForGate("queueOutreach", () => queueOutreach(db, o.id, CFG))).changed, true);
+    await discardOutreach(db, o.id, "Queue gate verified; this fixture is not part of later selections.");
     o = await draft((await prospect()).id);
     assert.equal((await waitsForGate("discardOutreach", () => discardOutreach(db, o.id, "Not now."))).changed, true);
     o = await draft((await prospect()).id);
@@ -180,7 +183,7 @@ describe("the send gate (real PostgreSQL)", { skip: skipReason }, () => {
     });
     for (let i = 0; i < 3; i++) await queueOutreach(db, (await draft((await prospect()).id)).id, CFG);
     await switchOn(db, sender);
-    const report = await dispatchQueued(db, { config: CFG, sender });
+    const report = await dispatchQueued(db, { config: CFG, sender, now: await pacedFixtureClock(db) });
     assert.equal(report.sent.length, 3);
     assert.deepEqual(seen, [0, 0, 0], "the claim's transaction had committed before each send");
   });

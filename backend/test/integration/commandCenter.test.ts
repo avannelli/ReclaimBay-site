@@ -9,7 +9,7 @@ import { commandActivity, loadOverview } from "../../src/admin/commandCenter.js"
 import { overviewPage } from "../../src/admin/commandViews.js";
 import { loadSendingFacts } from "../../src/admin/sendingState.js";
 import { stuckMessages, setSendingSwitch } from "../../src/outreach/dispatch.js";
-import { mockSender } from "./outreachHelpers.js";
+import { mockSender, approveFixtureSelection } from "./outreachHelpers.js";
 import { listMessages, listReplies, parseMessageFilters } from "../../src/outreach/operations.js";
 import { createOutreachDraft } from "../../src/outreach/service.js";
 import { freshDb, readyForm, skipReason, TEST_DATABASE_URL, truncate, WEBSITE } from "./helpers.js";
@@ -143,6 +143,7 @@ describe("Acquisition Command Center (read-only pages)", { skip: skipReason }, (
       GMAIL_TOKEN_ENCRYPTION_KEY: Buffer.alloc(32, 7).toString("base64"), PUBLIC_API_URL: "https://api.fixture.example",
       OUTREACH_SENDER_EMAIL: "operator@fixture.example", OUTREACH_SENDER_NAME: "Fixture Operator",
       OUTREACH_POSTAL_ADDRESS: "123 Fixture St, Example City, CA 90000" });
+    await approveFixtureSelection(db);
     await setSendingSwitch(db, true, "Disposable test only.", config, sender);
     const local = await buildApp(config, db, false, { outreachSender: sender });
     try {

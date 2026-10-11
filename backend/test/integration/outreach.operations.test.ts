@@ -1,3 +1,4 @@
+import { approveFixtureSelection } from "./outreachHelpers.js";
 import { addFixtureCollisionEvidence } from "./helpers.js";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
@@ -332,7 +333,9 @@ describe("outreach operations views", { skip: skipReason }, () => {
       await queueOutreach(db, waiting.o.id, CFG);
       const past = ago(STALE_QUEUE_MS + HOUR);
       await db.outreach.update({ where: { id: waiting.o.id }, data: { queuedAt: past } });
-      await db.outreachControlChange.updateMany({ data: { createdAt: past } });
+      await approveFixtureSelection(db);
+      const controls = await db.outreachControlChange.findMany({ orderBy: { createdAt: "asc" } });
+      for (const [i, control] of controls.entries()) await db.outreachControlChange.update({ where: { id: control.id }, data: { createdAt: new Date(past.getTime() + i) } });
 
       const warned = (html: string) => /Queued mail isn&#39;t going out/.test(attentionOf(html));
       assert.equal(warned(await page("/admin/outreach", armed, armedCookie)), false, "something was sent just now: the job is running");
@@ -347,7 +350,7 @@ describe("outreach operations views", { skip: skipReason }, () => {
       assert.equal(warned(await page("/admin/outreach")), false);
 
       // Switched on only moments ago: the job may not have had its turn yet.
-      await db.outreachControlChange.updateMany({ data: { createdAt: new Date() } });
+      for (const [i, control] of controls.entries()) await db.outreachControlChange.update({ where: { id: control.id }, data: { createdAt: new Date(Date.now() + i) } });
       assert.equal(warned(await page("/admin/outreach", armed, armedCookie)), false);
     } finally {
       await armed.close();

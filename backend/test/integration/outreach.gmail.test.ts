@@ -7,7 +7,8 @@ import { buildApp } from "../../src/app.js";
 import { loadConfig } from "../../src/config.js";
 import type { Db } from "../../src/db.js";
 import { revokeInvitationForOutreach } from "../../src/invitations/service.js";
-import { confirmStuckSent, dailyCapacity, dispatchQueued, stuckMessages } from "../../src/outreach/dispatch.js";
+import { confirmStuckSent, dailyCapacity, stuckMessages } from "../../src/outreach/dispatch.js";
+import { dispatchFixture as dispatchQueued } from "./outreachHelpers.js";
 import { gmailSender } from "../../src/outreach/gmail.js";
 import { gmailOAuthConfig, openSealedToken, type GmailOAuthConfig } from "../../src/outreach/gmailAuth.js";
 import { senderFromConfig } from "../../src/outreach/sender.js";
@@ -18,6 +19,8 @@ import { addEvidence, createProspect } from "../../src/prospects.js";
 import { ACCOUNT, CLIENT_ID, FakeGoogle, MAILBOX, aliasGoogle, fakeGmail, inbound } from "../fixtures/fakeGmail.js";
 import { TEST_DATABASE_URL, freshDb, readyForm, skipReason, truncate } from "./helpers.js";
 import { CFG, OPTS, mockSender, switchOn } from "./outreachHelpers.js";
+import { pacedFixtureClock } from "./outreachHelpers.js";
+import { setDailyLimit } from "../../src/outreach/policy.js";
 
 /*
  * The real dispatcher and inbox reader with the Gmail adapter, against a
@@ -64,6 +67,7 @@ describe("outreach through Gmail", { skip: skipReason }, () => {
     const sender = gmailSender(client);
     const { p, o } = await queued();
     const config = { ...CFG, outreachDailyLimit: 1 };
+    await setDailyLimit(db, 1, "Test persisted admin ceiling");
     await switchOn(db, sender);
     await revokeInvitationForOutreach(db, o.id, "Wrong shop.");
     assert.equal((await row(o.id)).status, "queued", "revocation itself leaves the message alone");
@@ -102,6 +106,7 @@ describe("outreach through Gmail", { skip: skipReason }, () => {
     await revokeInvitationForOutreach(db, blocked.o.id, "Wrong shop.");
     await switchOn(db, sender);
     const config = { ...CFG, outreachDailyLimit: 1 };
+    await setDailyLimit(db, 1, "Test persisted admin ceiling");
     const report = await dispatchQueued(db, { config, sender });
     assert.deepEqual(report.cancelled.map((c) => c.outreachId), [blocked.o.id]);
     assert.deepEqual(report.sent.map((s) => s.outreachId), [valid.o.id]);
@@ -124,6 +129,7 @@ describe("outreach through Gmail", { skip: skipReason }, () => {
       else await revokeInvitationForOutreach(db, first.o.id, "Wrong shop.");
       const { google, client } = fakeGmail();
       const config = { ...CFG, outreachDailyLimit: 2 };
+    await setDailyLimit(db, 2, "Test persisted admin ceiling");
       const report = await dispatchQueued(db, { config, sender: gmailSender(client) });
       assert.deepEqual(report.cancelled.map((c) => c.outreachId), [followUp.id]);
       assert.match(report.cancelled[0]!.reasons.join(" "), missing ? /invitation.*missing/ : /invitation.*revoked/);
@@ -141,7 +147,7 @@ describe("outreach through Gmail", { skip: skipReason }, () => {
     const { google, client } = fakeGmail();
     const sender = gmailSender(client);
     await switchOn(db, sender);
-    const report = await dispatchQueued(db, { config: CFG, sender });
+    const report = await dispatchQueued(db, { config: CFG, sender, now: await pacedFixtureClock(db) });
     assert.deepEqual(report.cancelled.map((c) => c.outreachId), [o.id]);
     assert.match(report.cancelled[0]!.reasons.join(" "), /invitation.*missing/);
     assert.equal(google.calls.length, 0);
@@ -152,7 +158,7 @@ describe("outreach through Gmail", { skip: skipReason }, () => {
     const { google, client } = fakeGmail();
     const sender = gmailSender(client);
     const { p, o } = await queued();
-    const off = await dispatchQueued(db, { config: CFG, sender });
+    const off = await dispatchQueued(db, { config: CFG, sender, now: await pacedFixtureClock(db) });
     assert.ok(off.blockers.includes("The global sending switch is off."));
     assert.equal(google.calls.length, 0, "switch off: Google isn't even contacted");
 
@@ -160,7 +166,7 @@ describe("outreach through Gmail", { skip: skipReason }, () => {
     assert.equal((await dispatchQueued(db, { config: { ...CFG, outreachSendingArmed: false }, sender })).blockers.length, 1);
     assert.equal(google.calls.length, 0, "disarmed: Google isn't contacted");
 
-    const report = await dispatchQueued(db, { config: CFG, sender });
+    const report = await dispatchQueued(db, { config: CFG, sender, now: await pacedFixtureClock(db) });
     assert.equal(report.sent.length, 1);
     const stored = await row(o.id);
     assert.equal(stored.status, "sent");
@@ -176,7 +182,7 @@ describe("outreach through Gmail", { skip: skipReason }, () => {
     const sender = gmailSender(client);
     const { o } = await queued();
     await switchOn(db, sender);
-    const report = await dispatchQueued(db, { config: CFG, sender });
+    const report = await dispatchQueued(db, { config: CFG, sender, now: await pacedFixtureClock(db) });
     assert.equal(report.sent.length, 1);
     const head = Buffer.from(google.sent[0]!.raw, "base64url").toString().split("\r\n\r\n")[0]!;
     assert.match(head, /^From: "Alex Rivera" <hello@reclaimbay\.example>$/m);
@@ -202,7 +208,7 @@ describe("outreach through Gmail", { skip: skipReason }, () => {
     const b = await queued();
     await switchOn(db, sender);
     google.tokenAnswer = { status: 401, body: { error: "unauthorized_client" } };
-    const report = await dispatchQueued(db, { config: CFG, sender });
+    const report = await dispatchQueued(db, { config: CFG, sender, now: await pacedFixtureClock(db) });
     assert.equal(report.unavailable.length, 1);
     assert.match(report.stoppedBecause!, /can't send right now.*unauthorized_client/);
     assert.equal(google.sendCalls.length, 0);
@@ -212,10 +218,10 @@ describe("outreach through Gmail", { skip: skipReason }, () => {
     }
     google.tokenAnswer = null;
     google.sendAnswers = [{ status: 429, body: { error: { message: "User-rate limit exceeded" } } }];
-    const quota = await dispatchQueued(db, { config: CFG, sender });
+    const quota = await dispatchQueued(db, { config: CFG, sender, now: await pacedFixtureClock(db) });
     assert.equal(quota.unavailable.length, 1);
     assert.equal(google.sent.length, 0);
-    assert.equal((await dispatchQueued(db, { config: CFG, sender })).sent.length, 2, "sends once Google is back");
+    assert.equal((await dispatchQueued(db, { config: CFG, sender, now: await pacedFixtureClock(db) })).sent.length, 2, "sends once Google is back");
   });
 
   test("a lost response is never retried: it waits for a person, who records it as sent", async () => {
@@ -224,10 +230,10 @@ describe("outreach through Gmail", { skip: skipReason }, () => {
     const { o } = await queued();
     await switchOn(db, sender);
     google.sendAnswers = ["network"];
-    const first = await dispatchQueued(db, { config: CFG, sender });
+    const first = await dispatchQueued(db, { config: CFG, sender, now: await pacedFixtureClock(db) });
     assert.equal(first.uncertain.length, 1);
     assert.equal(google.sent.length, 1, "it actually went out");
-    const second = await dispatchQueued(db, { config: CFG, sender });
+    const second = await dispatchQueued(db, { config: CFG, sender, now: await pacedFixtureClock(db) });
     assert.deepEqual(second.sent, []);
     assert.equal(google.sendCalls.length, 1, "Gmail is never asked to send it again");
     assert.equal(google.sent.length, 1, "one email");
@@ -245,7 +251,7 @@ describe("outreach through Gmail", { skip: skipReason }, () => {
     const { p, o } = await queued();
     await switchOn(db, sender);
     google.sendAnswers = [{ status: 400, body: { error: { message: "Invalid To header", errors: [{ reason: "invalidArgument" }] } } }];
-    const r = await dispatchQueued(db, { config: CFG, sender });
+    const r = await dispatchQueued(db, { config: CFG, sender, now: await pacedFixtureClock(db) });
     assert.equal(r.failed.length, 1);
     assert.equal((await row(o.id)).status, "failed");
     assert.equal((await db.emailSuppression.findUniqueOrThrow({ where: { email: p.email! } })).reason, "invalid");
@@ -257,7 +263,8 @@ describe("outreach through Gmail", { skip: skipReason }, () => {
     for (let i = 0; i < 3; i++) await queued();
     await switchOn(db, sender);
     const cfg = { ...CFG, outreachDailyLimit: 2 };
-    const r = await dispatchQueued(db, { config: cfg, sender });
+    await setDailyLimit(db, 2, "Test rolling ceiling");
+    const r = await dispatchQueued(db, { config: cfg, sender, now: await pacedFixtureClock(db) });
     assert.equal(r.sent.length, 2);
     assert.match(r.stoppedBecause!, /daily sending limit is reached \(2 of 2/);
     assert.equal((await dispatchQueued(db, { config: cfg, sender })).sent.length, 0);
@@ -270,6 +277,7 @@ describe("outreach through Gmail", { skip: skipReason }, () => {
     const s2 = gmailSender(g2.client);
     for (let i = 0; i < 4; i++) await queued();
     await switchOn(db, s2);
+    await setDailyLimit(db, 1, "Test concurrent ceiling");
     await Promise.all([1, 2, 3, 4].map(() => dispatchQueued(db, { config: { ...CFG, outreachDailyLimit: 1 }, sender: s2 })));
     assert.equal(g2.google.sent.length, 1, "exactly the limit, even with four dispatchers at once");
   });
@@ -282,7 +290,7 @@ describe("outreach through Gmail", { skip: skipReason }, () => {
     const c = await queued();
     const d = await queued();
     await switchOn(db, sender);
-    await dispatchQueued(db, { config: CFG, sender });
+    await dispatchQueued(db, { config: CFG, sender, now: await pacedFixtureClock(db) });
     const thread = (o: { id: string }) => google.sent.find((s) => s.marker === o.id)!.threadId;
 
     google.inbox.push(
@@ -346,7 +354,7 @@ describe("outreach through Gmail", { skip: skipReason }, () => {
     const contact = await queued(); // a contact-path email to hello@, and an emailed "unsubscribe", both before outreach
     const threaded = await queued(); // a reply in our own thread
     await switchOn(db, sender);
-    await dispatchQueued(db, { config: CFG, sender });
+    await dispatchQueued(db, { config: CFG, sender, now: await pacedFixtureClock(db) });
     const sentAt = async (o: { id: string }) => (await row(o.id)).sentAt!;
     const thread = (o: { id: string }) => google.sent.find((s) => s.marker === o.id)!.threadId;
     const DAY = 24 * 60 * 60 * 1000;

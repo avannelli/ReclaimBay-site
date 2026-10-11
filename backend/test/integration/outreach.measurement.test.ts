@@ -7,7 +7,7 @@ import { buildApp } from "../../src/app.js";
 import { loadConfig } from "../../src/config.js";
 import type { Db } from "../../src/db.js";
 import { openInvitation } from "../../src/invitations/service.js";
-import { dispatchQueued } from "../../src/outreach/dispatch.js";
+import { dispatchFixture as dispatchQueued } from "./outreachHelpers.js";
 import { outreachMetrics, type FunnelRow } from "../../src/outreach/metrics.js";
 import { applyProviderEvent, classifyReply, createOutreachDraft, discardOutreach, queueOutreach, recordReply, unsubscribeOutreach } from "../../src/outreach/service.js";
 import type { Status } from "../../src/prospectStatus.js";
@@ -215,7 +215,7 @@ describe("outreach measurement", { skip: skipReason }, () => {
     assert.match(html, /<span class="q-tile-n">1<\/span><span class="q-tile-l"><span aria-hidden="true">✎<\/span> Drafts<\/span><span class="q-tile-h">now: prepared, not yet queued<\/span>/);
     assert.match(html, /<span class="q-tile-n">0<\/span><span class="q-tile-l"><span aria-hidden="true">→<\/span> Queued<\/span><span class="q-tile-h">now: waiting to be sent<\/span>/);
     // Three sends started (the refusal included): the daily limit's count, though only two were sent.
-    assert.match(html, /<span class="q-tile-n">3 \/ 20<\/span><span class="q-tile-l"><span aria-hidden="true">✉<\/span> Send attempts, last 24 hours<\/span><span class="q-tile-h">started, whether or not the provider sent them · 17 left under the daily limit<\/span>/);
+    assert.match(html, /<span class="q-tile-n">3 \/ 25<\/span><span class="q-tile-l"><span aria-hidden="true">✉<\/span> Send attempts, last 24 hours<\/span><span class="q-tile-h">started, whether or not the provider sent them · 22 left under the daily limit<\/span>/);
     assert.equal((await db.outreach.count({ where: { sendStartedAt: { not: null } } })), 3);
     assert.equal((await db.outreach.count({ where: { sentAt: { not: null } } })), 2);
 

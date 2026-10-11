@@ -237,12 +237,54 @@ the unsubscribe link).
 
 ### Daily limit
 
-At most `OUTREACH_DAILY_LIMIT` new messages (default 20, at most 500) start
-sending in any rolling 24 hours. It is counted under a database lock, so
+The Admin → Outreach **Daily send limit** is persisted in the existing
+append-only `OutreachControlChange` history (default 25, range 1–500).
+Saving a limit preserves the switch and active selection; it queues and sends
+nothing. A legacy `OUTREACH_DAILY_LIMIT=1` no longer overrides this policy.
+At most that many new messages start sending in any rolling 24 hours. It is counted under a database lock, so
 concurrent dispatchers can't overshoot it. Each message counts once, however
 many attempts it takes. Workspace allows 2,000 messages a day per mailbox and
 blocks sending for up to 24 hours beyond that; a low limit also warms up a new
 mailbox gradually.
+
+This remains a rolling window, not a midnight reset: each claimed message
+leaves the count 24 hours after its `sendStartedAt`. Attempts, including
+rejections and unknown outcomes, consume one slot each. Provider-unavailable
+results undo the claim as before, because no send occurred. Internal tests
+and historical sends count too. The ceiling is global across all campaigns,
+so switching campaigns cannot gain more capacity. Lowering the ceiling below
+current use blocks new claims until enough capacity ages out.
+
+### Explicit campaign approval and pacing
+
+On the same Sending page, name a campaign and explicitly select its existing
+messages and confirm their approval. Select from exactly one attribution
+campaign, with distinct recipients. Previously sent messages may be included
+for totals and are never queued again. **Approve and queue selected campaign**
+stores a fixed membership and reviewed-message fingerprint, queues only its
+unsent selected drafts, and leaves global sending OFF. There is one active
+selection. Change it only with sending OFF; any queued messages outside the
+new selection must be resolved first. No messages are selected automatically.
+
+The global switch and deployment arm remain separate required controls.
+The dispatcher only claims members of the active approved selection and
+rechecks the fingerprint under the send gate. Changed copy, recipients, or
+attribution cannot inherit approval. Standalone queueing does not constitute
+campaign approval and cannot make an outside message sendable.
+
+Every new claim is at least 60 seconds after the most recent claim, globally
+and under the same send gate, including concurrent dispatchers. There is no
+parallel burst and no process-local sleeping loop. A job pauses when pacing
+or capacity blocks it; the existing scheduled sender resumes on a later run.
+The current production schedule (one message per job, every ten minutes)
+continues to provide a slower pace. No schedule or deployment arm is changed
+by saving a limit or approving a selection. Failed and uncertain messages are
+never automatically retried; provider-unavailable behavior is unchanged.
+
+Deployment requires the new schema migration and backend code together.
+The migration preserves switch values and creates no campaigns or queue
+entries. Old queued messages fail closed until explicitly selected and
+approved. Batch 1 is not seeded, selected, queued, or sent by the migration.
 
 ### Before each send
 
@@ -547,7 +589,7 @@ example every 5 minutes. It is a dry run by default; `--apply` records.
 | `GMAIL_TOKEN_ENCRYPTION_KEY` | 32 random bytes, base64, for sealing the refresh token: `node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"`. A secret |
 | `GMAIL_REFRESH_TOKEN_SEALED` | The sealed value from the authorization page. A secret |
 | `OUTREACH_SENDER_NAME`, `OUTREACH_POSTAL_ADDRESS`, `PUBLIC_API_URL` | As above. `PUBLIC_API_URL` is also where Google returns |
-| `OUTREACH_DAILY_LIMIT` | New sends per rolling 24 hours (default 20) |
+| `OUTREACH_DAILY_LIMIT` | Deprecated compatibility field; persisted admin limit is authoritative (default 25) |
 | `OUTREACH_SENDING_ENABLED` | `1` to arm the deployment |
 
 **Setup:**

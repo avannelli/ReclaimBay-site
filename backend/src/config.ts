@@ -39,7 +39,7 @@ export interface Config {
   researchAutorunEnabled: boolean;
   /** This backend's public base URL, for one-click unsubscribe links. */
   publicApiUrl: string | null;
-  /** New outreach sends per rolling 24 hours (OUTREACH_DAILY_LIMIT, 1-500; default 20). */
+  /** @deprecated Compatibility field only; persisted admin controls set the actual ceiling. */
   outreachDailyLimit: number;
   /** The outreach email provider (OUTREACH_PROVIDER). Null: sending disabled. */
   outreachProvider: string | null;
@@ -114,7 +114,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     outreachSendingArmed: env.OUTREACH_SENDING_ENABLED === "1",
     researchAutorunEnabled: env.RESEARCH_AUTORUN_ENABLED === "1",
     publicApiUrl: env.PUBLIC_API_URL?.trim().replace(/\/+$/, "") || null,
-    outreachDailyLimit: Math.min(500, Math.max(1, Number.parseInt(env.OUTREACH_DAILY_LIMIT ?? "20", 10) || 20)),
+    // Compatibility only. The persisted admin policy is authoritative, including over a legacy value of 1.
+    outreachDailyLimit: Math.min(500, Math.max(1, Number.parseInt(env.OUTREACH_DAILY_LIMIT ?? "25", 10) || 25)),
     outreachProvider: env.OUTREACH_PROVIDER?.trim() || null,
     gmailOAuth: {
       clientId: env.GOOGLE_OAUTH_CLIENT_ID?.trim() || null,

@@ -752,6 +752,7 @@ model Outreach {
   invitation Invitation?
   unsubscribeReviewCandidates EmailedUnsubscribeCandidate[]
   resolvedUnsubscribeReviews EmailedUnsubscribeReview[] @relation("ResolvedUnsubscribe")
+  campaignMemberships OutreachCampaignMessage[]
 
   @@index([prospectId, createdAt])
   @@index([status, statusChangedAt])
@@ -846,8 +847,32 @@ model OutreachControlChange {
   sendingEnabled Boolean
   reason         String   @db.VarChar(500)
   createdAt      DateTime @default(now())
+  dailyLimit     Int      @default(25)
+  activeCampaignId String? @db.Uuid
+  activeCampaign OutreachCampaign? @relation(fields: [activeCampaignId], references: [id], onDelete: Restrict)
 
   @@index([createdAt])
+}
+
+// An explicitly reviewed, fixed selection of existing messages. Attribution
+// remains on Outreach/Invitation; this selection is the sending approval.
+model OutreachCampaign {
+  id String @id @default(uuid()) @db.Uuid
+  name String @db.VarChar(120)
+  attributionCampaign String @db.VarChar(64)
+  startedAt DateTime @default(now())
+  messages OutreachCampaignMessage[]
+  controls OutreachControlChange[]
+}
+
+model OutreachCampaignMessage {
+  campaignId String @db.Uuid
+  outreachId String @db.Uuid
+  messageHash String @db.Char(64)
+  campaign OutreachCampaign @relation(fields: [campaignId], references: [id], onDelete: Restrict)
+  outreach Outreach @relation(fields: [outreachId], references: [id], onDelete: Restrict)
+  @@id([campaignId, outreachId])
+  @@index([outreachId])
 }
 
 // An invitation to try ReclaimBay, for one outreach contact attempt: its
