@@ -1,3 +1,5 @@
+import { applyDiscoveryBatch, discoveryAutomationPreview } from "../discovery/automation.js";
+import { discoveryAutomationPage } from "../admin/discoveryAutomationViews.js";
 import { blindedCandidateIds } from "../ai/goldSet.js";
 import { candidateAiDecisions } from "../ai/records.js";
 import type { FastifyInstance, FastifyReply } from "fastify";
@@ -20,6 +22,7 @@ import {
   processDiscoveryRun,
   resolveDuplicate,
   reviewQueue,
+  reviewResearchWarnings,
   type QueueView,
   runDiscovery,
   setCandidateCategory,
@@ -132,6 +135,21 @@ export async function discoveryRoutes(app: FastifyInstance, opts: { config: Conf
     return html(reply, candidateDetailPage({ detail, research, position, aiShadow, ...rest, notice, decided: Boolean(decided) }));
   };
 
+  app.get<{ Querystring: Values }>("/admin/discovery/automation", async (req, reply) =>
+    html(reply, discoveryAutomationPage(await discoveryAutomationPreview(db, { recovery: req.query.recovery === "1" }), config.researchAutorunEnabled)));
+  app.post<{ Body: Form }>("/admin/discovery/automation", writeLimit, async (req, reply) => {
+    const recovery = req.body?.recovery === "1";
+    const selected = Object.entries(req.body ?? {}).filter(([key]) => key.startsWith("candidate_")).map(([key, token]) => ({ id: key.slice(10), token }));
+    try {
+      if (selected.some(item => !UUID_RE.test(item.id))) throw new ProspectError(["Invalid candidate selection."]);
+      const results = await applyDiscoveryBatch(db, selected, { recovery });
+      startResearch();
+      return html(reply, discoveryAutomationPage(await discoveryAutomationPreview(db, { recovery }), config.researchAutorunEnabled, results));
+    } catch (error) {
+      return handleError(error, reply, errors => html(reply, discoveryAutomationPage({ rows: [], counts: {}, actionable: 0, recovery }, config.researchAutorunEnabled, errors.map(reason => ({ id: "", applied: false, reason })))));
+    }
+  });
+
   // ---------- overview and runs ----------
 
   app.get<{ Querystring: Values }>("/admin/discovery", async (req, reply) => {
@@ -205,6 +223,16 @@ export async function discoveryRoutes(app: FastifyInstance, opts: { config: Conf
       }
     },
   );
+
+  app.post<{ Params: { id: string }; Body: Form }>("/admin/discovery/candidates/:id/research-review", writeLimit, async (req, reply) => {
+    if (!validId(req.params.id, reply)) return;
+    try {
+      await reviewResearchWarnings(db, req.params.id, req.body ?? {});
+      return reply.redirect(`/admin/discovery/candidates/${req.params.id}`, 303);
+    } catch (error) {
+      return handleError(error, reply, errors => renderDetail(reply, req.params.id, { errors }));
+    }
+  });
 
   // ---------- candidates ----------
 

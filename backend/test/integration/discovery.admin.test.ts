@@ -171,7 +171,7 @@ describe("discovery admin (HTTP)", { skip: skipReason }, () => {
         assert.match(page.body, new RegExp(name));
       }
       assert.match(page.body, /Possible duplicate/);
-      assert.match(page.body, /It may be the same business as another record: same name in the same city\./);
+      assert.match(page.body, /An ambiguous duplicate requires an identity decision\./);
       assert.equal(await db.prospect.count(), 0);
     });
 
@@ -366,6 +366,8 @@ describe("discovery admin (HTTP)", { skip: skipReason }, () => {
 
       const id = await readyCandidate();
       await db.discoveryCandidate.update({ where: { id }, data: { possibleDuplicateCandidateId: c.id, duplicateReason: "candidate: same phone number" } });
+      assert.equal((await post(`/admin/discovery/candidates/${id}/approve`, {})).statusCode, 400);
+      await decide(id, "not_duplicate");
       assert.equal((await post(`/admin/discovery/candidates/${id}/approve`, {})).statusCode, 303);
       const frozen = await decide(id, "duplicate");
       assert.equal(frozen.statusCode, 409, "an approved candidate is frozen, as for every other change to it");

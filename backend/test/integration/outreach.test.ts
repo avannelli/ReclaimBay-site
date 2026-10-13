@@ -6,7 +6,7 @@ import { buildApp } from "../../src/app.js";
 import { loadConfig } from "../../src/config.js";
 import type { Db } from "../../src/db.js";
 import { hashInvitationToken } from "../../src/invitations/tokens.js";
-import { ingestBusinesses } from "../../src/discovery/service.js";
+import { approveCandidate, ingestBusinesses } from "../../src/discovery/service.js";
 import type { OutreachFact } from "../../src/outreach/compose.js";
 import {
   createOutreachDraft,
@@ -299,7 +299,7 @@ describe("outreach (service)", { skip: skipReason }, () => {
     assert.equal(m.kind, "initial");
   });
 
-  test("approval behaves as before: an automatically approved prospect gets no outreach", async () => {
+  test("research requires human approval, and approval creates no outreach", async () => {
     net.restore();
     const HOST = "saviersauto.example.com";
     const b = {
@@ -319,6 +319,9 @@ describe("outreach (service)", { skip: skipReason }, () => {
     const c = await db.discoveryCandidate.findFirstOrThrow({ where: { externalId: b.externalId } });
     const [q] = (await enqueueResearch(db, [c.id], "admin")).queued;
     await processResearch(db, q!.researchId, { makeFetcher: fixtureWeb(independentShop(HOST)).makeFetcher, today: new Date("2026-10-01T12:00:00Z") });
+    assert.equal(await db.prospect.count(), 0);
+    assert.equal(await db.outreach.count(), 0);
+    await approveCandidate(db, c.id);
     const approved = await db.discoveryCandidate.findUniqueOrThrow({ where: { id: c.id } });
     assert.equal(approved.status, "approved");
     const pr = await db.prospect.findUniqueOrThrow({ where: { id: approved.prospectId! } });

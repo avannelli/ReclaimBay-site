@@ -26,6 +26,7 @@
     "discovery:research": "node --env-file-if-exists=.env dist/scripts/researchCandidates.js",
     "discovery:check-categories": "node --env-file-if-exists=.env dist/scripts/checkCategories.js",
     "discovery:auto-approve": "node --env-file-if-exists=.env dist/scripts/autoApprove.js",
+    "discovery:automation": "node --env-file-if-exists=.env dist/scripts/discoveryAutomation.js",
     "outreach:draft": "node --env-file-if-exists=.env dist/scripts/draftOutreach.js",
     "outreach:prepare": "node --env-file-if-exists=.env dist/scripts/prepareOutreach.js",
     "outreach:send": "node --env-file-if-exists=.env dist/scripts/sendOutreach.js",

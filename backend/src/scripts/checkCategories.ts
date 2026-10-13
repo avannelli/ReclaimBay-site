@@ -27,7 +27,7 @@ try {
   const r = await backfillCategoryCheck(db, { apply });
   console.log(`${apply ? "APPLIED" : "DRY RUN (nothing written; pass --apply to write)"}: ${r.checked} candidate(s) checked by name.`);
   console.log(`  ${r.changes.length} ${apply ? "updated" : "would change"}; unchanged records are not rewritten.`);
-  console.log(`  Left alone: ${r.skipped.manual} set by a person, ${r.skipped.website} decided by the business's website, ${r.skipped.approved} approved.`);
+  console.log(`  Left alone: ${r.skipped.manual} set by a person, ${r.skipped.website} decided by the business's website, ${r.skipped.approved} approved, ${r.skipped.protected} protected or terminal.`);
   console.log(`  Verdicts: ${CATEGORY_VERDICTS.map((v) => `${v} ${r.verdicts[v]}`).join(", ")}.`);
   for (const verdict of ["wrong_category", "unclear"] as const) {
     const list = r.changes.filter((x) => x.to === verdict);

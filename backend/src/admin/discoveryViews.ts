@@ -122,9 +122,16 @@ function researchSection(research: ResearchView | undefined, candidateId: string
   const warnings = (Array.isArray(latest?.warnings) ? (latest.warnings as string[]) : []).map((w) => `<li>${esc(w)}</li>`).join("");
   const head = `<div class="card">
   <div class="row spread"><div>${status}</div>${button}</div>
-  <p class="small muted" style="margin:8px 0 0">Reads the business's own website (at most 5 pages; robots.txt respected; nothing stored but the facts, a short quote, and the URL). A phone or email is verified only when it appears on a website confirmed as the business's own. Research never approves a candidate or contacts anyone.</p>
+  <p class="small muted" style="margin:8px 0 0">Reads the business's own website (at most 5 pages; robots.txt respected; nothing stored but the facts, a short quote, and the URL). A phone or email is verified only when it appears on a website confirmed as the business's own. Research preserves prior evidence and never creates a prospect or contacts anyone.</p>
   ${latest?.error ? `<div class="callout warn" style="margin-top:10px">${esc(latest.error)}</div>` : ""}
   ${warnings ? `<div class="callout warn" style="margin-top:10px"><b>Check by hand</b><ul class="plain small" style="margin:4px 0 0">${warnings}</ul></div>` : ""}
+  ${canRun && latest?.status === "completed" && warnings ? `<form method="post" action="/admin/discovery/candidates/${esc(id)}/research-review" style="margin-top:12px">
+    <input type="hidden" name="researchId" value="${esc(latest.id)}">
+    <p class="small">After checking the evidence, record how these warnings were resolved. The original warnings and sources remain in history.</p>
+    <label class="lbl">Public source URL<input type="url" name="sourceUrl" required maxlength="500"></label>
+    <label class="lbl">What you verified<textarea name="reason" required maxlength="280"></textarea></label>
+    <button class="btn-secondary" type="submit">Record sourced warning review</button>
+  </form>` : ""}
 </div>`;
   if (!latest) return head;
 
@@ -330,7 +337,7 @@ function queueRow(item: QueueItem, view: QueueView): string {
   });
   // Ready to approve: a person approves it because the automatic rule held it. Say why.
   // The fit reason already explains category, qualification and verification steps; other steps say their own.
-  const reason = step.kind === "ready" && item.held ? `Automatic approval held it: ${item.held.replace(/\.$/, "")}.` : FIT_EXPLAINS.has(step.kind) ? "" : why;
+  const reason = item.automationAssessment?.reason ?? (step.kind === "ready" && item.held ? `Approval check: ${item.held.replace(/\.$/, "")}.` : FIT_EXPLAINS.has(step.kind) ? "" : why);
   // Recorded research and evidence remain distinct from target fit and ranking.
   const latest = c.research[0];
   const meta = [
@@ -385,7 +392,7 @@ export function discoveryPage(opts: {
     counts.all === 0 && !anyFilter
       ? "Find businesses, check them, and decide which become prospects."
       : counts.active
-        ? `<b>${counts.active} ${counts.active === 1 ? "business needs" : "businesses need"} your attention</b>${anyFilter ? " in this search" : ""}. Start with decisions, then approvals.`
+        ? `<b>${counts.active} ${counts.active === 1 ? "business needs" : "businesses need"} your attention</b>${anyFilter ? " in this search" : ""}. Review decisions and approvals; use Discovery automation for batch research and verification.`
         : `<b>Nothing needs your attention${anyFilter ? " in this search" : ""}.</b> Every candidate here has been handled.`;
 
   // Every active lane is also a queue view.
@@ -521,7 +528,7 @@ ${opts.autoResearch?.stale ? autoResearchLine(opts.autoResearch) : ""}
     </div></details>
   </form>
   ${f.run ? `<div class="callout" style="margin-bottom:12px">Showing candidates from one discovery run. <a href="/admin/discovery">Show all</a></div>` : ""}
-  ${batch}
+  <p><a class="btn" href="/admin/discovery/automation">Preview and process Discovery automation</a></p>${batch}
   <div class="result-line"><span><b>${esc(shown)}</b>${anyFilter ? " match" : ""}${queue.notRanked ? ` · ${queue.notRanked} outside the target category not ranked (<a href="/admin/discovery?category=wrong_category">show them</a>)` : ""}</span><span>Qualification needs ${esc(criteriaNames)}. Opportunity score — ranking only, not a verdict.</span></div>
   ${groups || `<div class="card">${emptyQueue}</div>`}
 </section>
@@ -1108,11 +1115,11 @@ export function candidateDetailPage(opts: {
   const autoColor = auto.decision === "approve" ? "var(--pos)" : auto.decision === "blocked" ? "var(--neg)" : "var(--amber)";
   const autoCard = frozen
     ? `<div class="card"><p class="small" style="margin:0">${isAutoApproved(c) ? `Approved automatically (${esc(AUTO_APPROVAL_RULES)}).` : "Approved by a person."}</p></div>`
-    : `<div class="card" style="border-left:4px solid ${autoColor}"><b>Automatic approval (${esc(AUTO_APPROVAL_RULES)}): ${esc(AUTO_APPROVAL_LABELS[auto.decision])}</b>
+    : `<div class="card" style="border-left:4px solid ${autoColor}"><b>Discovery assessment: ${esc(AUTO_APPROVAL_LABELS[auto.decision])}</b>
 <ul class="plain small" style="margin:6px 0">${auto.reasons.map((r) => `<li>${esc(r)}</li>`).join("")}</ul>${auto.noted.length ? `<p class="small muted" style="margin:0 0 6px">Noted, not blocking: ${esc(auto.noted.join("; "))}.</p>` : ""}
 <p class="small muted" style="margin:0">${
         auto.decision === "approve"
-          ? "Research approves a candidate like this automatically after its next completed run, or the auto-approve job does. You can also approve it above."
+          ? "Qualification is ready. A person must approve this candidate before it becomes a prospect."
           : auto.decision === "blocked"
             ? "The rules never approve this candidate. A person can still change its category or status."
             : "The rules leave this one to a person: use the decision above."
@@ -1242,7 +1249,7 @@ ${disclosure(
   </dl></div>`,
 )}
 ${opts.aiShadow ? disclosure("ai", "AI shadow verdict (evaluation only)", aiShadowSummary(opts.aiShadow), aiShadowSection(opts.aiShadow)) : ""}
-${disclosure("approval", "Automatic approval", esc(frozen ? (isAutoApproved(c) ? "Approved automatically" : "Approved by a person") : AUTO_APPROVAL_LABELS[auto.decision]), autoCard)}
+${disclosure("approval", "Discovery assessment", esc(frozen ? (isAutoApproved(c) ? "Approved automatically" : "Approved by a person") : AUTO_APPROVAL_LABELS[auto.decision]), autoCard)}
 ${disclosure(
   "state",
   "Research status (advanced)",

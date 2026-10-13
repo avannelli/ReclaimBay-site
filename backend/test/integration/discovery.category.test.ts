@@ -116,24 +116,23 @@ describe("category check (service)", { skip: skipReason }, () => {
     assert.equal(c.categoryVerdict, "unclear", "names require service evidence");
     const [q] = (await enqueueResearch(db, [c.id], "admin")).queued;
     const run = (await processResearch(db, q!.researchId, { makeFetcher: popsWeb().makeFetcher, today: TODAY }))!;
-    assert.equal(run.version, "r14");
+    assert.equal(run.version, "r15");
     const after = await db.discoveryCandidate.findUniqueOrThrow({ where: { id: c.id } });
     assert.deepEqual([after.categoryVerdict, after.categorySource, after.categorySourceUrl], ["wrong_category", "website", POPS_SITE]);
     assert.match(after.categoryReason!, /^Website describes shoe repair, boot repair, vacuum repair, lamp repair and sharpening; no automotive repair services or vocabulary/);
     const fact = await db.researchFact.findFirst({ where: { researchId: run.id, field: "business_category" } });
     assert.equal(fact?.value, "Wrong category");
     // The website's sourced verdict, with no person involved yet: rejected automatically (rejection@r1).
-    assert.equal(after.status, "rejected");
-    assert.match(after.decisionReason!, /^Automatically rejected \(rejection@r3\): Outside the target category: Website describes shoe repair/);
+    assert.equal(after.status, "researched", "a category exclusion is an evidence request, not an explicit negative repair statement");
+    assert.equal(after.decisionReason, null);
 
     // A person decides otherwise, and reopens it; research keeps the person's decision and says so.
     await setCandidateCategory(db, c.id, "in_target", "Owner confirmed they also repair cars.");
-    await changeCandidateStatus(db, c.id, "discovered", null);
     const [q2] = (await enqueueResearch(db, [c.id], "admin")).queued;
     const run2 = (await processResearch(db, q2!.researchId, { makeFetcher: popsWeb().makeFetcher, today: TODAY }))!;
     const kept = await db.discoveryCandidate.findUniqueOrThrow({ where: { id: c.id } });
     assert.deepEqual([kept.categoryVerdict, kept.categorySource], ["in_target", "manual"]);
-    assert.ok((run2.warnings as string[]).some((w) => /a person set the category; the person's decision was kept/.test(w)));
+    assert.ok((run2.warnings as string[]).some((w) => /contradictory.*earlier in-target evidence was preserved/.test(w)));
     assert.notEqual(kept.status, "rejected", "never rejected again automatically against the person's decision");
   });
 

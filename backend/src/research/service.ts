@@ -5,25 +5,24 @@
  * unchanged.
  *
  * Rules:
- *   - Research only ever replaces its own signals and evidence (origin
- *     "research"). A person's signals and evidence are never changed; when
- *     research disagrees with a person, it says so in a warning.
+ *   - Evidence is additive, with its original source and run retained.
+ *     Contradictory observations preserve the earlier signal and hold for review.
  *   - Contact (phone, email) is set only from the business's own, verified
  *     website, and only when none is stored yet. It is never removed.
  *   - A run never approves, rejects, or creates a prospect itself. After a
- *     completed run, the automatic rules (discovery/autoApproval.ts) decide
- *     separately: a clean enough lead becomes a Prospect without a click
- *     (approval@a1), one research showed can never qualify is rejected
- *     (rejection@r1), and anything else waits for a person.
- *   - Re-running is safe: each run replaces the previous run's research
- *     signals and evidence instead of adding to them. Runs are kept as
- *     history (the newest RESEARCH_HISTORY per candidate).
+ *     completed run, Discovery evaluates qualification separately. Prospect
+ *     creation requires human approval. Protected identities are not researched.
+ *   - Runs, evidence and source/fact history are retained permanently.
  *   - One queued or running run per candidate at a time.
  *   - Failures are recorded on the run; nothing retries in a loop.
  */
 import { createDb, type Db } from "../db.js";
+import { applyDiscoveryBatch, discoveryAutomationPreview } from "../discovery/automation.js";
+import { candidateProtection, protectionIndex } from "../discovery/protection.js";
+import { unreviewedWarnings } from "../discovery/warningReview.js";
+import { assessDiscovery, automationInclude, blockingWarnings } from "../discovery/automationPolicy.js";
 import { researchGateErrors } from "../discovery/approval.js";
-import { autoDecideCandidate, lockCandidate } from "../discovery/service.js";
+import { lockCandidate } from "../discovery/service.js";
 import { CATEGORY_VERDICT_LABELS, automatedMayReplace } from "@avannelli/aos/categories";
 import { categoryFields, isOutsideTarget } from "../discovery/categoryCheck.js";
 import { phoneKey } from "../discovery/normalize.js";
@@ -33,7 +32,7 @@ import type { PoliteFetcher } from "@avannelli/aos/fetch";
 import { researchFetcher } from "./fetcher.js";
 import { RESEARCH_VERSION, researchCandidate, type ResearchResult } from "./researcher.js";
 
-/** Runs kept per candidate. */
+/** Recent runs displayed per candidate; older runs remain stored. */
 export const RESEARCH_HISTORY = 5;
 /** A run still "running" after this long lost its worker. */
 export const STALE_RESEARCH_MS = 10 * 60 * 1000;
@@ -42,7 +41,7 @@ export const MAX_BATCH = 10;
 /** Pause between two candidates in a batch (different sites; politeness only). */
 export const BETWEEN_CANDIDATES_MS = 1_000;
 
-export type ResearchTrigger = "admin" | "batch" | "cli" | "scheduled";
+export type ResearchTrigger = "admin" | "batch" | "cli" | "scheduled" | "recovery";
 
 const NOT_RESEARCHABLE = new Set(["approved", "rejected", "duplicate"]);
 
@@ -58,11 +57,16 @@ export async function enqueueResearch(db: Db, candidateIds: readonly string[], t
     await db.$transaction(async (tx) => {
       // One queueing decision per candidate at a time: a concurrent request waits, then sees the run this one made.
       await lockCandidate(tx, candidateId);
-      const c = await tx.discoveryCandidate.findUnique({ where: { id: candidateId }, select: { status: true, researchRevision: true, website: true } });
+      const c = await tx.discoveryCandidate.findUnique({ where: { id: candidateId }, include: automationInclude });
       if (!c) return void out.skipped.push({ candidateId, reason: "not found" });
+      if (candidateProtection(c, await protectionIndex(tx)).protected) return void out.skipped.push({ candidateId, reason: "protected prospect/outreach identity" });
       if (NOT_RESEARCHABLE.has(c.status)) return void out.skipped.push({ candidateId, reason: `candidate is ${c.status}` });
       const pending = await tx.candidateResearch.findFirst({ where: { candidateId, status: { in: ["queued", "running"] } }, select: { id: true } });
       if (pending) return void out.skipped.push({ candidateId, reason: "research already queued or running" });
+      if (trigger === "scheduled" || trigger === "recovery") {
+        const assessment = assessDiscovery(c, candidateProtection(c, await protectionIndex(tx)), new Date(), { recovery: trigger === "recovery" });
+        if (assessment.action !== "research") return void out.skipped.push({ candidateId, reason: assessment.reason });
+      }
       const run = await tx.candidateResearch.create({ data: { candidateId, version: RESEARCH_VERSION, trigger, candidateRevision: c.researchRevision, subjectWebsite: c.website } });
       out.queued.push({ candidateId, researchId: run.id });
     });
@@ -73,7 +77,7 @@ export async function enqueueResearch(db: Db, candidateIds: readonly string[], t
 export interface ProcessDeps {
   /** A fresh fetcher per run (tests inject one that never touches the network). */
   makeFetcher?: () => PoliteFetcher;
-  /** Apply the automatic rules (approve, reject, or leave for review) after a completed run (default true). */
+  /** Legacy option name: evaluate qualification after research; never create a prospect. */
   autoApprove?: boolean;
   today?: Date;
   sleep?: (ms: number) => Promise<void>;
@@ -92,6 +96,13 @@ export async function processResearch(db: Db, researchId: string, deps: ProcessD
     await lockCandidate(tx, queued.candidateId);
     const c = await tx.discoveryCandidate.findUnique({ where: { id: queued.candidateId } });
     if (!c) return null;
+    const lease = await tx.candidateResearch.findUnique({ where: { id: researchId } });
+    if (!lease || lease.status !== "queued") return null;
+    if (lease.candidateRevision !== null && (lease.candidateRevision !== c.researchRevision || lease.subjectWebsite !== c.website)) {
+      return { stopped: await tx.candidateResearch.update({ where: { id: researchId }, data: {
+        status: "failed", outcome: "superseded", finishedAt: new Date(), error: "Candidate changed after research was queued. Preview again.",
+      } }) };
+    }
     const now = new Date();
     const claimed = await tx.candidateResearch.updateMany({
       where: { id: researchId, status: "queued" },
@@ -99,9 +110,9 @@ export async function processResearch(db: Db, researchId: string, deps: ProcessD
         candidateRevision: c.researchRevision + (NOT_RESEARCHABLE.has(c.status) ? 0 : 1), subjectWebsite: c.website },
     });
     if (claimed.count !== 1) return null;
-    if (NOT_RESEARCHABLE.has(c.status)) {
+    if (NOT_RESEARCHABLE.has(c.status) || candidateProtection(c, await protectionIndex(tx)).protected) {
       const stopped = await tx.candidateResearch.update({ where: { id: researchId }, data: {
-        status: "failed", error: `The candidate became ${c.status} before research ran.`, finishedAt: now,
+        status: "failed", error: `The candidate is terminal or has a protected prospect/outreach identity.`, finishedAt: now,
       } });
       return { stopped };
     }
@@ -151,8 +162,11 @@ export async function processResearch(db: Db, researchId: string, deps: ProcessD
       });
     });
   }
-  // Separate from the run: the run is stored whatever the approval decides.
-  if (deps.autoApprove !== false && stored?.status === "completed") await autoDecideCandidate(db, c.id);
+  // Qualification is separate from the stored run. A stale assessment is skipped per candidate.
+  if (deps.autoApprove !== false && stored?.status === "completed") {
+    const plan = (await discoveryAutomationPreview(db)).rows.find(row => row.id === c.id);
+    if (plan && plan.assessment.action !== "research") await applyDiscoveryBatch(db, [{ id: c.id, token: plan.token }]);
+  }
   return stored;
 }
 
@@ -177,13 +191,15 @@ interface ResearchOwner {
 async function authorizeCompletion(tx: Tx, owner: ResearchOwner): Promise<boolean> {
   await lockCandidate(tx, owner.candidateId);
   await lockResearchRun(tx, owner.researchId);
+  const subject = await tx.discoveryCandidate.findUnique({ where: { id: owner.candidateId } });
+  const protectedNow = subject && candidateProtection(subject, await protectionIndex(tx)).protected;
   const runWhere = {
     id: owner.researchId, status: "running" as const, startedAt: owner.startedAt,
     candidateRevision: owner.candidateRevision, subjectWebsite: owner.website,
   };
   const { count } = await tx.discoveryCandidate.updateMany({
     where: {
-      id: owner.candidateId, researchRevision: owner.candidateRevision,
+      id: owner.candidateId, researchRevision: protectedNow ? -1 : owner.candidateRevision,
       website: owner.website, status: owner.status,
       research: { some: runWhere },
     },
@@ -229,15 +245,18 @@ async function store(db: Db, owner: ResearchOwner, r: ResearchResult, movedToRes
       });
     }
 
-    const warnings = [...r.warnings];
-    let applied = 0;
     const c = await tx.discoveryCandidate.findUniqueOrThrow({ where: { id: candidateId }, include: { signals: true } });
+    const previous = await tx.candidateResearch.findFirst({ where: { candidateId, id: { not: researchId }, status: "completed", OR: [{ subjectWebsite: owner.website }, { subjectWebsite: null }] }, orderBy: automationInclude.research.orderBy, select: { id: true, warnings: true } });
+    const reviews = await tx.candidateNote.findMany({ where: { candidateId } });
+    // Identity/conflict holds require a person; a weak rerun must not erase them.
+    const warnings = [...new Set([...r.warnings, ...blockingWarnings(unreviewedWarnings(previous ?? undefined, reviews, c))])];
+    let applied = 0;
 
     let categoryNote = "";
     if (r.status === "completed") {
       applied = await reconcileSignals(tx, researchId, c, r, warnings);
       await applyContact(tx, c, r, warnings);
-      categoryNote = await applyCategory(tx, c, r, warnings);
+      if (r.websiteVerified && !warnings.some(w => /contradictory/.test(w))) categoryNote = await applyCategory(tx, c, r, warnings);
     }
 
     // The candidate's place in the lifecycle follows the evidence-backed rule.
@@ -246,13 +265,14 @@ async function store(db: Db, owner: ResearchOwner, r: ResearchResult, movedToRes
     let status = after.status;
     if (after.status === "researching") status = r.status === "completed" && gateOk ? "researched" : movedToResearching ? "discovered" : "researching";
     else if (after.status === "researched" && !gateOk) status = "researching";
+    if (warnings.some(w => /contradictory/.test(w))) status = "needs_review";
     const now = new Date();
     await tx.discoveryCandidate.update({
       where: { id: candidateId },
       data: {
         ...(status !== after.status ? { status, statusChangedAt: now } : {}),
         ...(status === "researched" && after.status !== "researched" ? { researchedAt: now } : {}),
-        ...(r.status === "completed" ? { websiteVerifiedAt: r.websiteVerified ? now : null } : {}),
+        ...(r.websiteVerified ? { websiteVerifiedAt: now } : {}),
       },
     });
     await tx.candidateNote.create({
@@ -274,14 +294,14 @@ async function store(db: Db, owner: ResearchOwner, r: ResearchResult, movedToRes
         finishedAt: now,
       },
     });
-    await pruneHistory(tx, candidateId);
+    // Source/fact history is permanent: decisions may cite any earlier run.
     return run;
   });
 }
 
 /**
- * Replaces the previous research signals and evidence with this run's. A
- * signal a person recorded is never changed. Returns how many were applied.
+ * Adds this run's observations; missing or contradictory observations never
+ * erase earlier evidence or overwrite a person's signal.
  */
 async function reconcileSignals(
   tx: Tx,
@@ -290,23 +310,24 @@ async function reconcileSignals(
   r: ResearchResult,
   warnings: string[],
 ) {
-  await tx.candidateEvidence.deleteMany({ where: { candidateId: c.id, origin: "research" } });
-  const proposed = new Map(r.signals.map((s) => [s.key, s]));
-  const stale = c.signals.filter((s) => s.origin === "research" && !proposed.has(s.key as never)).map((s) => s.id);
-  if (stale.length) await tx.candidateSignal.deleteMany({ where: { id: { in: stale } } });
-
   const now = new Date();
   let applied = 0;
   for (const s of r.signals) {
     const existing = c.signals.find((x) => x.key === s.key);
+    if (existing && existing.value !== s.value) {
+      warnings.push(`Research evidence is contradictory for "${s.key}"; the earlier ${existing.value} and both sources were preserved. A person must resolve it.`);
+      if (existing.origin === "manual") warnings.push(`Research found "${s.key}" = ${s.value}, but a person recorded ${existing.value}; the person's value was kept.`);
+      await tx.candidateEvidence.create({ data: { candidateId: c.id, signalKey: s.key, sourceUrl: s.sourceUrl.slice(0, 500), excerpt: s.excerpt.slice(0, 280), origin: "research", researchId } });
+      continue;
+    }
     if (existing && existing.origin === "manual") {
-      if (existing.value !== s.value) warnings.push(`Research found "${s.key}" = ${s.value}, but a person recorded ${existing.value}; the person's value was kept.`);
+      await tx.candidateEvidence.create({ data: { candidateId: c.id, signalKey: s.key, sourceUrl: s.sourceUrl.slice(0, 500), excerpt: s.excerpt.slice(0, 280), origin: "research", researchId } });
       continue;
     }
     await tx.candidateSignal.upsert({
       where: { candidateId_key: { candidateId: c.id, key: s.key } },
       create: { candidateId: c.id, key: s.key, value: s.value, observedAt: now, origin: "research" },
-      update: { value: s.value, observedAt: now, origin: "research" },
+      update: {},
     });
     await tx.candidateEvidence.create({
       data: { candidateId: c.id, signalKey: s.key, sourceUrl: s.sourceUrl.slice(0, 500), excerpt: s.excerpt.slice(0, 280), origin: "research", researchId },
@@ -330,6 +351,11 @@ async function applyCategory(
 ): Promise<string> {
   const next = r.category;
   if (!next) return "";
+  if (c.categoryVerdict === "in_target" && next.verdict === "unclear") return "";
+  if (c.categoryVerdict === "in_target" && next.verdict === "wrong_category") {
+    warnings.push("Research category evidence is contradictory; the earlier in-target evidence was preserved. A person must resolve it.");
+    return "";
+  }
   const current = { verdict: c.categoryVerdict as never, source: c.categorySource as never };
   if (!automatedMayReplace(current, next)) {
     if (c.categorySource === "manual" && c.categoryVerdict !== next.verdict) {
@@ -367,16 +393,6 @@ async function applyContact(
   if (Object.keys(data).length) await tx.discoveryCandidate.update({ where: { id: c.id }, data });
 }
 
-async function pruneHistory(tx: Tx, candidateId: string) {
-  const old = await tx.candidateResearch.findMany({
-    where: { candidateId, status: { in: ["completed", "failed"] } },
-    orderBy: { queuedAt: "desc" },
-    skip: RESEARCH_HISTORY,
-    select: { id: true },
-  });
-  if (old.length) await tx.candidateResearch.deleteMany({ where: { id: { in: old.map((o) => o.id) } } });
-}
-
 /**
  * Marks runs whose worker stopped responding as failed, and returns each such
  * run's candidate from Researching to Discovered when nothing else is queued
@@ -403,7 +419,9 @@ export async function failStaleResearch(db: Db, staleAfterMs = STALE_RESEARCH_MS
       if (recovered.count !== 1) return 0;
       // Pre-migration running rows have no ownership snapshot. Fail the run
       // but leave the candidate alone rather than guess whose state it is.
-      if (current.candidateRevision !== null) await tx.discoveryCandidate.updateMany({
+      const candidate = await tx.discoveryCandidate.findUnique({ where: { id: run.candidateId } });
+      const protectedNow = candidate && candidateProtection(candidate, await protectionIndex(tx)).protected;
+      if (current.candidateRevision !== null && !protectedNow) await tx.discoveryCandidate.updateMany({
         where: { id: run.candidateId, researchRevision: current.candidateRevision,
           website: current.subjectWebsite, status: "researching",
           research: { none: { status: { in: ["queued", "running"] } } } },
@@ -457,7 +475,7 @@ async function runQueue(db: Db, opts: ProcessDeps & { limit?: number }) {
 export async function candidateResearch(db: Db, candidateId: string) {
   const runs = await db.candidateResearch.findMany({
     where: { candidateId },
-    orderBy: { queuedAt: "desc" },
+    orderBy: automationInclude.research.orderBy,
     take: RESEARCH_HISTORY,
     include: { sources: { orderBy: { fetchedAt: "asc" } }, facts: { include: { source: { select: { url: true, finalUrl: true } } } } },
   });
@@ -538,36 +556,21 @@ export function retryDecision(runs: readonly RunHistoryEntry[], now: Date): { re
  * hold, and nothing already decided or closed), and not outside the target
  * category.
  */
-const AUTO_RESEARCHABLE = {
-  status: "discovered",
-  OR: [{ categoryVerdict: null }, { categoryVerdict: { not: "wrong_category" } }],
-} satisfies Prisma.DiscoveryCandidateWhereInput;
-
-/** What the automatic worker would take now: never-researched candidates first (newest first), then eligible retries (oldest attempt first). */
 export async function autoResearchSelection(db: Db, limit: number, now = new Date()) {
-  const fresh = await db.discoveryCandidate.findMany({
-    where: { ...AUTO_RESEARCHABLE, research: { none: {} } },
-    orderBy: [{ discoveredAt: "desc" }, { id: "asc" }],
-    take: limit,
-    select: { id: true },
-  });
-  const tried = await db.discoveryCandidate.findMany({
-    where: { ...AUTO_RESEARCHABLE, research: { some: {} } },
-    select: { id: true, research: { orderBy: { queuedAt: "desc" }, select: { status: true, outcome: true, queuedAt: true, finishedAt: true } } },
-  });
-  const retries = tried
-    .filter((c) => retryDecision(c.research, now).retry)
-    .sort((a, b) => (a.research[0]!.finishedAt ?? a.research[0]!.queuedAt).getTime() - (b.research[0]!.finishedAt ?? b.research[0]!.queuedAt).getTime() || a.id.localeCompare(b.id));
-  return { fresh: fresh.map((c) => c.id), retries: retries.map((c) => c.id) };
+  const preview = await discoveryAutomationPreview(db, { now });
+  const research = preview.rows.filter(r => r.assessment.action === "research");
+  const retries = research.filter(r => r.assessment.researchKind === "retry");
+  const runs = retries.length ? await db.candidateResearch.findMany({ where: { candidateId: { in: retries.map(r => r.id) } }, orderBy: { queuedAt: "desc" } }) : [];
+  const lastAttempt = new Map<string, number>();
+  for (const run of runs) if (!lastAttempt.has(run.candidateId)) lastAttempt.set(run.candidateId, (run.finishedAt ?? run.queuedAt).getTime());
+  return {
+    fresh: research.filter(r => r.assessment.researchKind !== "retry").slice(0, limit).map(r => r.id),
+    retries: retries.sort((a, b) => lastAttempt.get(a.id)! - lastAttempt.get(b.id)!).map(r => r.id),
+  };
 }
-
-/** How many candidates are waiting for the automatic worker: never researched, and eligible retries. */
 export async function autoResearchWaiting(db: Db, now = new Date()) {
-  const [fresh, { retries }] = await Promise.all([
-    db.discoveryCandidate.count({ where: { ...AUTO_RESEARCHABLE, research: { none: {} } } }),
-    autoResearchSelection(db, 0, now),
-  ]);
-  return { fresh, retries: retries.length };
+  const selected = await autoResearchSelection(db, 100_000, now);
+  return { fresh: selected.fresh.length, retries: selected.retries.length };
 }
 
 /**
@@ -647,7 +650,7 @@ export interface AutoResearchReport {
  * One invocation of the automatic research worker (discovery:research
  * --auto), for Railway Cron: off unless armed; one worker at a time (the
  * lock); stale runs released; new candidates, then eligible retries, queued
- * as "scheduled"; then queued runs processed oldest first, sequentially, up
+ * as "scheduled" | "recovery"; then queued runs processed oldest first, sequentially, up
  * to `limit` and within the time budget, each followed by the automatic
  * decision (approval@a1, rejection@r1, or review). It never sends anything.
  */
@@ -674,18 +677,32 @@ export async function runAutoResearch(
   try {
     const limit = Math.max(1, Math.min(MAX_BATCH_AUTO, opts.limit));
     report.reclaimed = await failStaleResearch(db);
+    const preview = await discoveryAutomationPreview(db);
+    for (const item of preview.rows.filter(r => ["category", "qualify", "reject", "link_duplicate"].includes(r.assessment.action)).slice(0, limit)) {
+      if (opts.shouldStop?.() || clock() - started >= (opts.budgetMs ?? AUTO_TIME_BUDGET_MS)) break;
+      const results = await applyDiscoveryBatch(db, [{ id: item.id, token: item.token }]);
+      report.rejected += results.filter(r => r.applied && item.assessment.action === "reject").length;
+    }
     // Runs already waiting (queued earlier, by a person or a previous invocation) go first and count toward the limit.
     const slots = Math.max(0, limit - (await db.candidateResearch.count({ where: { status: "queued" } })));
     const { fresh, retries } = slots ? await autoResearchSelection(db, slots, new Date(clock())) : { fresh: [], retries: [] };
     const picked = [...fresh, ...retries].slice(0, slots);
-    const queued = picked.length ? (await enqueueResearch(db, picked, "scheduled", slots)).queued.map((q) => q.candidateId) : [];
+    const stopped = () => opts.shouldStop?.() || clock() - started >= (opts.budgetMs ?? AUTO_TIME_BUDGET_MS);
+    const queued: string[] = [];
+    for (const id of picked) {
+      if (stopped()) break;
+      const item = (await discoveryAutomationPreview(db)).rows.find(r => r.id === id);
+      if (!item || item.assessment.action !== "research") continue;
+      const result = await applyDiscoveryBatch(db, [{ id, token: item.token }]);
+      if (result[0]?.applied) queued.push(id);
+    }
     report.queuedFresh = queued.filter((id) => fresh.includes(id)).length;
     report.queuedRetries = queued.length - report.queuedFresh;
 
     const sleep = opts.deps?.sleep ?? ((ms: number) => new Promise((r) => setTimeout(r, ms)));
     const { results, stoppedBy } = await drainWithBudget({
       limit,
-      budgetMs: opts.budgetMs ?? AUTO_TIME_BUDGET_MS,
+      budgetMs: Math.max(0, (opts.budgetMs ?? AUTO_TIME_BUDGET_MS) - (clock() - started)),
       clock,
       shouldStop: opts.shouldStop ?? (() => false),
       sleep,

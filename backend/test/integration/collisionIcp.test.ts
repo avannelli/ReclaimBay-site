@@ -46,7 +46,10 @@ describe("collision/body segment of the automotive repair ICP: full acquisition 
       const c = await discover(); assert.equal(c.categoryTier, "core"); assert.equal(c.categoryVerdict, "unclear");
       assert.ok(!c.signals.some(s => s.key === "collision_repair_services"));
       await research(c.id, services);
-      const after = await candidate(); assert.equal(after.status, "approved", JSON.stringify(await assessCandidateApproval(db, c.id))); assert.equal(after.categoryVerdict, "in_target");
+      assert.equal((await candidate()).status, "researched", JSON.stringify(await assessCandidateApproval(db, c.id)));
+      assert.equal(await db.prospect.count(), 0);
+      await approveCandidate(db, c.id);
+      const after = await candidate(); assert.equal(after.status, "approved"); assert.equal(after.categoryVerdict, "in_target");
       // Fit rests on sourced repair evidence; collision/body evidence exists only when the site offers it.
       assert.ok(after.evidence.some(e => e.signalKey === "automotive_repair_services" && e.sourceUrl.endsWith("/collision") && e.excerpt));
       assert.equal(after.evidence.some(e => e.signalKey === "collision_repair_services"), /collision/.test(services));

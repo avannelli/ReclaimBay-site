@@ -1,6 +1,11 @@
+import { automationInclude, type AutomationAssessment } from "./automationPolicy.js";
+import { applyDiscoveryAutomation, discoveryAutomationPreview } from "./automation.js";
+import { duplicatePending } from "./duplicateReview.js";
+import { candidateProtection, protectionIndex } from "./protection.js";
+import { WARNING_REVIEW_PREFIX, unreviewedWarnings, warningReviewSignature } from "./warningReview.js";
 import type { Db } from "../db.js";
 import type { Prisma } from "../generated/prisma/client.js";
-import { fitBasis, fitConflict } from "../research/repairFit.js";
+import { fitBasis, fitConflict, fitEvidenceErrors } from "../research/repairFit.js";
 import {
   ProspectError,
   generateReferralCode,
@@ -36,7 +41,7 @@ import {
 } from "./candidateStatus.js";
 import { duplicateState, isDuplicateAnswer, isFlagged, matchReasons, type DuplicateAnswer } from "./duplicateReview.js";
 import { ACTIVE_LANES, LANES, nextStep, type Lane, type NextStep } from "./workQueue.js";
-import { AUTO_APPROVAL_RULES, AUTO_REJECTED_PREFIX, REOPENED_PREFIX, assessAutoApproval, isAutoApproved, type AutoApprovalAssessment, type LatestResearch } from "./autoApproval.js";
+import { AUTO_REJECTED_PREFIX, REOPENED_PREFIX, isAutoApproved, type AutoApprovalAssessment } from "./autoApproval.js";
 import { nameCategory } from "./categories.js";
 import {
   CATEGORY_VERDICT_LABELS,
@@ -542,6 +547,10 @@ type CandidateWithResearch = Prisma.DiscoveryCandidateGetPayload<{ include: type
 export const lockCandidate = (tx: Prisma.TransactionClient, id: string) =>
   tx.$queryRaw`SELECT id FROM "DiscoveryCandidate" WHERE id = ${id}::uuid FOR UPDATE`;
 
+async function assertUnprotected(tx: Db | Tx, c: Parameters<typeof candidateProtection>[0]) {
+  if (candidateProtection(c, await protectionIndex(tx)).protected) throw new ProspectError(["This identity is linked to a prospect or outreach history. Preserve it and review the existing prospect."], "conflict");
+}
+
 /** Edits facts and signals with the prospect validators. Approved candidates are frozen. */
 export async function updateCandidate(db: Db, id: string, raw: Raw) {
   const { input, errors } = parseProspectInput(raw);
@@ -556,6 +565,7 @@ export async function updateCandidate(db: Db, id: string, raw: Raw) {
     const current = await tx.discoveryCandidate.findUnique({ where: { id }, include: candidateInclude });
     if (!current) throw notFound();
     if (isFrozen(current.status)) throw frozenError();
+    await assertUnprotected(tx, current);
 
     // An edit can't leave a Researched candidate with an unsourced signal.
     if (current.status === "researched") {
@@ -590,8 +600,8 @@ export async function updateCandidate(db: Db, id: string, raw: Raw) {
         researchRevision: { increment: 1 },
         businessName: f.businessName!,
         ...storedKeysOf({ ...f, businessName: f.businessName!, providerPhone: current.providerPhone }),
-        // A different website is no longer the one research verified.
-        ...((f.website ?? null) !== current.website ? { websiteVerifiedAt: null } : {}),
+        // Website ownership was verified for a particular business and location.
+        ...((["businessName", "website", "city", "state", "postalCode", "country"] as const).some(key => (f[key] ?? null) !== current[key]) ? { websiteVerifiedAt: null } : {}),
         ...recheck,
       },
     });
@@ -619,6 +629,7 @@ export async function changeCandidateStatus(db: Db, id: string, toRaw: string, r
       reason,
     );
     if (errors.length) throw new ProspectError(errors);
+    if (!(current.status === "duplicate" && to === "discovered")) await assertUnprotected(tx, current);
 
     const now = new Date();
     const closing = to === "rejected" || to === "duplicate";
@@ -642,6 +653,7 @@ export async function changeCandidateStatus(db: Db, id: string, toRaw: string, r
       const was = current.decisionReason ? ` It had been rejected: ${current.decisionReason}` : "";
       await tx.candidateNote.create({ data: { candidateId: id, body: `${REOPENED_PREFIX}.${was}`.slice(0, 2000) } });
     }
+    if (current.status === "duplicate" && to === "discovered") await tx.candidateNote.create({ data: { candidateId: id, body: `${REOPENED_PREFIX}. Prior duplicate decision: ${current.decisionReason ?? "Duplicate"}. Canonical/possible duplicate links remain preserved.`.slice(0, 2000) } });
     return { from: current.status, to };
   });
 }
@@ -750,6 +762,7 @@ export async function setCandidateCategory(db: Db, id: string, verdictRaw: strin
     const c = await tx.discoveryCandidate.findUnique({ where: { id } });
     if (!c) throw notFound();
     if (isFrozen(c.status)) throw frozenError();
+    await assertUnprotected(tx, c);
     const now = new Date();
     const next: CategoryResult =
       verdictRaw === "automatic"
@@ -769,7 +782,7 @@ export interface CategoryBackfill {
   checked: number;
   /** Records whose name-stage result differs from what is stored (written only with apply). */
   changes: { id: string; name: string; city: string | null; from: CategoryVerdict | null; to: CategoryVerdict; reason: string }[];
-  skipped: { manual: number; website: number; approved: number };
+  skipped: { manual: number; website: number; approved: number; protected: number };
   /** Every candidate's verdict after the backfill (or after it would run). */
   verdicts: Record<CategoryVerdict, number>;
 }
@@ -785,10 +798,11 @@ export async function backfillCategoryCheck(db: Db, opts: { apply: boolean }): P
   const out: CategoryBackfill = {
     checked: 0,
     changes: [],
-    skipped: { manual: 0, website: 0, approved: 0 },
+    skipped: { manual: 0, website: 0, approved: 0, protected: 0 },
     verdicts: { in_target: 0, wrong_category: 0, unclear: 0 },
   };
   let cursor: string | undefined;
+  const relationships = await protectionIndex(db);
   for (;;) {
     const rows = await db.discoveryCandidate.findMany({
       orderBy: { id: "asc" },
@@ -811,6 +825,12 @@ export async function backfillCategoryCheck(db: Db, opts: { apply: boolean }): P
     cursor = rows.at(-1)!.id;
     for (const c of rows) {
       out.checked++;
+      const identity = relationships.candidates.find(row => row.id === c.id);
+      if (["rejected", "duplicate"].includes(c.status) || (identity && candidateProtection(identity, relationships).protected && c.status !== "approved")) {
+        out.skipped.protected++;
+        if (c.categoryVerdict) out.verdicts[c.categoryVerdict]++;
+        continue;
+      }
       const next = nameCategory({ businessName: c.businessName, category: c.providerCategory, categoryTier: c.categoryTier });
       const keep = c.status === "approved" || !automatedMayReplace({ verdict: c.categoryVerdict, source: c.categorySource }, next);
       if (keep) {
@@ -825,7 +845,14 @@ export async function backfillCategoryCheck(db: Db, opts: { apply: boolean }): P
         c.categoryVerdict === next.verdict && c.categorySource === next.source && c.categoryReason === next.reason && c.categoryRules === next.rules;
       if (unchanged) continue;
       out.changes.push({ id: c.id, name: c.businessName, city: c.city, from: c.categoryVerdict, to: next.verdict, reason: next.reason });
-      if (opts.apply) await db.discoveryCandidate.update({ where: { id: c.id }, data: { ...categoryFields(next, new Date()), researchRevision: { increment: 1 } } });
+      if (opts.apply) await db.$transaction(async tx => {
+        await lockCandidate(tx, c.id);
+        const current = await tx.discoveryCandidate.findUnique({ where: { id: c.id } });
+        if (!current || ["approved", "rejected", "duplicate"].includes(current.status) || candidateProtection(current, await protectionIndex(tx)).protected ||
+          current.businessName !== c.businessName || current.categoryVerdict !== c.categoryVerdict || current.categorySource !== c.categorySource || current.categoryRules !== c.categoryRules) return;
+        await tx.discoveryCandidate.update({ where: { id: c.id }, data: { ...categoryFields(next, new Date()), researchRevision: { increment: 1 } } });
+        await tx.candidateNote.create({ data: { candidateId: c.id, body: `Category rules refreshed: ${JSON.stringify({ before: { verdict: c.categoryVerdict, rules: c.categoryRules, reason: c.categoryReason }, after: next })}`.slice(0, 2000) } });
+      }, { isolationLevel: "Serializable" });
     }
   }
 }
@@ -858,6 +885,7 @@ export async function deleteCandidateEvidence(db: Db, id: string, evidenceId: st
   await db.$transaction(async (tx) => {
     await lockCandidate(tx, id);
     const c = await loadEditable(tx, id);
+    await assertUnprotected(tx, c);
     if (!c.evidence.some((e) => e.id === evidenceId)) throw new ProspectError(["Evidence not found."], "not_found");
     if (c.status === "researched") {
       const remaining = c.evidence.filter((e) => e.id !== evidenceId);
@@ -872,9 +900,30 @@ export async function deleteCandidateEvidence(db: Db, id: string, evidenceId: st
 export async function addCandidateNote(db: Db, id: string, bodyRaw: unknown) {
   const body = typeof bodyRaw === "string" ? bodyRaw.trim() : "";
   if (!body) throw new ProspectError(["Note can't be empty."]);
+  if (body.startsWith(WARNING_REVIEW_PREFIX)) throw new ProspectError(["Use the research warning review form to record a sourced resolution."]);
   if (body.length > FIELD_LIMITS.note) throw new ProspectError([`Note is too long (max ${FIELD_LIMITS.note}).`]);
   await loadEditable(db, id);
   return db.candidateNote.create({ data: { candidateId: id, body } });
+}
+
+/** A human may resolve an identity warning with a source and explanation, retaining the run. */
+export async function reviewResearchWarnings(db: Db, id: string, raw: Raw) {
+  const parsed = parseEvidence({ signalKey: "automotive_repair_services", sourceUrl: raw.sourceUrl, excerpt: raw.reason });
+  if (!parsed.evidence) throw new ProspectError(parsed.errors);
+  const evidence = parsed.evidence;
+  return db.$transaction(async tx => {
+    await lockCandidate(tx, id);
+    const c = await loadEditable(tx, id);
+    await assertUnprotected(tx, c);
+    const run = await tx.candidateResearch.findFirst({ where: { candidateId: id, status: "completed" }, orderBy: automationInclude.research.orderBy });
+    if (!run || raw.researchId !== run.id) throw new ProspectError(["Research changed. Reload before reviewing its warnings."], "conflict");
+    const fitErrors = fitEvidenceErrors(c, fitBasis(c.signals), c.evidence);
+    if (fitErrors.some(error => /contradictory/i.test(error))) throw new ProspectError(["Resolve contradictory source evidence before reviewing these warnings."]);
+    await tx.discoveryCandidate.update({ where: { id }, data: { researchRevision: { increment: 1 } } });
+    const body = WARNING_REVIEW_PREFIX + JSON.stringify({ researchId: run.id, warnings: JSON.stringify(run.warnings), subjectSignature: warningReviewSignature(c), reason: evidence.excerpt, sourceUrl: evidence.sourceUrl });
+    if (body.length > FIELD_LIMITS.note) throw new ProspectError(["The warning review is too long to record safely."]);
+    await tx.candidateNote.create({ data: { candidateId: id, body } });
+  });
 }
 
 // ---------- research provider findings ----------
@@ -904,12 +953,17 @@ export async function applyResearchFindings(db: Db, id: string, findings: Resear
   return db.$transaction(async (tx) => {
     await lockCandidate(tx, id);
     const c = await loadEditable(tx, id);
+    await assertUnprotected(tx, c);
     if (c.status === "rejected" || c.status === "duplicate") {
       throw new ProspectError([`Reopen this ${c.status} candidate before researching it.`]);
     }
     const good = evidence.filter((e): e is NonNullable<typeof e> => e !== null);
     const merged = new Map<string, StoredSignalValue>(c.signals.map((s) => [s.key, s.value]));
-    for (const [key, value] of Object.entries(newSignals)) merged.set(key, value);
+    for (const [key, value] of Object.entries(newSignals)) {
+      const previous = c.signals.find(s => s.key === key);
+      if (previous && previous.value !== value) throw new ProspectError([`Research conflicts with retained ${key} evidence. Resolve it by hand before applying findings.`]);
+      merged.set(key, value);
+    }
     const allEvidence = [...c.evidence, ...good];
 
     const contact = findings.contact ?? {};
@@ -944,7 +998,7 @@ export async function applyResearchFindings(db: Db, id: string, findings: Resear
       await tx.candidateSignal.upsert({
         where: { candidateId_key: { candidateId: id, key } },
         create: { candidateId: id, key, value, observedAt: now },
-        update: { value, observedAt: now },
+        update: {},
       });
     }
     if (good.length) await tx.candidateEvidence.createMany({ data: good.map((e) => ({ ...e, candidateId: id })) });
@@ -963,9 +1017,9 @@ export async function applyResearchFindings(db: Db, id: string, findings: Resear
         email: facts.email,
         emailSourceUrl: facts.emailSourceUrl,
         phoneKey: phoneKey(facts.phone) ?? phoneKey(c.providerPhone),
-        status: "researched",
+        status: c.status === "needs_review" ? "needs_review" : "researched",
         statusChangedAt: now,
-        duplicateHold: false,
+        duplicateHold: c.duplicateHold,
         researchedAt: now,
       },
     });
@@ -990,18 +1044,14 @@ export async function applyResearchFindings(db: Db, id: string, findings: Resear
  * claimed only from Researched (never from a person's Needs review).
  */
 export async function approveCandidate(db: Db, id: string, opts: { automatic?: boolean } = {}) {
+  if (opts.automatic) throw new ProspectError(["Automatic prospect creation is disabled. A person must approve this candidate."]);
   return db.$transaction(async (tx) => {
     await lockCandidate(tx, id);
     const c = await tx.discoveryCandidate.findUnique({ where: { id }, include: candidateInclude });
     if (!c) throw notFound();
     if (c.status === "approved" || c.prospectId) throw new ProspectError(["Already approved."], "conflict");
-    let automatic: AutoApprovalAssessment | null = null;
-    if (opts.automatic) {
-      automatic = assessAutoApproval(await decisionFacts(tx, c));
-      if (automatic.decision !== "approve") throw new ProspectError(automatic.reasons, "conflict");
-    }
-
     const errors: string[] = [];
+    if (duplicatePending(c)) errors.push("Resolve the possible duplicate before approval.");
     if (!APPROVABLE_FROM.includes(c.status)) {
       errors.push(
         `Only Researched or Needs review candidates can be approved; this one is ${CANDIDATE_STATUS_LABELS[c.status]}.`,
@@ -1009,9 +1059,12 @@ export async function approveCandidate(db: Db, id: string, opts: { automatic?: b
     }
     errors.push(...researchGateErrors(c.signals, c.evidence));
     errors.push(...categoryApprovalErrors(c));
-    const lastResearch = await tx.candidateResearch.findFirst({ where: { candidateId: c.id, status: "completed" }, orderBy: { queuedAt: "desc" }, select: { warnings: true } });
-    const conflict = fitConflict(lastResearch?.warnings, fitBasis(c.signals));
+    const lastResearch = await tx.candidateResearch.findFirst({ where: { candidateId: c.id, status: "completed" }, orderBy: automationInclude.research.orderBy, select: { id: true, warnings: true } });
+    const warnings = unreviewedWarnings(lastResearch ?? undefined, await tx.candidateNote.findMany({ where: { candidateId: id } }), c);
+    const conflict = fitConflict(warnings, fitBasis(c.signals));
     if (conflict) errors.push(`Resolve contradictory ${conflict} evidence before approving this business.`);
+    if (Array.isArray(warnings) && warnings.some(w => typeof w === "string" && /contradictory/i.test(w))) errors.push("Resolve contradictory research evidence before approving this business.");
+    if (fitBasis(c.signals)) errors.push(...fitEvidenceErrors(c, fitBasis(c.signals), c.evidence).filter(e => /contradictory/i.test(e)));
     const { input, errors: inputErrors } = candidateToProspectInput(c);
     errors.push(...inputErrors);
 
@@ -1031,15 +1084,13 @@ export async function approveCandidate(db: Db, id: string, opts: { automatic?: b
     const now = new Date();
     // Claim first: two simultaneous approvals can't both proceed.
     const { count } = await tx.discoveryCandidate.updateMany({
-      where: { id, status: { in: automatic ? ["researched"] : [...APPROVABLE_FROM] }, prospectId: null },
+      where: { id, status: { in: [...APPROVABLE_FROM] }, prospectId: null },
       data: {
         status: "approved",
         researchRevision: { increment: 1 },
         statusChangedAt: now,
         approvedAt: now,
         decidedAt: now,
-        // An automatic approval records why; a person's approval has no reason, as before.
-        ...(automatic ? { decisionReason: automatic.approvalNote!.slice(0, 500) } : {}),
       },
     });
     if (count !== 1) throw new ProspectError(["The candidate changed meanwhile. Reload and try again."], "conflict");
@@ -1064,44 +1115,21 @@ export async function approveCandidate(db: Db, id: string, opts: { automatic?: b
             runId: c.runId,
             release: c.providerRelease,
           },
-          automatic ? { automatic: AUTO_APPROVAL_RULES } : {},
         ),
-        ...(automatic ? [automatic.approvalNote!] : []),
       ],
     });
     await tx.discoveryCandidate.update({ where: { id }, data: { prospectId: prospect.id } });
-    if (automatic) await tx.candidateNote.create({ data: { candidateId: id, body: automatic.approvalNote!.slice(0, 2000) } });
     return { prospect, candidateId: id };
   });
 }
 
-// ---------- automatic approval (rules in autoApproval.ts) ----------
-
-/** The candidate's most recent research run, as the automatic-approval rule reads it. */
-async function latestResearch(db: Db | Tx, candidateId: string): Promise<LatestResearch | null> {
-  const run = await db.candidateResearch.findFirst({
-    where: { candidateId },
-    orderBy: { queuedAt: "desc" },
-    include: { facts: { where: { field: "business_type" }, take: 1 } },
-  });
-  return run ? asLatestResearch(run) : null;
-}
-
-const asLatestResearch = (run: { status: string; outcome: string | null; version: string; warnings: unknown; facts: { value: string | null; note: string | null }[] }): LatestResearch => {
-  const type = run.facts[0];
-  return { status: run.status, outcome: run.outcome, version: run.version, warnings: run.warnings, businessType: type ? { value: type.value, note: type.note } : null };
-};
-
-/** Everything the automatic rules read about a candidate: its record, its latest run, and whether a person reopened it. */
-async function decisionFacts(db: Db | Tx, c: CandidateWithResearch) {
-  const reopened = await db.candidateNote.count({ where: { candidateId: c.id, body: { startsWith: REOPENED_PREFIX } } });
-  return { ...c, latestRun: await latestResearch(db, c.id), reopenedByPerson: reopened > 0 };
-}
+// ---------- Discovery assessment and compatibility entry points ----------
 
 /** What the automatic rules say about a candidate now (read-only). */
 export async function assessCandidateApproval(db: Db, id: string): Promise<AutoApprovalAssessment | null> {
-  const c = await db.discoveryCandidate.findUnique({ where: { id }, include: candidateInclude });
-  return c ? assessAutoApproval(await decisionFacts(db, c)) : null;
+  const row = (await discoveryAutomationPreview(db)).rows.find(r => r.id === id);
+  if (!row) return null;
+  return { decision: row.status === "approved" ? "approved" : row.assessment.action === "reject" ? "reject" : row.assessment.action === "handled" ? "blocked" : "review", reasons: [row.assessment.reason], noted: [], approvalNote: null };
 }
 
 export interface AutoApprovalOutcome {
@@ -1121,54 +1149,19 @@ export interface AutoApprovalOutcome {
  * repeat changes nothing: the reason and its note are written once, by the
  * call that moved it.
  */
+/** Compatibility entry points now evaluate Discovery only; they never create prospects. */
 export async function autoRejectCandidate(db: Db, id: string): Promise<AutoApprovalOutcome | null> {
-  return db.$transaction(async (tx) => {
-    await lockCandidate(tx, id);
-    const c = await tx.discoveryCandidate.findUnique({ where: { id }, include: candidateInclude });
-    if (!c) return null;
-    const assessment = assessAutoApproval(await decisionFacts(tx, c));
-    if (assessment.decision !== "reject") return { candidateId: id, businessName: c.businessName, assessment };
-    const now = new Date();
-    const { count } = await tx.discoveryCandidate.updateMany({
-      where: { id, status: "researched", prospectId: null },
-      data: { researchRevision: { increment: 1 }, status: "rejected", statusChangedAt: now, decidedAt: now, decisionReason: assessment.approvalNote!.slice(0, 500) },
-    });
-    if (count !== 1) return { candidateId: id, businessName: c.businessName, assessment };
-    await tx.candidateNote.create({ data: { candidateId: id, body: assessment.approvalNote! } });
-    return { candidateId: id, businessName: c.businessName, assessment, rejected: true };
-  });
+  return autoDecideCandidate(db, id);
 }
-
-/**
- * The automatic decision for one candidate: approve (approval@a1), reject
- * (rejection@r1), or leave it for review. Run after every completed research
- * run, and by the re-decision pass. Safe to repeat.
- */
 export async function autoDecideCandidate(db: Db, id: string): Promise<AutoApprovalOutcome | null> {
-  const assessment = await assessCandidateApproval(db, id);
-  if (!assessment) return null;
-  if (assessment.decision === "reject") return autoRejectCandidate(db, id);
-  return autoApproveCandidate(db, id);
-}
-
-/**
- * Approves the candidate if, and only if, the automatic-approval rule says
- * so. Never throws for a candidate that doesn't qualify: it reports why it
- * was held. Safe to repeat: an approved candidate is never approved twice.
- */
-export async function autoApproveCandidate(db: Db, id: string): Promise<AutoApprovalOutcome | null> {
-  const c = await db.discoveryCandidate.findUnique({ where: { id }, select: { businessName: true } });
+  const c = await db.discoveryCandidate.findUnique({ where: { id }, select: { businessName: true, status: true } });
   if (!c) return null;
-  const assessment = (await assessCandidateApproval(db, id))!;
-  if (assessment.decision !== "approve") return { candidateId: id, businessName: c.businessName, assessment };
-  try {
-    const { prospect } = await approveCandidate(db, id, { automatic: true });
-    return { candidateId: id, businessName: c.businessName, assessment, prospectId: prospect.id };
-  } catch (err) {
-    if (!(err instanceof ProspectError)) throw err;
-    // Something an approval checks changed, or an existing prospect matches: a person decides.
-    return { candidateId: id, businessName: c.businessName, assessment: { ...assessment, decision: "review", reasons: err.messages, approvalNote: null } };
-  }
+  const result = await applyDiscoveryAutomation(db, id);
+  return { candidateId: id, businessName: c.businessName, rejected: result.applied && result.assessment.action === "reject",
+    assessment: { decision: c.status === "approved" ? "approved" : result.assessment.action === "reject" ? "reject" : result.assessment.action === "handled" ? "blocked" : "review", reasons: [result.assessment.reason], noted: [], approvalNote: null } };
+}
+export async function autoApproveCandidate(db: Db, id: string): Promise<AutoApprovalOutcome | null> {
+  return autoDecideCandidate(db, id);
 }
 
 /**
@@ -1185,10 +1178,12 @@ export async function runAutoApproval(db: Db, opts: { apply: boolean; candidateI
     orderBy: { discoveredAt: "asc" },
   });
   const out: AutoApprovalOutcome[] = [];
+  const preview = opts.apply ? null : await discoveryAutomationPreview(db);
   for (const { id } of rows) {
     const r = opts.apply ? await autoDecideCandidate(db, id) : await (async () => {
       const c = await db.discoveryCandidate.findUniqueOrThrow({ where: { id }, select: { businessName: true } });
-      return { candidateId: id, businessName: c.businessName, assessment: (await assessCandidateApproval(db, id))! };
+      const row = preview!.rows.find(r => r.id === id)!;
+      return { candidateId: id, businessName: c.businessName, assessment: { decision: row.status === "approved" ? "approved" as const : row.assessment.action === "handled" ? "blocked" as const : row.assessment.action === "reject" ? "reject" as const : "review" as const, reasons: [row.assessment.reason], noted: [], approvalNote: null } };
     })();
     if (r) out.push(r);
   }
@@ -1310,7 +1305,7 @@ export const isQueueView = (v: unknown): v is QueueView => (QUEUE_VIEWS as reado
 
 type ScoredCandidate = Awaited<ReturnType<typeof scoredCandidates>>["scored"][number];
 /** `held`: for Ready to approve, why automatic approval didn't approve it (reviewQueue fills it in). */
-export type QueueItem = ScoredCandidate & { step: NextStep; held?: string | null };
+export type QueueItem = ScoredCandidate & { step: NextStep; automationAssessment?: AutomationAssessment; held?: string | null };
 
 /**
  * What the automation has decided, for the Discovery summary: approved
@@ -1326,6 +1321,8 @@ export interface AutomationSummary {
   autoRejected: number;
   researching: number;
   notResearched: number;
+  automaticWaiting?: number;
+  evidenceRequests?: number;
 }
 
 const inView = (view: QueueView, s: NextStep) =>
@@ -1361,32 +1358,29 @@ export async function reviewQueue(db: Db, filters: CandidateFilters, view: Queue
   const { ordered, ...rest } = await orderedQueue(db, filters, view);
   const items = ordered.slice(0, CANDIDATE_LIST_LIMIT);
   // Ready to approve means a person approves it: say why the automatic rule held it. One query for the shown items.
-  const ready = items.filter((i) => i.step.kind === "ready");
-  if (ready.length) {
-    const runs = await db.candidateResearch.findMany({
-      where: { candidateId: { in: ready.map((i) => i.candidate.id) } },
-      orderBy: { queuedAt: "desc" },
-      include: { facts: { where: { field: "business_type" }, take: 1 } },
-    });
-    const latest = new Map<string, LatestResearch>();
-    for (const r of runs) if (!latest.has(r.candidateId)) latest.set(r.candidateId, asLatestResearch(r));
-    for (const i of ready) {
-      const a = assessAutoApproval({ ...i.candidate, latestRun: latest.get(i.candidate.id) ?? null });
-      i.held = a.decision === "review" ? (a.reasons[0] ?? null) : a.decision === "approve" ? "It meets every condition; the next automatic pass will approve it." : null;
-    }
-  }
+  for (const i of items.filter(i => i.step.kind === "ready")) i.held = "Evidence is ready. A person approves this candidate before it becomes a prospect.";
   return { ...rest, items };
 }
 
 /** The whole queue for a view in queue order, uncapped: the display limit applies only in reviewQueue. */
 async function orderedQueue(db: Db, filters: CandidateFilters, view: QueueView) {
   const { scored, sort, notRanked } = await scoredCandidates(db, filters);
-  const items: QueueItem[] = scored.map((r) => ({ ...r, step: stepOf(r) }));
+  const preview = await discoveryAutomationPreview(db);
+  const plans = new Map(preview.rows.map(r => [r.id, r.assessment]));
+  const items: QueueItem[] = scored.map(r => {
+    const assessment = plans.get(r.candidate.id);
+    let step = stepOf(r);
+    if (assessment && ["category", "qualify"].includes(assessment.action)) step = { lane: "research", kind: "research_incomplete", action: "review" };
+    else if (assessment?.action === "research" && step.lane === "decision") step = { lane: "research", kind: "not_researched", action: "run_research" };
+    else if (assessment?.action === "wait") step = { lane: "research", kind: "research_running", action: "wait" };
+    else if (step.kind === "ready" && assessment?.action !== "ready") step = { lane: "decision", kind: "on_hold", action: "review" };
+    return { ...r, step, automationAssessment: assessment };
+  });
   const counts = Object.fromEntries(LANES.map((l) => [l, 0])) as Record<Lane, number>;
   let duplicates = 0;
   let disregarded = 0;
   let completed = 0;
-  const automation: AutomationSummary = { approved: 0, autoApproved: 0, review: 0, rejected: 0, autoRejected: 0, researching: 0, notResearched: 0 };
+  const automation: AutomationSummary = { automaticWaiting: preview.actionable, evidenceRequests: preview.counts.human ?? 0, approved: 0, autoApproved: 0, review: 0, rejected: 0, autoRejected: 0, researching: 0, notResearched: 0 };
   for (const i of items) {
     counts[i.step.lane]++;
     if (i.step.kind === "duplicate") duplicates++;
@@ -1498,7 +1492,7 @@ export async function getCandidateDetail(db: Db, id: string) {
   ]);
   const result = scoreCandidate(candidate);
   const approvalBlockers = approvalBlockersOf(candidate);
-  const autoApproval = assessAutoApproval(await decisionFacts(db, candidate));
+  const autoApproval = (await assessCandidateApproval(db, candidate.id))!;
   return { candidate, result, outsideTarget: isOutsideTarget(candidate), autoApproval, dupCandidate, dupProspect, relCandidate, relProspect, approvalBlockers };
 }
 

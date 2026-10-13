@@ -45,7 +45,7 @@ describe("research freshness: obsolete workers cannot mutate newer state", { ski
     nameKey: "saviers road auto repair", streetAddress: "5577 Saviers Rd",
     city: "Oxnard", state: "CA", country: "US", providerPhone: "+18055550101",
   } });
-  const full = (id: string) => db.discoveryCandidate.findUniqueOrThrow({ where: { id }, include: { signals: true, evidence: true } });
+  const full = (id: string) => db.discoveryCandidate.findUniqueOrThrow({ where: { id }, include: { signals: { orderBy: { id: "asc" } }, evidence: { orderBy: { id: "asc" } } } });
   const run = (id: string) => db.candidateResearch.findUniqueOrThrow({ where: { id } });
   const editWebsite = (id: string, website: string) => updateCandidate(db, id, readyForm({
     businessName: "Saviers Road Auto Repair", website, city: "Oxnard", state: "CA", phone: "", phoneSourceUrl: "",

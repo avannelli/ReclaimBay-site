@@ -66,7 +66,7 @@ describe("discovery work queue", { skip: skipReason }, () => {
     if (opts.researched === false) return c.id;
     await changeCandidateStatus(db, c.id, "researching", null);
     for (const [key, value] of [["independent_shop", "yes"], ["automotive_repair_services", answers.fit], ["general_repair_services", answers.repair]] as const) {
-      if (value !== "unknown") await addCandidateEvidence(db, c.id, { signalKey: key, sourceUrl: `${website}/about`, excerpt: `Public page about ${key}.` });
+      if (value !== "unknown") await addCandidateEvidence(db, c.id, { signalKey: key, sourceUrl: `${website}/about`, excerpt: key === "automotive_repair_services" ? `We ${value === "no" ? "do not perform" : "offer"} automotive repair.` : `Public page about ${key}.` });
     }
     await changeCandidateStatus(db, c.id, "researched", null);
     return c.id;

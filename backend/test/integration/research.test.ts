@@ -142,18 +142,18 @@ describe("automated research (service)", { skip: skipReason }, () => {
     await changeStatus(db, prospect.id, "ready_to_contact", null);
   });
 
-  test("re-running replaces the previous research signals and evidence instead of adding to them", async () => {
+  test("re-running retains previous research evidence and every source run", async () => {
     const c = await candidate();
     await research(c.id);
     const first = await full(c.id);
     await research(c.id);
     const second = await full(c.id);
     assert.equal(second.signals.length, first.signals.length);
-    assert.equal(second.evidence.length, first.evidence.length, "no duplicated evidence");
+    assert.equal(second.evidence.length, first.evidence.length * 2, "observations remain attributed to both runs");
     assert.equal(await db.candidateResearch.count({ where: { candidateId: c.id } }), 2, "each run is history");
     for (let i = 0; i < RESEARCH_HISTORY + 2; i++) await research(c.id);
-    assert.equal(await db.candidateResearch.count({ where: { candidateId: c.id } }), RESEARCH_HISTORY, "old runs are pruned");
-    assert.equal((await full(c.id)).evidence.length, first.evidence.length);
+    assert.equal(await db.candidateResearch.count({ where: { candidateId: c.id } }), RESEARCH_HISTORY + 4, "all runs remain stored");
+    assert.equal((await full(c.id)).evidence.length, first.evidence.length * (RESEARCH_HISTORY + 4));
   });
 
   test("a signal a person recorded is never changed by research; the disagreement is reported", async () => {
@@ -176,7 +176,7 @@ describe("automated research (service)", { skip: skipReason }, () => {
     const ind = after.signals.find((s) => s.key === "independent_shop")!;
     assert.deepEqual([ind.value, ind.origin], ["no", "manual"]);
     assert.ok((run.warnings as string[]).some((w) => /independent_shop.*person recorded no/.test(w)));
-    assert.ok(!after.evidence.some((e) => e.signalKey === "independent_shop" && e.origin === "research"));
+    assert.ok(after.evidence.some((e) => e.signalKey === "independent_shop" && e.origin === "research"), "conflicting source preserved for human review");
   });
 
   test("a stored phone is never overwritten; a different number on the website is reported", async () => {
@@ -400,7 +400,7 @@ describe("automated research in the admin (HTTP)", { skip: skipReason }, () => {
     const overview = (await get("/admin/discovery?done=research_batch")).body;
     assert.match(overview, /Research queued for up to 10/);
     assert.match(overview, /10 completed/);
-    assert.match(overview, /No website known, so research found too little to go on\./);
+    assert.match(overview, /Find and save this business&#39;s own website|Find and save this business's own website/);
     // The next batch takes the remaining two.
     await post("/admin/discovery/research", { tier: "core" });
     await settled();

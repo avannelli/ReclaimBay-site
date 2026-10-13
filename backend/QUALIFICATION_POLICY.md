@@ -1,5 +1,7 @@
 # Qualification/scoring policy boundary
 
+Discovery acquisition uses `discovery@d1` / research r15. Its shared assessment wraps this unchanged v3 scoring policy with retained source evidence, identity, relationship protection and human-decision gates. It can mark a sourced candidate ready for approval, but Prospect creation requires a person. Historical general-repair Yes and opportunity scores do not establish current repair fit. Reinterpreted historical excerpts remain linked to their original run/source; weaker or conflicting reruns cannot erase them. See [DISCOVERY.md](DISCOVERY.md#discovery-automation-current-acquisition-boundary) for preview, refresh, review and recovery rules.
+
 The generic engine is the standalone AOS package (`@avannelli/aos/qualification`); it contains
 the pure, business-independent contract and execution.
 `ScoringPolicy<Input, Key>` supplies identity, criterion definitions,

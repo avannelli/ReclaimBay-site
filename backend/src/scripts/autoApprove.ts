@@ -5,20 +5,18 @@
  * or to see what the rules would do, without researching again.
  *
  *   npm run discovery:auto-approve                          (dry run: nothing changes)
- *   npm run discovery:auto-approve -- --apply               (approves and rejects as the rules decide)
+ *   npm run discovery:auto-approve -- --apply               (applies guarded Discovery decisions)
  *   npm run discovery:auto-approve -- --candidate <id> [--candidate <id> ...] [--apply]
  *
- * It approves only clean, high-confidence leads (approval@a1) and rejects
- * only candidates research showed with sources can never qualify
- * (rejection@r1), as discovery/autoApproval.ts defines; everything else is
- * reported with the reason it waits for a person. It never researches, never
- * changes research, categories, or scores, never overrides a person, and
- * never sends anything. Repeating it is safe.
+ * Compatibility command: discovery@d1 may add source-linked qualification,
+ * audited category corrections, canonical duplicate annotations or sourced
+ * rejection. It creates no prospects and queues no research or outreach.
+ * Use discovery:automation for a full preview and fingerprinted selection.
  */
 import { parseArgs } from "node:util";
 import { loadConfig } from "../config.js";
 import { createDb } from "../db.js";
-import { AUTO_APPROVAL_LABELS, AUTO_APPROVAL_RULES, AUTO_REJECTION_RULES } from "../discovery/autoApproval.js";
+import { AUTO_APPROVAL_LABELS } from "../discovery/autoApproval.js";
 import { runAutoApproval } from "../discovery/service.js";
 
 const { values } = parseArgs({
@@ -32,15 +30,14 @@ try {
   const results = await runAutoApproval(db, { apply, candidateIds: values.candidate });
   const approved = results.filter((r) => r.prospectId);
   const rejected = results.filter((r) => r.rejected);
-  const eligible = results.filter((r) => r.assessment.decision === "approve");
   const rejectable = results.filter((r) => r.assessment.decision === "reject");
   console.log(
-    `${apply ? "APPLIED" : "DRY RUN (nothing changes; pass --apply to approve and reject)"}: ${results.length} candidate(s) checked against ${AUTO_APPROVAL_RULES} and ${AUTO_REJECTION_RULES}.`,
+    `${apply ? "APPLIED" : "DRY RUN (nothing changes)"}: ${results.length} candidate(s) checked by Discovery automation. Prospect creation requires human approval.`,
   );
   console.log(
     apply
-      ? `  ${approved.length} approved and ${rejected.length} rejected automatically.`
-      : `  ${eligible.length} would be approved and ${rejectable.length} rejected automatically.`,
+      ? `  ${rejected.length} rejected; no prospects created. See discovery:automation for full action previews.`
+      : `  ${rejectable.length} would be rejected; no prospects would be created. See discovery:automation for qualification and research actions.`,
   );
   for (const decision of ["approve", "reject", "review", "blocked", "approved"] as const) {
     const list = results.filter((r) => (apply && (r.prospectId || r.rejected) ? "decided_now" : r.assessment.decision) === decision);

@@ -8,8 +8,8 @@
  * reversible exits. `approved` is terminal and is entered only through
  * approveCandidate(), which creates the Prospect; it is not a status anyone
  * can set directly. Approval is a "yes, put this in the pipeline" from a
- * person, or from the automatic-approval rule for a clean, high-confidence
- * lead (autoApproval.ts); it is never a claim that the business is qualified.
+ * person; it is never a claim that the business is qualified. Historical
+ * automatic approvals remain preserved.
  */
 
 export const CANDIDATE_STATUSES = [
@@ -42,8 +42,8 @@ export const CANDIDATE_STATUS_MEANINGS: Record<CandidateStatus, string> = {
   researching: "Being researched.",
   researched: "Research recorded, and every recorded fact has a public source.",
   needs_review: "Waiting for a human look, for example a possible duplicate.",
-  approved: "Approved by a person, or automatically as a clean, high-confidence lead. It is now a Prospect (status New).",
-  rejected: "A human decided it should not enter the pipeline.",
+  approved: "Approved by a person (or a preserved historical automatic decision). It is now a Prospect (status New).",
+  rejected: "Disregarded by a person or on explicit sourced negative repair evidence.",
   duplicate: "The same business as another candidate or prospect.",
 };
 

@@ -273,7 +273,7 @@ describe("automatic research worker (real PostgreSQL)", { skip: skipReason }, ()
     await lock.release();
   });
 
-  test("research is followed by the automatic decision: approval@a3 and rejection@r3; nothing is sent", async () => {
+  test("research qualifies for human approval or rejects sourced negative fit; no prospect or outreach is created", async () => {
     const shop = await candidate(clean());
     const chain = await candidate(midas());
     const dead = await candidate({ website: "https://gone.example.com/" });
@@ -281,13 +281,13 @@ describe("automatic research worker (real PostgreSQL)", { skip: skipReason }, ()
     assert.equal(r.outcome, "done");
     assert.deepEqual(
       { fresh: r.queuedFresh, completed: r.completed, failed: r.failed, approved: r.approved, rejected: r.rejected, review: r.review },
-      { fresh: 3, completed: 2, failed: 1, approved: 1, rejected: 1, review: 0 },
+      { fresh: 3, completed: 2, failed: 1, approved: 0, rejected: 1, review: 1 },
     );
     const status = async (id: string) => (await db.discoveryCandidate.findUniqueOrThrow({ where: { id } })).status;
-    assert.equal(await status(shop.id), "approved");
+    assert.equal(await status(shop.id), "researched");
     assert.equal(await status(chain.id), "rejected");
     assert.equal(await status(dead.id), "discovered", "a failed run returns its candidate");
-    assert.equal(await db.prospect.count(), 1);
+    assert.equal(await db.prospect.count(), 0);
     assert.equal(await db.outreach.count(), 0, "automatic research never starts outreach");
     assert.equal(await db.candidateResearch.count({ where: { trigger: "scheduled" } }), 3);
     // Run again at once: nothing new, nothing retried yet.
@@ -307,8 +307,10 @@ describe("automatic research worker (real PostgreSQL)", { skip: skipReason }, ()
   test("a stop (SIGTERM) finishes the candidate in progress and starts no other", async () => {
     await candidate(clean());
     await candidate(midas());
-    let checks = 0;
-    const r = await auto({ shouldStop: () => checks++ > 0 });
+    const w = web();
+    let stopped = false;
+    const fetcher = researchFetcher({ get: async (url, options) => { const result = await w.get(url, options); stopped = true; return result; }, sleep: async () => undefined });
+    const r = await auto({ shouldStop: () => stopped, deps: { ...deps(), makeFetcher: () => fetcher } });
     assert.equal(r.outcome, "signal");
     assert.equal(r.completed + r.failed, 1);
     assert.equal(await db.candidateResearch.count({ where: { status: { in: ["completed", "failed"] } } }), 1);
@@ -322,7 +324,9 @@ describe("automatic research worker (real PostgreSQL)", { skip: skipReason }, ()
     await candidate(midas());
     let t = 0;
     // Each clock reading advances 6 minutes: the second candidate would start after 10 minutes.
-    const r = await auto({ clock: () => (t += 6 * 60 * 1000) });
+    const w = web();
+    const fetcher = researchFetcher({ get: async (url, options) => { t = 11 * 60 * 1000; return w.get(url, options); }, sleep: async () => undefined });
+    const r = await auto({ clock: () => t, deps: { ...deps(), makeFetcher: () => fetcher } });
     assert.equal(r.outcome, "budget");
     assert.equal(r.completed + r.failed, 1);
   });

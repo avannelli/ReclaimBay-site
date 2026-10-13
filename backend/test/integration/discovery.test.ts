@@ -550,7 +550,7 @@ describe("discovery service", { skip: skipReason }, () => {
       await rejects(changeStatus(db, prospect.id, "ready_to_contact", null), /Can't move from New/);
 
       // Meets criteria: Qualified is now available, but only by a separate, explicit step.
-      const r = await researchedCandidate({ businessName: "Fully Known Auto", website: "https://fullyknown.example.com", city: "Fillmore", state: "CA" });
+      const r = await researchedCandidate({ businessName: "Fully Known Auto", website: "https://fullyknown.example.com", city: "Fillmore", state: "CA", phone: "(805) 555-0909", phoneSourceUrl: "https://fullyknown.example.com/contact" });
       const { prospect: ok } = await approveCandidate(db, r.id);
       assert.equal(ok.status, "new", "a fully qualified candidate still enters as New");
       await changeStatus(db, ok.id, "qualified", null);
@@ -598,7 +598,7 @@ describe("discovery service", { skip: skipReason }, () => {
       await rejects(approveCandidate(db, c.id), /An existing prospect matches this candidate \(same website, name and city\)\. Mark this candidate as a duplicate/);
       assert.equal(await db.prospect.count(), 1);
       assert.equal((await db.discoveryCandidate.findUniqueOrThrow({ where: { id: c.id } })).status, "researched", "unchanged after refusal");
-      await changeCandidateStatus(db, c.id, "duplicate", "Already a prospect");
+      await rejects(changeCandidateStatus(db, c.id, "duplicate", "Already a prospect"), /linked to a prospect/, "conflict");
     });
 
     test("approving twice, or editing after approval, is refused", async () => {
@@ -628,7 +628,7 @@ describe("discovery service", { skip: skipReason }, () => {
     });
 
     test("approval leaves other prospects and analytics attribution untouched", async () => {
-      const other = await createProspect(db, readyForm({ businessName: "Other Shop", website: "https://other.example.com" }));
+      const other = await createProspect(db, readyForm({ businessName: "Other Shop", website: "https://other.example.com", phone: "(805) 555-0987" }));
       const before = await db.prospect.findUniqueOrThrow({ where: { id: other.id } });
       const c = await researchedCandidate();
       await approveCandidate(db, c.id);
