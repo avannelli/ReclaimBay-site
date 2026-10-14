@@ -61,7 +61,7 @@ export function assessDiscovery(c: AutomationCandidate, protection: Protection, 
   if (!c.prospectId && !protection.duplicateTargetConflict && c.status === "needs_review" && c.duplicateHold && c.duplicateDecision === null && confident.length === 1 &&
     protection.prospectIds.every(id => id === confident[0]!.id) &&
     (!c.possibleDuplicateProspectId || c.possibleDuplicateProspectId === confident[0]!.id)) {
-    return decision("link_duplicate", "canonical_prospect", `Confident existing prospect match: ${confident[0]!.reason}. Both records and outreach history remain intact.`, { canonicalProspectId: confident[0]!.id });
+    return decision("link_duplicate", "canonical_prospect", `Confident existing prospect match: ${confident[0]!.reason}. Protected identity: a person marks the duplicate on the candidate page; automation does not apply it.`, { canonicalProspectId: confident[0]!.id });
   }
   if (protection.protected) return decision("protected", "downstream_identity", "Prospect, outreach or opt-out identity is protected; review it through its existing record.");
   if (duplicatePending(c)) return decision("human", "duplicate", "An ambiguous duplicate requires an identity decision.");

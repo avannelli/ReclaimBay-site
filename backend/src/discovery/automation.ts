@@ -4,11 +4,12 @@ import { ProspectError } from "../prospects.js";
 import { RESEARCH_VERSION } from "../research/researcher.js";
 import { lockCandidate } from "./service.js";
 import { categoryFields } from "./categoryCheck.js";
-import { AUTOMATION_RULES, assessDiscovery, automationInclude, type AutomationCandidate, type AutomationAssessment } from "./automationPolicy.js";
+import { AUTOMATION_RULES, assessDiscovery, automationInclude, type AutomationAction, type AutomationCandidate, type AutomationAssessment } from "./automationPolicy.js";
 import { candidateProtection, protectionIndex } from "./protection.js";
 
 export const AUTOMATION_BATCH_LIMIT = 25;
-export const executable = (a: AutomationAssessment) => ["category", "link_duplicate", "qualify", "reject", "research"].includes(a.action);
+/** link_duplicate is a protected identity: identified here, decided by a person (resolveDuplicate). */
+export const executable = (a: AutomationAssessment) => ["category", "qualify", "reject", "research"].includes(a.action);
 /** Prisma raw row locks report serialization/deadlock SQLSTATEs as P2010. */
 export function isDiscoveryConcurrencyConflict(error: unknown): boolean {
   if (!error || typeof error !== "object" || !("code" in error)) return false;
@@ -36,6 +37,15 @@ export async function discoveryAutomationPreview(db: Db, options: { recovery?: b
   return { rows, counts, actionable: rows.filter(r => executable(r.assessment)).length, recovery: options.recovery === true };
 }
 
+/** Protected identities by what automation does with them. assessDiscovery gives a protected
+ * candidate only handled, wait, link_duplicate or protected, so those four add up to total. */
+export function protectionSummary(rows: readonly { protection: { protected: boolean; outreachIds: readonly string[] }; assessment: AutomationAssessment }[]) {
+  const all = rows.filter(r => r.protection.protected);
+  const by = (action: AutomationAction) => all.filter(r => r.assessment.action === action).length;
+  return { total: all.length, handled: by("handled"), awaitingReview: by("protected"), duplicateLinks: by("link_duplicate"), processing: by("wait"),
+    outreachConnected: all.filter(r => r.protection.outreachIds.length).length };
+}
+
 /** Every apply is locked and re-assessed. A preview never supplies trusted mutation data. */
 export async function applyDiscoveryAutomation(db: Db, id: string, options: { token?: string; recovery?: boolean; allowResearch?: boolean } = {}) {
   return db.$transaction(async tx => {
@@ -46,20 +56,15 @@ export async function applyDiscoveryAutomation(db: Db, id: string, options: { to
     const a = assessDiscovery(c, protection, new Date(), options);
     if (options.token && options.token !== fingerprint(c, protection, a)) throw new ProspectError(["This candidate or its relationships changed. Preview the batch again."], "conflict");
     if (!executable(a) || (a.action === "research" && !options.allowResearch)) return { id, assessment: a, applied: false };
+    // Automation never processes a protected identity, whatever the action; a person handles it on its own record.
+    if (protection.protected) return { id, assessment: a, applied: false };
     const now = new Date();
     if (a.action === "research") {
       await tx.candidateResearch.create({ data: { candidateId: id, version: RESEARCH_VERSION, trigger: a.researchKind === "recovery" ? "recovery" : "scheduled", candidateRevision: c.researchRevision, subjectWebsite: c.website } });
       return { id, assessment: a, applied: true };
     }
-    // Annotation-only linking is the sole permitted operation on an indirectly protected identity.
-    if (protection.protected && a.action !== "link_duplicate") return { id, assessment: a, applied: false };
     const data: Parameters<typeof tx.discoveryCandidate.update>[0]["data"] = { researchRevision: { increment: 1 } };
     if (a.action === "category") Object.assign(data, categoryFields(a.category!, now));
-    if (a.action === "link_duplicate") Object.assign(data, {
-      status: "duplicate", statusChangedAt: now, decidedAt: now, duplicateDecidedAt: now, duplicateHold: false,
-      possibleDuplicateProspectId: a.canonicalProspectId,
-      decisionReason: `Canonical prospect ${a.canonicalProspectId}. ${a.reason}`.slice(0, 500),
-    });
     if (a.action === "qualify") {
       const sources = c.evidence.filter(e => a.evidenceIds!.includes(e.id));
       await tx.candidateSignal.upsert({ where: { candidateId_key: { candidateId: id, key: "automotive_repair_services" } },
@@ -73,7 +78,7 @@ export async function applyDiscoveryAutomation(db: Db, id: string, options: { to
     await tx.discoveryCandidate.update({ where: { id }, data });
     await tx.candidateNote.create({ data: { candidateId: id, body: JSON.stringify({ rules: AUTOMATION_RULES, action: a.action, reason: a.reason,
       from: { status: c.status, category: c.categoryVerdict, categoryRules: c.categoryRules, categoryReason: c.categoryReason },
-      evidenceIds: a.evidenceIds, canonicalProspectId: a.canonicalProspectId, researchId: c.research[0]?.id }).slice(0, 2000) } });
+      evidenceIds: a.evidenceIds, researchId: c.research[0]?.id }).slice(0, 2000) } });
     return { id, assessment: a, applied: true };
   }, { isolationLevel: "Serializable", timeout: 30_000 });
 }

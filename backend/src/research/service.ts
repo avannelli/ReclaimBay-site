@@ -678,7 +678,7 @@ export async function runAutoResearch(
     const limit = Math.max(1, Math.min(MAX_BATCH_AUTO, opts.limit));
     report.reclaimed = await failStaleResearch(db);
     const preview = await discoveryAutomationPreview(db);
-    for (const item of preview.rows.filter(r => ["category", "qualify", "reject", "link_duplicate"].includes(r.assessment.action)).slice(0, limit)) {
+    for (const item of preview.rows.filter(r => ["category", "qualify", "reject"].includes(r.assessment.action)).slice(0, limit)) {
       if (opts.shouldStop?.() || clock() - started >= (opts.budgetMs ?? AUTO_TIME_BUDGET_MS)) break;
       const results = await applyDiscoveryBatch(db, [{ id: item.id, token: item.token }]);
       report.rejected += results.filter(r => r.applied && item.assessment.action === "reject").length;

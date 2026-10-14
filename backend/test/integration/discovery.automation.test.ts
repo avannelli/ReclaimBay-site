@@ -3,9 +3,10 @@ import { after, afterEach, before, beforeEach, describe, test } from "node:test"
 import type { Db } from "../../src/db.js";
 import { buildApp } from "../../src/app.js";
 import { loadConfig } from "../../src/config.js";
-import { applyDiscoveryAutomation, applyDiscoveryBatch, discoveryAutomationPreview } from "../../src/discovery/automation.js";
+import { applyDiscoveryAutomation, applyDiscoveryBatch, discoveryAutomationPreview, protectionSummary } from "../../src/discovery/automation.js";
+import { discoveryAutomationPage } from "../../src/admin/discoveryAutomationViews.js";
 import { AUDITED_CATEGORY_CORRECTIONS } from "../../src/discovery/categoryReassessment.js";
-import { approveCandidate, changeCandidateStatus, deleteCandidateEvidence, updateCandidate, reviewQueue, reviewResearchWarnings, addCandidateNote, backfillCategoryCheck, setCandidateCategory, applyResearchFindings } from "../../src/discovery/service.js";
+import { approveCandidate, changeCandidateStatus, resolveDuplicate, deleteCandidateEvidence, updateCandidate, reviewQueue, reviewResearchWarnings, addCandidateNote, backfillCategoryCheck, setCandidateCategory, applyResearchFindings } from "../../src/discovery/service.js";
 import { WARNING_REVIEW_PREFIX, unreviewedWarnings } from "../../src/discovery/warningReview.js";
 import { normalizeName } from "../../src/discovery/normalize.js";
 import { autoResearchSelection, enqueueResearch, processResearch, runAutoResearch } from "../../src/research/service.js";
@@ -108,7 +109,7 @@ describe("Discovery automation boundaries", { skip: skipReason }, () => {
     assert.equal((await applyDiscoveryAutomation(db, unrelated.id)).applied, false);
   });
 
-  test("a confident duplicate is linked without changing prospect/outreach history; ambiguous and human-resolved flags are preserved", async () => {
+  test("automation never applies a confident duplicate match; a person marks it without changing prospect/outreach history; ambiguous and human-resolved flags are preserved", async () => {
     const canonical = await db.prospect.create({ data: { referralCode: "canonical", businessName: "Saviers Road Auto Repair", website: "https://canonical.example.com/", city: "Oxnard", state: "CA" } });
     const msg = await db.outreach.create({ data: { prospectId: canonical.id, kind: "initial", template: "fixture", subject: "Preserve", body: "Preserve", evidence: [], generatedAt: new Date(), recipientEmail: "office@canonical.example.com", recipientSourceUrl: canonical.website!, status: "sent", sentAt: new Date() } });
     await db.outreachReply.create({ data: { outreachId: msg.id, receivedAt: new Date(), summary: "Preserve reply" } });
@@ -122,12 +123,19 @@ describe("Discovery automation boundaries", { skip: skipReason }, () => {
     const before = await downstream();
     const plan = await preview(duplicate.id);
     assert.equal(plan.assessment.action, "link_duplicate");
-    await applyDiscoveryAutomation(db, duplicate.id, { token: plan.token });
+    assert.equal(plan.protection.protected, true);
+    const untouched = await db.discoveryCandidate.findUniqueOrThrow({ where: { id: duplicate.id } });
+    assert.equal((await applyDiscoveryAutomation(db, duplicate.id, { token: plan.token })).applied, false);
+    assert.equal((await applyDiscoveryBatch(db, [{ id: duplicate.id, token: plan.token }]))[0]!.applied, false);
+    assert.deepEqual(await db.discoveryCandidate.findUniqueOrThrow({ where: { id: duplicate.id } }), untouched);
+    assert.equal(await db.candidateNote.count({ where: { candidateId: duplicate.id } }), 0);
+    // The explicit human action remains available on the candidate page.
+    assert.equal((await resolveDuplicate(db, duplicate.id, "duplicate")).to, "duplicate");
     const after = await db.discoveryCandidate.findUniqueOrThrow({ where: { id: duplicate.id } });
-    assert.equal(after.status, "duplicate"); assert.equal(after.possibleDuplicateProspectId, canonical.id);
-    assert.equal(after.possibleDuplicateCandidateId, original.id);
+    assert.equal(after.status, "duplicate"); assert.equal(after.possibleDuplicateCandidateId, original.id);
     assert.deepEqual(await downstream(), before); assert.ok(campaign.id);
-    const ambiguous = await candidate({ businessName: "Unrelated Garage", status: "needs_review", duplicateHold: true, possibleDuplicateCandidateId: original.id });
+    const flagged = await candidate({ businessName: "Flagged record", possibleDuplicateProspectId: canonical.id });
+    const ambiguous = await candidate({ businessName: "Unrelated Garage", status: "needs_review", duplicateHold: true, possibleDuplicateCandidateId: flagged.id });
     assert.equal((await preview(ambiguous.id)).assessment.action, "protected", "the retained candidate flag reaches canonical outreach through an indirect link");
     await assert.rejects(approveCandidate(db, ambiguous.id), /Resolve the possible duplicate/);
     const unresolved = await candidate({ website: canonical.website, status: "needs_review", duplicateHold: true, duplicateDecision: "unresolved", possibleDuplicateCandidateId: original.id });
@@ -138,9 +146,65 @@ describe("Discovery automation boundaries", { skip: skipReason }, () => {
     assert.deepEqual(await downstream(), before);
     await changeCandidateStatus(db, duplicate.id, "discovered", "Recheck identity");
     const reopened = await db.discoveryCandidate.findUniqueOrThrow({ where: { id: duplicate.id } });
-    assert.equal(reopened.possibleDuplicateProspectId, canonical.id);
+    assert.equal(reopened.possibleDuplicateCandidateId, original.id);
     assert.equal((await preview(duplicate.id)).assessment.action, "protected");
     assert.deepEqual(await downstream(), before);
+  });
+
+  test("protection summary counts every protected identity by outcome; no automated path processes any of them", async () => {
+    const canonical = await db.prospect.create({ data: { referralCode: "shield-canonical", businessName: "Canonical Collision", website: "https://canonical-shield.example.com/", city: "Oxnard", state: "CA" } });
+    const quiet = await db.prospect.create({ data: { referralCode: "shield-quiet", businessName: "Second Shop", website: "https://second-shield.example.com/", city: "Ventura", state: "CA" } });
+    const msg = await db.outreach.create({ data: { prospectId: canonical.id, kind: "initial", template: "fixture", subject: "Preserve", body: "Preserve", evidence: [], generatedAt: new Date(), recipientEmail: "office@canonical-shield.example.com", recipientSourceUrl: canonical.website!, status: "sent", sentAt: new Date() } });
+    await db.emailSuppression.create({ data: { email: msg.recipientEmail, reason: "unsubscribed", outreachId: msg.id } });
+    const approvedOutreach = await candidate({ businessName: canonical.businessName, website: canonical.website, status: "approved", prospectId: canonical.id });
+    const approvedQuiet = await candidate({ businessName: quiet.businessName, website: quiet.website, city: "Ventura", status: "approved", prospectId: quiet.id });
+    const rejectedIndirect = await candidate({ businessName: quiet.businessName, website: quiet.website, city: "Ventura", status: "rejected" });
+    const activeOutreach = await candidate({ businessName: "Harbor Brake Service", email: msg.recipientEmail });
+    const original = await candidate({ businessName: "Other business", website: null });
+    const link = await candidate({ businessName: canonical.businessName, website: canonical.website, status: "needs_review", duplicateHold: true, possibleDuplicateCandidateId: original.id });
+    const unprotected = await candidate();
+    const shielded = [approvedOutreach, approvedQuiet, rejectedIndirect, activeOutreach, link];
+
+    const plan = await discoveryAutomationPreview(db);
+    assert.equal(plan.actionable, 1, "only the unprotected candidate is a safe action");
+    const summary = protectionSummary(plan.rows);
+    assert.deepEqual(summary, { total: 5, handled: 3, awaitingReview: 1, duplicateLinks: 1, processing: 0, outreachConnected: 3 });
+    assert.equal(summary.handled + summary.awaitingReview + summary.duplicateLinks + summary.processing, summary.total, "every protected identity has exactly one displayed outcome");
+    assert.equal(plan.counts.protected, summary.awaitingReview, "the protected action is only the active subset");
+    assert.equal((await preview(unprotected.id)).protection.protected, false);
+    assert.equal((await preview(activeOutreach.id)).assessment.action, "protected");
+    for (const c of shielded.slice(0, 3)) assert.equal((await preview(c.id)).assessment.action, "handled");
+
+    const page = discoveryAutomationPage(plan, false);
+    assert.match(page, /Protected identities \(linked to a prospect, outreach message, suppression or opt-out\): <b>5<\/b>, 3 connected to outreach\. Of these, 3 already handled/);
+    assert.match(page, /1 active and held for review in their existing record; 1 confident duplicate match of an existing prospect, waiting for a person to mark the duplicate on the candidate page\. Automation never processes a protected identity\./);
+    assert.ok(!page.includes("protected active records"), "no label implies zero protected identities overall");
+    assert.ok(page.includes("link duplicate (protected identity: a person decides)") && page.includes(`<a href="/admin/discovery/candidates/${link.id}">Review duplicate</a>`));
+    assert.ok(!shielded.some(c => page.includes(`candidate_${c.id}`)), "protected identities are never offered for processing");
+    assert.ok(page.includes(`candidate_${unprotected.id}`));
+
+    const rowsBefore = await db.discoveryCandidate.findMany({ where: { id: { in: shielded.map(c => c.id) } }, orderBy: { id: "asc" } });
+    const before = await downstream();
+    const tokens = shielded.map(c => ({ id: c.id, token: plan.rows.find(r => r.id === c.id)!.token }));
+    for (const t of tokens) assert.equal((await applyDiscoveryAutomation(db, t.id, { token: t.token, allowResearch: true, recovery: true })).applied, false);
+    assert.ok((await applyDiscoveryBatch(db, tokens)).every(r => !r.applied));
+    assert.equal((await enqueueResearch(db, shielded.map(c => c.id), "admin")).queued.length, 0);
+    const selected = await autoResearchSelection(db, 100);
+    assert.ok(selected.fresh.includes(unprotected.id));
+    assert.ok(!shielded.some(c => [...selected.fresh, ...selected.retries].includes(c.id)));
+    // The armed scheduled worker (the only unprotected candidate removed so nothing is fetched) processes none of them.
+    await db.discoveryCandidate.delete({ where: { id: unprotected.id } });
+    const worker = await runAutoResearch(db, { enabled: true, databaseUrl: TEST_DATABASE_URL, limit: 25, lock: async () => ({ release: async () => undefined }), deps: { sleep: async () => undefined } });
+    assert.equal(worker.outcome, "done");
+    assert.deepEqual(await db.discoveryCandidate.findMany({ where: { id: { in: shielded.map(c => c.id) } }, orderBy: { id: "asc" } }), rowsBefore);
+    assert.equal(await db.candidateResearch.count(), 0);
+    assert.equal(await db.candidateNote.count(), 0);
+    assert.deepEqual(await downstream(), before);
+
+    // A person can still mark the confident match on the candidate page.
+    assert.equal((await resolveDuplicate(db, link.id, "duplicate")).to, "duplicate");
+    assert.deepEqual(await downstream(), before, "marking the duplicate changes no prospect or outreach history");
+    assert.deepEqual(protectionSummary((await discoveryAutomationPreview(db)).rows), { total: 5, handled: 4, awaitingReview: 1, duplicateLinks: 0, processing: 0, outreachConnected: 3 });
   });
 
   test("stale previews and concurrent batches cannot repeat a decision", async () => {
