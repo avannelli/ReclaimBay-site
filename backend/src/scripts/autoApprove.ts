@@ -8,9 +8,11 @@
  *   npm run discovery:auto-approve -- --apply               (applies guarded Discovery decisions)
  *   npm run discovery:auto-approve -- --candidate <id> [--candidate <id> ...] [--apply]
  *
- * Compatibility command: discovery@d1 may add source-linked qualification,
- * audited category corrections, canonical duplicate annotations or sourced
- * rejection. It creates no prospects and queues no research or outreach.
+ * Compatibility command: discovery@d2 may apply audited category corrections,
+ * canonical duplicate annotations or a sourced technical rejection (the site
+ * says it performs no automotive repair); commercial, ownership and ICP
+ * findings are never rejected automatically. It creates no prospects and
+ * queues no research or outreach.
  * Use discovery:automation for a full preview and fingerprinted selection.
  */
 import { parseArgs } from "node:util";

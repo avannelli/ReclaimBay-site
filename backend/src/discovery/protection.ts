@@ -1,6 +1,8 @@
 import type { Db } from "../db.js";
 import type { Prisma } from "../generated/prisma/client.js";
 import { relate } from "./dedupe.js";
+import { duplicateRelationships } from "./relationships.js";
+import { accountSafety } from "./account.js";
 import { locationKey, normalizeDomain, normalizeName, phoneKey, streetKey } from "./normalize.js";
 
 type Reader = Db | Prisma.TransactionClient;
@@ -71,5 +73,7 @@ export function candidateProtection(c: Identity, index: ProtectionIndex) {
   const emails = new Set([c.email, ...index.prospects.filter(p => ids.has(p.id)).map(p => p.email), ...messages.map(m => m.recipientEmail)].map(emailKey).filter((e): e is string => !!e));
   const suppression = index.suppressions.some(s => emails.has(emailKey(s.email) ?? "") || messages.some(m => s.outreachId === m.id));
   const optOut = index.optOuts.some(o => emails.has(emailKey(o.senderEmail) ?? ""));
-  return { protected: ids.size > 0 || suppression || optOut, prospectIds: [...ids].sort(), outreachIds: messages.map(m => m.id).sort(), suppression, optOut, matches, duplicateTargetConflict };
+  return { protected: ids.size > 0 || suppression || optOut, prospectIds: [...ids].sort(), outreachIds: messages.map(m => m.id).sort(), suppression, optOut, matches, duplicateTargetConflict,
+    // Duplicate relationships that keep a candidate out of Ready (never resolved here).
+    relationships: duplicateRelationships(c, index.candidates), account: accountSafety(c, index.candidates, index.prospects) };
 }

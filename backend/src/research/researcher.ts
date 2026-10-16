@@ -19,7 +19,7 @@ import { DEFAULT_SKIP, selectPages, type PageRoleRule, type SelectedPage } from 
 import { readSite } from "@avannelli/aos/crawl";
 
 /** Bumped whenever a rule changes, so runs say which rules produced them. */
-export const RESEARCH_VERSION = "r15";
+export const RESEARCH_VERSION = "r16";
 
 export type ResearchOutcome =
   | "superseded"

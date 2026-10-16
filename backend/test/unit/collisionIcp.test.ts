@@ -44,9 +44,17 @@ describe("collision/body: one segment of the automotive repair ICP", () => {
       const r = result(text); assert.notEqual(fitSignal(r)?.value, "yes"); assert.notEqual(qualification(r), "meets_criteria");
     });
   }
-  for (const text of ["Brake repairs and oil changes.", "We offer automotive repairs."]) {
+  for (const text of ["Brake repairs, engine repair and oil changes.", "We offer automotive repairs, including A/C repair and brake service."]) {
     test(`mechanical repair is not collision/body, and no longer needs to be: ${JSON.stringify(text)}`, () => {
       const r = result(text); assert.notEqual(fitSignal(r)?.value, "yes"); assert.equal(qualification(r), "meets_criteria");
+    });
+  }
+  // r16: generic language or a single non-specialist service no longer establishes repair fit on its own.
+  for (const text of ["Brake repairs and oil changes.", "We offer automotive repairs."]) {
+    test(`r16: one concrete service or generic repair language alone does not qualify: ${JSON.stringify(text)}`, () => {
+      const r = result(text); assert.notEqual(fitSignal(r)?.value, "yes"); assert.equal(qualification(r), "unverified");
+      assert.equal(r.signals.some(s => s.key === "automotive_repair_services"), false);
+      assert.notEqual(r.facts.find(f => f.field === "service_evidence")?.value, "strong");
     });
   }
   for (const text of ["We do not offer collision repair.", "We don't provide auto body repair.", "We no longer perform collision repair.", "We cannot perform vehicle body repair.", "Collision repair is not offered here.", "Collision repair is not provided here.", "Collision repair is not performed here.", "Collision repair is unavailable."]) {

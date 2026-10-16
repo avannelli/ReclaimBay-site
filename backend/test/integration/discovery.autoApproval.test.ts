@@ -257,7 +257,7 @@ describe("automatic rejection and the re-decision pass (service)", { skip: skipR
     await research(c.id, midasSite());
     const after = await full(c.id);
     assert.equal(after.status, "rejected");
-    assert.match(after.decisionReason!, /^Automatically rejected \(discovery@d1\): Current verified-site evidence/);
+    assert.match(after.decisionReason!, /^Automatically rejected \(discovery@d2\): Current verified-site evidence/);
     assert.equal(autoNotes(after.notes).length, 1, "the reason is recorded once, as a note");
     assert.equal(await db.prospect.count(), 0);
     const evidence = await db.candidateEvidence.findFirstOrThrow({ where: { candidateId: c.id, signalKey: "independent_shop" } });
@@ -411,7 +411,7 @@ describe("automatic approval (admin HTTP)", { skip: skipReason }, () => {
     assert.match(list, /<dt>Rejected <span style="font-weight:400">\(1 automatically\)<\/span><\/dt><dd>1<\/dd>/);
     assert.match(list, /<dt>Review <span style="font-weight:400">a person decides<\/span><\/dt><dd>1<\/dd>/);
     const rejected = (await get("/admin/discovery?view=disregarded")).body;
-    assert.match(rejected, /Automatically rejected \(discovery@d1\): Current verified-site evidence/);
+    assert.match(rejected, /Automatically rejected \(discovery@d2\): Current verified-site evidence/);
   });
 
   test("an administrator sees why a candidate is held, and can still approve it", async () => {

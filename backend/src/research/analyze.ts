@@ -15,6 +15,10 @@ import { CATEGORY_RULES, nameOutsideTerms } from "../discovery/categories.js";
 import { CATEGORY_VERDICT_LABELS, checkWebsite, type CategoryResult } from "@avannelli/aos/categories";
 import { collisionFit } from "./collisionFit.js";
 import { REPAIR_SERVICES, repairFit, type RepairFit } from "./repairFit.js";
+import { addressKeysIn, classifyLocation, evidencePageAllowed, isStrongIdentity } from "./location.js";
+import { assessServiceEvidence, tradeContext } from "./serviceEvidence.js";
+import { classifyOwnership } from "./ownership.js";
+import { COMMERCIAL_QUOTES_PER_RUN, commercialExcerpts } from "../policies/reclaimbay/commercial.js";
 import type { ParsedPage } from "@avannelli/aos/html";
 
 export type FactState = "verified" | "unverified" | "uncertain" | "not_found";
@@ -561,6 +565,31 @@ export function analyze(subject: Subject, pages: Page[], secureHttps: boolean | 
     }
   }
 
+  // ----- which physical location the site shows (r16): evidence belongs to this location only -----
+  const location = classifyLocation({
+    subjectStreet: subject.streetAddress,
+    providerPhoneOnSite: Boolean(providerOnSite),
+    pages: pages.map((p) => ({
+      url: p.url,
+      isStored: p === home,
+      nameOnPage: findName(subject, [p]) !== null,
+      ownAddress: findAddress(subject, [p]) !== null,
+      addressKeys: addressKeysIn(p.parsed.text, p.parsed.structured.map((st) => st.streetAddress)),
+    })),
+  });
+  const pageLocation = new Map(location.pages.map((p) => [p.url, p.location]));
+  const strongIdentity = ownership === "verified" && isStrongIdentity(location.identity);
+  const attributable = (url: string | null | undefined) => Boolean(url) && evidencePageAllowed(pageLocation.get(url!), location.identity);
+  facts.push({ field: "location_identity", value: location.identity, state: strongIdentity ? "verified" : "uncertain", sourceUrl: home.url, note: location.reason });
+  facts.push({ field: "site_locations", value: String(location.siteLocations), state: "verified", note: "Distinct street addresses on the pages read." });
+  for (const p of location.pages) {
+    const title = pages.find((x) => x.url === p.url)?.parsed.title?.trim();
+    facts.push({ field: "page_location", value: p.location, state: "verified", sourceUrl: p.url, excerpt: title ? clip(title, 200) : null });
+  }
+  if (ownership === "verified" && location.identity === "other_location") {
+    warnings.push("The stored website is another location's page of this brand, not this location's. Correct this location's website before qualification.");
+  }
+
   // ----- phone -----
   if (subject.providerPhone) {
     facts.push(
@@ -585,14 +614,19 @@ export function analyze(subject: Subject, pages: Page[], secureHttps: boolean | 
   }
   const choice = choosePhone(subject, pages, phones, address);
   if (choice && "key" in choice) {
+    // Contact is validated separately from qualification: a phone not tied to this verified location is never used.
     facts.push({
       field: "phone",
       value: formatPhone(choice.key),
-      state: ownership === "verified" ? "verified" : "uncertain",
+      state: strongIdentity ? "verified" : "uncertain",
       sourceUrl: choice.url,
-      note: ownership === "verified" ? `Verified: ${choice.how}.` : "Listed on a website not confirmed as the business's own.",
+      note: strongIdentity
+        ? `Verified: ${choice.how}.`
+        : ownership === "verified"
+          ? "Not tied to a verified location of this business; never used as contact."
+          : "Listed on a website not confirmed as the business's own.",
     });
-    if (ownership === "verified") {
+    if (strongIdentity) {
       contact.phone = formatPhone(choice.key);
       contact.phoneSourceUrl = choice.url;
     }
@@ -682,13 +716,13 @@ export function analyze(subject: Subject, pages: Page[], secureHttps: boolean | 
   if (fit.status === "conflict") warnings.push("Collision/body evidence is contradictory; verify product fit manually.");
   if (possibleFit) warnings.push("Dealership or specialty collision/body services require human verification before recording collision/body repair.");
   if (fit.status !== "unknown") facts.push({ field: "collision_repair_services", value: fit.status === "negative" ? "no" : "yes", state: fit.status === "conflict" || possibleFit ? "uncertain" : "verified", sourceUrl: fit.sourceUrl ?? undefined, excerpt: fit.excerpt ?? undefined });
-  if (fit.status === "primary" && !possibleFit) signals.push({ key: "collision_repair_services", value: "yes", sourceUrl: fit.sourceUrl!, excerpt: fit.excerpt! });
+  if (fit.status === "primary" && !possibleFit && strongIdentity && attributable(fit.sourceUrl)) signals.push({ key: "collision_repair_services", value: "yes", sourceUrl: fit.sourceUrl!, excerpt: fit.excerpt! });
   else if (fit.status === "negative") signals.push({ key: "collision_repair_services", value: "no", sourceUrl: fit.sourceUrl!, excerpt: fit.excerpt! });
 
   // Automotive repair: the product-fit criterion. Dealership and fleet operations,
   // maintenance/cosmetic-only evidence, and a name that says another trade with
   // only one repair service on the site are for a person to verify.
-  const repair: RepairFit = ownership === "verified" ? repairFit(subject.businessName, pages) : { status: "unknown", sourceUrl: null, excerpt: null, services: [] };
+  const repair: RepairFit = ownership === "verified" ? repairFit(subject.businessName, pages) : { status: "unknown", sourceUrl: null, excerpt: null, services: [], quotes: [] };
   const repairKinds = new Set(REPAIR_SERVICES.filter(([, kind]) => kind === "repair").map(([label]) => label));
   const otherTrade = nameOutsideTerms(subject.businessName);
   const verifyWhy =
@@ -705,12 +739,42 @@ export function analyze(subject: Subject, pages: Page[], secureHttps: boolean | 
               : null;
   if (repair.status === "conflict") warnings.push("Automotive repair evidence is contradictory; verify product fit manually.");
   if (verifyWhy) warnings.push(`${verifyWhy}; a person must verify its automotive repair work before qualification.`);
-  if (repair.status !== "unknown") facts.push({ field: "automotive_repair_services", value: repair.status === "negative" ? "no" : "yes", state: repair.status === "conflict" || verifyWhy ? "uncertain" : "verified", sourceUrl: repair.sourceUrl ?? undefined, excerpt: repair.excerpt ?? undefined });
-  if (repair.status === "primary" && !verifyWhy) signals.push({ key: "automotive_repair_services", value: "yes", sourceUrl: repair.sourceUrl!, excerpt: repair.excerpt! });
+  // r16: concrete services, each with its own quote, from pages attributable to this location.
+  const siteTitles = [home.parsed.siteName, home.parsed.title];
+  const service = assessServiceEvidence({
+    businessName: subject.businessName,
+    siteTitles,
+    quotes: repair.quotes
+      .filter((q) => attributable(q.sourceUrl))
+      .map((q) => ({ url: q.sourceUrl, excerpt: q.excerpt, title: pages.find((p) => p.url === q.sourceUrl)?.parsed.title ?? null })),
+  });
+  const serviceStrong = strongIdentity && service.strength === "strong";
+  if (ownership === "verified") {
+    facts.push({ field: "service_evidence", value: service.strength, state: serviceStrong ? "verified" : "uncertain", note: strongIdentity ? service.reason : `${service.reason} This location's identity is not verified, so nothing on the site counts yet.` });
+    const businessTrades = tradeContext({ businessName: subject.businessName, titles: siteTitles });
+    if (businessTrades.length) facts.push({ field: "trade_context", value: businessTrades.join(", "), state: "verified", note: "Adjacent trade named by the business name or the site's own title." });
+  }
+  if (repair.status !== "unknown") facts.push({ field: "automotive_repair_services", value: repair.status === "negative" ? "no" : "yes", state: repair.status === "conflict" || verifyWhy || (repair.status === "primary" && !serviceStrong) ? "uncertain" : "verified", sourceUrl: repair.sourceUrl ?? undefined, excerpt: repair.excerpt ?? undefined });
+  if (repair.status === "primary" && !verifyWhy && serviceStrong) {
+    for (const c of service.counted) signals.push({ key: "automotive_repair_services", value: "yes", sourceUrl: c.url, excerpt: c.excerpt });
+    // Descriptive only (what kind of shop it is): generic "auto repair" wording is kept with its quote but never counts as a service.
+    const general = repair.quotes.find((q) => q.label === "general repair" && attributable(q.sourceUrl));
+    if (general) signals.push({ key: "automotive_repair_services", value: "yes", sourceUrl: general.sourceUrl, excerpt: general.excerpt });
+  }
   else if (repair.status === "negative") signals.push({ key: "automotive_repair_services", value: "no", sourceUrl: repair.sourceUrl!, excerpt: repair.excerpt! });
 
   // ----- signals (only from the business's own, verified website) -----
   if (ownership === "verified") {
+    const owner = classifyOwnership({
+      businessName: subject.businessName,
+      siteHost,
+      labels: pages.flatMap((p) => [p.parsed.siteName, p.parsed.title, ...p.parsed.headings.slice(0, 3)]),
+      chainOnSite: Boolean(chainOnSite),
+      dealerActivity: Boolean(dealerText),
+      statesIndependent: Boolean(independent),
+      siteLocations: location.siteLocations,
+    });
+    facts.push({ field: "ownership_class", value: owner.ownership, state: owner.ownership === "unknown" ? "uncertain" : "verified", note: owner.reason });
     // Independent shop (prioritization only).
     if (chainOnSite) {
       const label = [chainOnSite.parsed.title, chainOnSite.parsed.siteName, ...chainOnSite.parsed.headings].find((l) => l?.toLowerCase().includes(chain!))!;
@@ -829,7 +893,7 @@ export function analyze(subject: Subject, pages: Page[], secureHttps: boolean | 
   // ----- category check (separate from qualification; never on someone else's website) -----
   let category: CategoryResult | null = null;
   if (ownership === "verified") {
-    const confirmed = repair.status === "primary" && !verifyWhy ? { url: repair.sourceUrl!, what: `automotive repair services (${repair.services.filter((s) => repairKinds.has(s)).join(", ")})` } : null;
+    const confirmed = repair.status === "primary" && !verifyWhy && serviceStrong ? { url: repair.sourceUrl!, what: `automotive repair services (${repair.services.filter((s) => repairKinds.has(s)).join(", ")})` } : null;
     category = checkWebsite(
       CATEGORY_RULES,
       pages.map((p) => ({ url: p.url, text: p.parsed.text })),
@@ -862,5 +926,14 @@ export function analyze(subject: Subject, pages: Page[], secureHttps: boolean | 
     }
   }
 
+  // Commercial quotes: only sentences that can change a commercial finding, each kept once per run (footers repeat on every page).
+  const commercialSeen = new Set<string>();
+  if (ownership === "verified") for (const p of pages.filter(p => attributable(p.url))) {
+    for (const excerpt of commercialExcerpts(p.parsed.text)) {
+      if (commercialSeen.size >= COMMERCIAL_QUOTES_PER_RUN || commercialSeen.has(excerpt)) continue;
+      commercialSeen.add(excerpt);
+      facts.push({ field: "commercial_quote", value: "observed", state: "verified", sourceUrl: p.url, excerpt });
+    }
+  }
   return { ownership, facts, signals, contact, warnings, category };
 }

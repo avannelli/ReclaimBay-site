@@ -199,6 +199,12 @@ export function streetKey(street: string | null | undefined): string | null {
   return words.join(" ");
 }
 
+/** The suite/unit of a street address ("Ste 8", "#114", "Unit A"), lowercase; null when it names none. */
+export function suiteKey(street: string | null | undefined): string | null {
+  const m = street ? /(?:#|\bsuite\b|\bste\b\.?|\bunit\b|\bapt\b\.?)\s*([a-z0-9-]+)/i.exec(street) : null;
+  return m ? m[1]!.toLowerCase() : null;
+}
+
 /** Ordinal street names written as words, and their numeric forms ("first" = "1st"). */
 const ORDINAL_WORDS: Record<string, string> = {
   first: "1st", second: "2nd", third: "3rd", fourth: "4th", fifth: "5th", sixth: "6th", seventh: "7th", eighth: "8th", ninth: "9th", tenth: "10th",

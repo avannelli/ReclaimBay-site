@@ -8,8 +8,12 @@ import { AUTOMATION_RULES, assessDiscovery, automationInclude, type AutomationAc
 import { candidateProtection, protectionIndex } from "./protection.js";
 
 export const AUTOMATION_BATCH_LIMIT = 25;
+/** The only automatic rejection: the business's own verified site says it performs no automotive repair.
+ * Commercial, ownership and ICP findings are never automatic rejections; a person decides them. */
+export const AUTOMATIC_REJECTION_CODES: readonly string[] = ["sourced_negative_fit"];
 /** link_duplicate is a protected identity: identified here, decided by a person (resolveDuplicate). */
-export const executable = (a: AutomationAssessment) => ["category", "qualify", "reject", "research"].includes(a.action);
+export const executable = (a: AutomationAssessment) =>
+  ["category", "research"].includes(a.action) || (a.action === "reject" && AUTOMATIC_REJECTION_CODES.includes(a.code));
 /** Prisma raw row locks report serialization/deadlock SQLSTATEs as P2010. */
 export function isDiscoveryConcurrencyConflict(error: unknown): boolean {
   if (!error || typeof error !== "object" || !("code" in error)) return false;
@@ -65,20 +69,13 @@ export async function applyDiscoveryAutomation(db: Db, id: string, options: { to
     }
     const data: Parameters<typeof tx.discoveryCandidate.update>[0]["data"] = { researchRevision: { increment: 1 } };
     if (a.action === "category") Object.assign(data, categoryFields(a.category!, now));
-    if (a.action === "qualify") {
-      const sources = c.evidence.filter(e => a.evidenceIds!.includes(e.id));
-      await tx.candidateSignal.upsert({ where: { candidateId_key: { candidateId: id, key: "automotive_repair_services" } },
-        create: { candidateId: id, key: "automotive_repair_services", value: "yes", origin: "research", observedAt: now },
-        update: {} });
-      for (const e of sources) await tx.candidateEvidence.create({ data: { candidateId: id, signalKey: "automotive_repair_services", sourceUrl: e.sourceUrl, excerpt: e.excerpt, origin: "research", researchId: e.researchId, createdAt: e.createdAt } });
-      if (c.categorySource !== "manual") Object.assign(data, { categoryVerdict: "in_target", categorySource: "website", categorySourceUrl: sources[0]!.sourceUrl,
-        categoryReason: "Current repair rules confirm source-linked retained service evidence.", categoryRules: AUTOMATION_RULES, categoryCheckedAt: now });
-    }
     if (a.action === "reject") Object.assign(data, { status: "rejected", statusChangedAt: now, decidedAt: now, decisionReason: `Automatically rejected (${AUTOMATION_RULES}): ${a.reason}` });
     await tx.discoveryCandidate.update({ where: { id }, data });
     await tx.candidateNote.create({ data: { candidateId: id, body: JSON.stringify({ rules: AUTOMATION_RULES, action: a.action, reason: a.reason,
       from: { status: c.status, category: c.categoryVerdict, categoryRules: c.categoryRules, categoryReason: c.categoryReason },
-      evidenceIds: a.evidenceIds, researchId: c.research[0]?.id }).slice(0, 2000) } });
+      evidenceIds: a.evidenceIds, researchId: c.research[0]?.id,
+      commercial: a.acquisition ? { rules: a.acquisition.commercial.rules, disposition: a.acquisition.commercial.disposition,
+        confidence: a.acquisition.commercial.confidence, codes: a.acquisition.commercial.findings.map(f => f.code) } : undefined }).slice(0, 2000) } });
     return { id, assessment: a, applied: true };
   }, { isolationLevel: "Serializable", timeout: 30_000 });
 }

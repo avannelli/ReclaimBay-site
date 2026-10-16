@@ -27,9 +27,11 @@ export interface RepairFit {
   excerpt: string | null;
   /** The services the uncontradicted positive evidence names, in vocabulary order. */
   services: string[];
+  /** One quote per standing service (its first occurrence), so each service can be stored with its own evidence. */
+  quotes: { label: string; kind: Kind; sourceUrl: string; excerpt: string }[];
 }
 
-type Kind = "repair" | "maintenance" | "cosmetic" | "other vehicle";
+export type Kind = "repair" | "maintenance" | "cosmetic" | "other vehicle";
 
 /**
  * A phrase that also names other trades ("bodywork" is massage too, "paint
@@ -52,8 +54,8 @@ export const REPAIR_SERVICES: readonly (readonly [string, Kind, RegExp, Strict?]
   // A service named as a whole ("Auto Body and Paint", "collision and paint", "auto repair body shop").
   ["collision/body", "repair", /\b(?:auto(?:motive)?[- ]?body\s+(?:and|&)\s+paint|collision\s+(?:and|&)\s+paint|auto(?:motive)?\s+repair\s+(?:and\s+)?body\s+shops?)\b/i],
   ["collision/body", "repair", /\b(?:(?:auto(?:motive)?|car|vehicle)\s+)?body\s?work\b/i, { strict: true, otherTrade: BODY_OTHER }],
-  ["engine", "repair", /\bengine\s+(?:repairs?|rebuild(?:s|ing)?|replacements?|overhauls?)\b/i],
-  ["transmission/drivetrain", "repair", /\b(?:transmissions?|clutch(?:es)?|drive\s?(?:train|line)|differentials?|(?:cv\s+)?axles?|transfer\s+cases?|4x4)\s+(?:repairs?|rebuild(?:s|ing)?|services?|replacements?)\b/i],
+  ["engine", "repair", /\b(?:engine|carburetors?|fuel\s+(?:system|injection|injectors?))\s+(?:repairs?|rebuild(?:s|ing)?|replacements?|overhauls?)\b/i],
+  ["transmission/drivetrain", "repair", /\b(?:transmissions?|clutch(?:es)?|drive\s?(?:train|line|shafts?)|differentials?|(?:cv\s+)?axles?|transfer\s+cases?|4x4)\s+(?:repairs?|rebuild(?:s|ing)?|services?|replacements?)\b/i],
   ["brakes", "repair", /\bbrakes?\s+(?:repairs?|services?|replacements?|jobs?)\b/i],
   ["suspension/steering", "repair", /\b(?:suspension|steering|shocks?(?:\s+(?:and|&)\s+struts?)?|struts?)\s+(?:repairs?|services?|replacements?)\b/i],
   ["diagnostics", "repair", /\b(?:(?:engine|vehicle|automotive|car|electrical|drivability)\s+diagnos(?:tics?|is|es)|check[- ]engine[- ]lights?)\b/i],
@@ -171,14 +173,19 @@ function around(text: string, index: number, length: number, budget: number): st
 
 type Hit = { label: string; kind: Kind; sourceUrl: string; chunk: string; index: number; length: number };
 
-export function repairFit(businessName: string, pages: readonly { url: string; role: Page["role"]; parsed: Pick<Page["parsed"], "text"> }[]): RepairFit {
+export function repairFit(
+  businessName: string,
+  pages: readonly { url: string; role: Page["role"]; parsed: Pick<Page["parsed"], "text"> }[],
+  /** For a stored quote from a site research already read as a vehicle site: its component phrases are automotive. */
+  options: { vehicleSite?: boolean } = {},
+): RepairFit {
   const positive: Hit[] = [];
   const negated = new Set<string>();
   let noRepairs: { sourceUrl: string; excerpt: string } | null = null;
   // A business called "Harbor Transmission Repair" is still only a name.
   const name = namePattern(businessName);
   const texts = pages.map((page) => ({ page, text: (name ? page.parsed.text.replace(name, " ") : page.parsed.text).replace(/[’‘]/g, "'") }));
-  const vehicleSite = texts.some(({ text }) => VEHICLE_SITE.test(text));
+  const vehicleSite = options.vehicleSite === true || texts.some(({ text }) => VEHICLE_SITE.test(text));
   for (const { page, text } of texts) {
     for (const chunk of text.split(CHUNKS)) {
       if (!chunk.trim()) continue;
@@ -217,13 +224,18 @@ export function repairFit(businessName: string, pages: readonly { url: string; r
   const contradicted = positive.some((h) => negated.has(h.label));
   const repair = standing.filter((h) => h.kind === "repair");
   const services = SERVICE_LABELS.filter((label) => standing.some((h) => h.label === label));
+  const quotes = services.map((label) => {
+    const h = standing.find((x) => x.label === label)!;
+    const prefix = `Names ${label}: `;
+    return { label, kind: h.kind, sourceUrl: h.sourceUrl, excerpt: prefix + around(h.chunk, h.index, h.length, EXCERPT_MAX - prefix.length) };
+  });
   const answer = (status: RepairFit["status"], hit?: Hit | null, ev?: { sourceUrl: string; excerpt: string } | null): RepairFit => {
     if (hit) {
       const named = services.filter((s) => (status === "primary" ? repair.some((h) => h.label === s) : true)).slice(0, 4);
       const prefix = `Names ${named.join(", ")}: `;
-      return { status, sourceUrl: hit.sourceUrl, excerpt: prefix + around(hit.chunk, hit.index, hit.length, EXCERPT_MAX - prefix.length), services };
+      return { status, sourceUrl: hit.sourceUrl, excerpt: prefix + around(hit.chunk, hit.index, hit.length, EXCERPT_MAX - prefix.length), services, quotes };
     }
-    return { status, sourceUrl: ev?.sourceUrl ?? null, excerpt: ev?.excerpt ?? null, services };
+    return { status, sourceUrl: ev?.sourceUrl ?? null, excerpt: ev?.excerpt ?? null, services, quotes };
   };
   if (noRepairs && positive.length) return answer("conflict", null, noRepairs);
   if (repair.length) return answer("primary", repair[0]);

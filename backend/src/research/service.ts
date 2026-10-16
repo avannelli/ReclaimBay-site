@@ -17,7 +17,7 @@
  *   - Failures are recorded on the run; nothing retries in a loop.
  */
 import { createDb, type Db } from "../db.js";
-import { applyDiscoveryBatch, discoveryAutomationPreview } from "../discovery/automation.js";
+import { applyDiscoveryBatch, discoveryAutomationPreview, executable } from "../discovery/automation.js";
 import { candidateProtection, protectionIndex } from "../discovery/protection.js";
 import { unreviewedWarnings } from "../discovery/warningReview.js";
 import { assessDiscovery, automationInclude, blockingWarnings } from "../discovery/automationPolicy.js";
@@ -678,7 +678,8 @@ export async function runAutoResearch(
     const limit = Math.max(1, Math.min(MAX_BATCH_AUTO, opts.limit));
     report.reclaimed = await failStaleResearch(db);
     const preview = await discoveryAutomationPreview(db);
-    for (const item of preview.rows.filter(r => ["category", "qualify", "reject"].includes(r.assessment.action)).slice(0, limit)) {
+    // Only executable category/technical-rejection actions; a commercial finding is never one (automation.ts).
+    for (const item of preview.rows.filter(r => executable(r.assessment) && r.assessment.action !== "research").slice(0, limit)) {
       if (opts.shouldStop?.() || clock() - started >= (opts.budgetMs ?? AUTO_TIME_BUDGET_MS)) break;
       const results = await applyDiscoveryBatch(db, [{ id: item.id, token: item.token }]);
       report.rejected += results.filter(r => r.applied && item.assessment.action === "reject").length;

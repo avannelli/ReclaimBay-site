@@ -193,7 +193,7 @@ describe("research freshness: obsolete workers cannot mutate newer state", { ski
     assert.equal(success?.subjectWebsite, SITE);
     assert.equal((await full(c.id)).status, "researched");
     assert.ok((await full(c.id)).websiteVerifiedAt);
-    assert.equal((await full(c.id)).evidence.length, 9);
+    assert.equal((await full(c.id)).evidence.length, 12, "8 signals + one quote per counted repair service");
     const failed = await start(true);
     failed.release();
     const failure = await failed.pending;
@@ -266,7 +266,7 @@ describe("research freshness: obsolete workers cannot mutate newer state", { ski
       const facts = await db.researchFact.count({ where: { researchId: q!.researchId } });
       assert.ok(sources > 0 && facts > 0);
       const snapshot = await full(c.id);
-      assert.equal(snapshot.evidence.length, 9);
+      assert.equal(snapshot.evidence.length, 12);
       assert.equal(await processResearch(db, q!.researchId, deps), null);
       assert.equal(await db.researchSource.count({ where: { researchId: q!.researchId } }), sources);
       assert.equal(await db.researchFact.count({ where: { researchId: q!.researchId } }), facts);

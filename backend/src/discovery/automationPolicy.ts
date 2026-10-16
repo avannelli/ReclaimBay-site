@@ -1,24 +1,28 @@
 import type { Prisma } from "../generated/prisma/client.js";
 import { RESEARCH_VERSION } from "../research/researcher.js";
 import { fitBasis, fitEvidenceErrors, repairFit } from "../research/repairFit.js";
+import { assessReadiness } from "./readiness.js";
+import { assessAcquisition } from "./acquisition.js";
 import { scoreCandidate, researchGateErrors } from "./approval.js";
 import { CRITICAL_WARNINGS, NOTED_WARNINGS } from "./autoApproval.js";
 import { auditedCategoryCorrection } from "./categoryReassessment.js";
-import { nameOutsideTerms } from "./categories.js";
 import { duplicatePending } from "./duplicateReview.js";
 import { isOnBusinessSite, isOwnWebsiteHost } from "./normalize.js";
 import type { candidateProtection } from "./protection.js";
 import { unreviewedWarnings } from "./warningReview.js";
 
-export const AUTOMATION_RULES = "discovery@d1";
+/** d2: research r16 Ready (readiness.ts) and an advisory commercial assessment (never an automatic rejection);
+ * historical excerpts are re-read under current rules, never reinterpreted. */
+export const AUTOMATION_RULES = "discovery@d2";
 export const automationInclude = {
   signals: { orderBy: { id: "asc" } }, evidence: { orderBy: { id: "asc" } }, notes: { orderBy: { id: "asc" } },
   research: { orderBy: [{ queuedAt: "desc" }, { finishedAt: { sort: "desc", nulls: "last" } }, { startedAt: { sort: "desc", nulls: "last" } }, { id: "desc" }], include: { facts: { orderBy: { id: "asc" } }, sources: { orderBy: { id: "asc" } } } },
 } as const satisfies Prisma.DiscoveryCandidateInclude;
 export type AutomationCandidate = Prisma.DiscoveryCandidateGetPayload<{ include: typeof automationInclude }>;
 export type Protection = ReturnType<typeof candidateProtection>;
-export type AutomationAction = "handled" | "protected" | "wait" | "category" | "link_duplicate" | "qualify" | "reject" | "research" | "ready" | "human";
+export type AutomationAction = "handled" | "protected" | "wait" | "category" | "link_duplicate" | "reject" | "research" | "ready" | "human";
 export interface AutomationAssessment {
+  acquisition?: ReturnType<typeof assessAcquisition>;
   action: AutomationAction;
   reason: string;
   code: string;
@@ -26,35 +30,20 @@ export interface AutomationAssessment {
   canonicalProspectId?: string;
   category?: NonNullable<ReturnType<typeof auditedCategoryCorrection>>;
   researchKind?: "fresh" | "retry" | "refresh" | "recovery";
+  /** Non-blocking Ready warnings (contact, ownership, shared building) for the person approving. */
+  warnings?: string[];
 }
 const decision = (action: AutomationAction, code: string, reason: string, extra: Partial<AutomationAssessment> = {}): AutomationAssessment => ({ action, code, reason, ...extra });
 const warningsOf = (w: unknown): string[] => Array.isArray(w) ? w.filter((s): s is string => typeof s === "string") : [];
 export const blockingWarnings = (w: unknown) => warningsOf(w).filter(s => CRITICAL_WARNINGS.some(rule => rule.pattern.test(s)) || !NOTED_WARNINGS.some(rule => rule.pattern.test(s)));
 
-/** Reinterpret actual, attributed excerpts, never a legacy Yes or a category label.
- * Only the latest verified identity's research can supply a new fit observation. */
-function historicalFit(c: AutomationCandidate) {
-  const run = c.research[0];
-  if (!run || run.status !== "completed" || run.outcome !== "website_verified" || !c.websiteVerifiedAt ||
-    (run.subjectWebsite !== null && run.subjectWebsite !== c.website) || blockingWarnings(unreviewedWarnings(run, c.notes, c)).length) return null;
-  if (c.signals.some(s => ["automotive_repair_services", "collision_repair_services"].includes(s.key) && s.value === "no")) return null;
-  if (/\b(?:dealership|fleet)\b/i.test(c.businessName) || run.facts.some(f => f.field === "business_type" && f.value === "dealership") ||
-    c.evidence.some(e => e.signalKey === "independent_shop" && /\bdealership\b/i.test(e.excerpt))) return null;
-  const evidence = c.evidence.filter(e => e.origin === "research" && e.researchId === run.id &&
-    ["general_repair_services", "automotive_repair_services", "collision_repair_services"].includes(e.signalKey) &&
-    isOnBusinessSite(e.sourceUrl, c.website) && run.sources.some(s => s.ok && s.kind === "website" && [s.url, s.finalUrl].includes(e.sourceUrl)));
-  // Old machine-written service summaries are not quoted evidence of primary repair work.
-  const fit = repairFit(c.businessName, evidence.map(e => ({ url: e.sourceUrl, role: "services" as const, parsed: { text: e.excerpt.replace(/^Names [^:]+:\s*/, "") } })));
-  if (fit.status !== "primary" || (nameOutsideTerms(c.businessName).length && fit.services.length < 2)) return null;
-  const mapped = evidence.map(e => ({ ...e, signalKey: "automotive_repair_services" }));
-  const retained = c.evidence.filter(e => ["general_repair_services", "automotive_repair_services"].includes(e.signalKey))
-    .map(e => ({ ...e, signalKey: "automotive_repair_services" }));
-  if (fitEvidenceErrors(c, "repair", [...mapped, ...retained]).length) return null;
-  return evidence;
-}
-
 /** Pure assessment used by preview, worker selection and transaction-time revalidation. */
 export function assessDiscovery(c: AutomationCandidate, protection: Protection, now = new Date(), options: { recovery?: boolean } = {}): AutomationAssessment {
+  const acquisition = assessAcquisition(c, protection);
+  return { ...assessDiscoveryAction(c, protection, now, options, acquisition), acquisition };
+}
+
+function assessDiscoveryAction(c: AutomationCandidate, protection: Protection, now: Date, options: { recovery?: boolean }, acquisition: ReturnType<typeof assessAcquisition>): AutomationAssessment {
   if (["approved", "rejected", "duplicate"].includes(c.status)) return decision("handled", "terminal", c.decisionReason ?? "Historical decision preserved.");
   if (c.research.some(r => ["queued", "running"].includes(r.status))) return decision("wait", "pending", "Research is queued or running.");
   const confident = protection.matches.filter(m => m.strength === "confident");
@@ -77,14 +66,26 @@ export function assessDiscovery(c: AutomationCandidate, protection: Protection, 
   if (retainedFit.status === "conflict") return decision("human", "conflicting_evidence", "Retained repair sources disagree. A person must resolve the conflicting evidence before qualification or rejection.");
   const score = scoreCandidate(c);
   if (basis && score.qualification === "meets_criteria" && !researchGateErrors(c.signals, c.evidence).length &&
-    !fitEvidenceErrors(c, basis, c.evidence).length && c.categoryVerdict === "in_target" && !blockers.length &&
+    // A current-rules run is judged by readiness.ts on its own attributed quotes; older evidence by the original check.
+    (run?.version === RESEARCH_VERSION || !fitEvidenceErrors(c, basis, c.evidence).length) && c.categoryVerdict === "in_target" && !blockers.length &&
     (run ? run.status === "completed" && run.outcome === "website_verified" && c.websiteVerifiedAt &&
     (run.subjectWebsite === null || run.subjectWebsite === c.website) : c.status === "researched" && c.signals.some(s => s.origin === "manual" && s.key === (basis === "repair" ? "automotive_repair_services" : "collision_repair_services")))) {
-    return decision("ready", "qualified", "Sourced repair fit meets current rules. Human approval is required to create a prospect.");
-  }
-  if (c.categoryVerdict !== "wrong_category" && c.status === "researched" && (c.categorySource !== "manual" || c.categoryVerdict === "in_target")) {
-    const evidence = historicalFit(c);
-    if (!basis && evidence?.length) return decision("qualify", "sourced_historical_fit", "Current repair rules confirm explicit services in the latest verified site's retained excerpts.", { evidenceIds: evidence.map(e => e.id) });
+    // A person-verified record (manual repair Yes, never researched) still waits on duplicate questions.
+    if (!run) {
+      if (protection.relationships.blocking.length) return decision("human", "duplicate_relationship", `${protection.relationships.blocking.join(" ")} A person resolves the duplicate question before approval.`);
+      // A person already judged this fit; only an explicit commercial exclusion holds it, not how they worded their evidence.
+      if (acquisition.commercial.disposition === "exclude") return decision("human", "commercial_review", acquisition.commercial.findings.map(f => f.reason).join(" "));
+      if (!protection.account.clear) return decision("human", "account_review", protection.account.reason);
+      return decision("ready", "qualified", "A person verified the repair fit with sourced evidence. Human approval is required to create a prospect.");
+    }
+    const readiness = assessReadiness(c, protection, run);
+    if (readiness.ready) {
+      if (acquisition.commercial.disposition !== "fit") return decision("human", "commercial_review", acquisition.commercial.findings.map(f => f.reason).join(" "));
+      if (!protection.account.clear) return decision("human", "account_review", protection.account.reason);
+      return decision("ready", "qualified", `${readiness.reason} Human approval is required to create a prospect.`, { warnings: readiness.warnings });
+    }
+    // An older run is re-read once under current rules (policy_refresh below); its evidence is never reinterpreted.
+    if (readiness.code !== "stale_rules") return decision("human", readiness.code!, readiness.reason);
   }
   // Rejection needs explicit current negative evidence, never a name/category or a missing fact.
   const negative = c.signals.find(s => s.key === "automotive_repair_services" && s.value === "no" && s.origin === "research");
@@ -95,6 +96,8 @@ export function assessDiscovery(c: AutomationCandidate, protection: Protection, 
     const allFit = repairFit(c.businessName, retained.map(e => ({ url: e.sourceUrl, role: "services" as const, parsed: { text: e.excerpt.replace(/^Names [^:]+:\s*/, "") } })));
     if (fit.status === "negative" && allFit.status === "negative" && evidence.length) return decision("reject", "sourced_negative_fit", "Current verified-site evidence explicitly says this business performs no automotive repair.", { evidenceIds: evidence.map(e => e.id) });
   }
+  // A commercial exclusion is held for a person, never rejected automatically; a person may approve it with a recorded reason.
+  if (acquisition.commercial.disposition === "exclude") return decision("human", "commercial_review", acquisition.commercial.findings.map(f => f.reason).join(" "));
   if (c.categoryVerdict === "wrong_category") return decision("human", "category_evidence", "The exclusion requires source verification; it is not an automatic rejection.");
   if (c.signals.some(s => s.key === "automotive_repair_services" && s.value === "no" && s.origin === "manual")) return decision("human", "manual_negative_fit", "A person's negative repair observation requires a human decision.");
   if (!c.website || !isOwnWebsiteHost(c.website)) return decision("human", "missing_website", "Find and save this business's own website or add attributed public evidence in the candidate editor.");

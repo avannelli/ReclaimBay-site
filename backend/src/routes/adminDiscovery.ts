@@ -399,7 +399,8 @@ export async function discoveryRoutes(app: FastifyInstance, opts: { config: Conf
     // Approving from the queue returns to the queue, so the next item is right there.
     const fromQueue = req.body?.from === "queue";
     try {
-      const { prospect } = await approveCandidate(db, id);
+      const reason = req.body?.commercialOverrideReason;
+      const { prospect } = await approveCandidate(db, id, { commercialOverrideReason: typeof reason === "string" ? reason : undefined });
       req.log.info({ candidateId: id, prospectId: prospect.id, fromQueue }, "candidate approved");
       return reply.redirect(fromQueue ? backToQueue(req.body, "approved", id) : `/admin/prospects/${prospect.id}?done=created`, 303);
     } catch (err) {

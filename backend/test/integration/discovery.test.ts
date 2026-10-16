@@ -522,10 +522,14 @@ describe("discovery service", { skip: skipReason }, () => {
       assert.equal(p.score, 60);
       // History and provenance.
       assert.deepEqual(p.statusChanges.map((h) => [h.fromStatus, h.toStatus, h.reason]), [[null, "new", "Created"]]);
-      assert.equal(p.notes.length, 1);
+      // The provenance note, and the commercial assessment the person approved under (R16.1).
+      assert.equal(p.notes.length, 2);
+      const provenance = p.notes.find((n) => n.body.includes("Approved by a human"))!;
       for (const part of ["Approved by a human", "Provider: fixture", "fx-1001", "directory.example.com/listing/fx-1001", "Independent automotive repair in Ventura County, CA", c.id, run.id]) {
-        assert.ok(p.notes[0]!.body.includes(part), `provenance note has ${part}`);
+        assert.ok(provenance.body.includes(part), `provenance note has ${part}`);
       }
+      const commercial = JSON.parse(p.notes.find((n) => n !== provenance)!.body) as { type: string; action: string; rules: string };
+      assert.deepEqual([commercial.type, commercial.action, commercial.rules], ["commercial_assessment", "human_approve", "reclaimbay.commercial@v1"]);
 
       // The candidate is kept, linked, and frozen.
       assert.equal(candidate.status, "approved");

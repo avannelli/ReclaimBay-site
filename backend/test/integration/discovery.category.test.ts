@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { RESEARCH_VERSION } from "../../src/research/researcher.js";
 import { after, before, beforeEach, describe, test } from "node:test";
 import type { FastifyInstance } from "fastify";
 import { buildApp } from "../../src/app.js";
@@ -116,7 +117,7 @@ describe("category check (service)", { skip: skipReason }, () => {
     assert.equal(c.categoryVerdict, "unclear", "names require service evidence");
     const [q] = (await enqueueResearch(db, [c.id], "admin")).queued;
     const run = (await processResearch(db, q!.researchId, { makeFetcher: popsWeb().makeFetcher, today: TODAY }))!;
-    assert.equal(run.version, "r15");
+    assert.equal(run.version, RESEARCH_VERSION);
     const after = await db.discoveryCandidate.findUniqueOrThrow({ where: { id: c.id } });
     assert.deepEqual([after.categoryVerdict, after.categorySource, after.categorySourceUrl], ["wrong_category", "website", POPS_SITE]);
     assert.match(after.categoryReason!, /^Website describes shoe repair, boot repair, vacuum repair, lamp repair and sharpening; no automotive repair services or vocabulary/);

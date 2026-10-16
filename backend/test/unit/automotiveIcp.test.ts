@@ -229,7 +229,7 @@ describe("opportunity score is separate from qualification", () => {
 
 describe("missing evidence never becomes positive evidence", () => {
   test("no services, no signal", () => {
-    assert.deepEqual(repairFit("Harbor", [{ url: SITE, role: "services", parsed: { text: "" } }]), { status: "unknown", sourceUrl: null, excerpt: null, services: [] });
+    assert.deepEqual(repairFit("Harbor", [{ url: SITE, role: "services", parsed: { text: "" } }]), { status: "unknown", sourceUrl: null, excerpt: null, services: [], quotes: [] });
   });
   test("a name alone is never evidence", () => {
     const r = repairFit("Harbor Transmission Repair", [{ url: SITE, role: "services", parsed: { text: "Harbor Transmission Repair. Call us." } }]);

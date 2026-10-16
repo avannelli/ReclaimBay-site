@@ -96,7 +96,11 @@ describe("automated research (service)", { skip: skipReason }, () => {
       website_no_recent_date: "no/research",
       multiple_bays_or_staff: "yes/research",
     });
-    assert.equal(after.evidence.length, 9, "one evidence item per signal");
+    // r16: one evidence item per signal, and repair fit carries one quote per counted concrete service.
+    const repairEvidence = after.evidence.filter((e) => e.signalKey === "automotive_repair_services");
+    assert.equal(after.evidence.length - repairEvidence.length, 8, "one evidence item per other signal");
+    const labels = repairEvidence.map((e) => /^Names ([^:]+):/.exec(e.excerpt)?.[1]);
+    assert.deepEqual(labels, ["collision/body", "brakes", "diagnostics", "A/C"], "one quote per counted repair service");
     assert.ok(after.evidence.every((e) => e.origin === "research" && e.researchId === run.id && e.sourceUrl.startsWith("https://saviersauto.example.com/")));
     assert.ok(after.notes.some((n) => new RegExp(`Automated research \\(${RESEARCH_VERSION}\\): website verified`).test(n.body)));
 

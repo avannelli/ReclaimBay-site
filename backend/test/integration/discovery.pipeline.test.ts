@@ -299,6 +299,8 @@ describe("discovery pipeline: release -> staging -> background run -> candidates
       await changeCandidateStatus(db, c.id, "researching", null);
       await applyResearchFindings(db, c.id, findings(), "fixture-research");
       if (c.possibleDuplicateCandidateId || c.possibleDuplicateProspectId) await resolveDuplicate(db, c.id, "not_duplicate");
+      // r16: a flag pointing AT this candidate is a duplicate question too; a person answers it before approval.
+      for (const other of await db.discoveryCandidate.findMany({ where: { possibleDuplicateCandidateId: c.id } })) await resolveDuplicate(db, other.id, "not_duplicate");
       const { prospect } = await approveCandidate(db, c.id);
       assert.equal(prospect.status, "new");
       assert.equal(prospect.phone, null, "the provider phone is not carried over as verified contact");
@@ -328,6 +330,7 @@ describe("discovery pipeline: release -> staging -> background run -> candidates
       assert.equal(done.phone, "(805) 555-4401");
       assert.equal(done.phoneSourceUrl, "https://www.mesabrake.example.com/contact");
       if (c.possibleDuplicateCandidateId || c.possibleDuplicateProspectId) await resolveDuplicate(db, c.id, "not_duplicate");
+      for (const other of await db.discoveryCandidate.findMany({ where: { possibleDuplicateCandidateId: c.id } })) await resolveDuplicate(db, other.id, "not_duplicate");
       assert.equal(scoreCandidate((await staged("st-401"))!).breakdown.find((s) => s.key === "public_business_contact")!.state, "yes");
       const { prospect } = await approveCandidate(db, c.id);
       await changeStatus(db, prospect.id, "qualified", null);

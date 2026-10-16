@@ -35,23 +35,49 @@ describe("Discovery automation boundaries", { skip: skipReason }, () => {
     const evidence = await db.candidateEvidence.create({ data: { candidateId: c.id, signalKey: "general_repair_services", sourceUrl: c.website!, excerpt, origin: "research", researchId: run.id } });
     return { c, run, evidence };
   };
+  /** A candidate whose latest run is a genuine current-rules (r16) read: location facts, ownership, page classes and one quote per service. */
+  const current = async (extra: Record<string, unknown> = {}, opts: { quotes?: string[]; identity?: string; ownership?: string; trades?: string; warnings?: string[]; phoneState?: "verified" | "uncertain" } = {}) => {
+    const c = await candidate({ status: "researched", websiteVerifiedAt: new Date(), categorySource: "website", ...extra });
+    const run = await db.candidateResearch.create({ data: { candidateId: c.id, version: RESEARCH_VERSION, status: "completed", outcome: "website_verified", trigger: "cli", warnings: opts.warnings ?? [], subjectWebsite: c.website } });
+    const home = await db.researchSource.create({ data: { researchId: run.id, kind: "website", url: c.website!, ok: true } });
+    const services = await db.researchSource.create({ data: { researchId: run.id, kind: "website", url: c.website! + "services", ok: true } });
+    const fact = (field: string, value: string | null, sourceId: string | null = null, state: "verified" | "uncertain" = "verified") => db.researchFact.create({ data: { researchId: run.id, field, value, state, sourceId } });
+    await fact("location_identity", opts.identity ?? "verified_location", home.id);
+    await fact("ownership_class", opts.ownership ?? "unknown");
+    await fact("site_locations", "1");
+    await fact("business_name", c.businessName, home.id);
+    await fact("page_location", "own_location", home.id);
+    await fact("page_location", "own_site", services.id);
+    await fact("phone", "(805) 555-0101", home.id, opts.phoneState ?? "verified");
+    if (opts.trades) await fact("trade_context", opts.trades);
+    await db.candidateSignal.create({ data: { candidateId: c.id, key: "automotive_repair_services", value: "yes", origin: "research" } });
+    for (const excerpt of opts.quotes ?? ["Names brakes: We offer brake repair.", "Names engine: Engine repair for cars and trucks."]) {
+      await db.candidateEvidence.create({ data: { candidateId: c.id, signalKey: "automotive_repair_services", sourceUrl: services.url, excerpt, origin: "research", researchId: run.id } });
+    }
+    return { c, run };
+  };
   const downstream = async () => {
     const tables = ["Prospect", "ProspectEvidence", "ProspectSignal", "ProspectNote", "ProspectStatusChange", "AnalyticsSession", "ProductEvent", "Outreach", "OutreachEvent", "OutreachReply", "OutreachCampaign", "OutreachCampaignMessage", "Invitation", "EmailSuppression", "EmailedUnsubscribeReview", "EmailedUnsubscribeCandidate", "OutreachControlChange"];
     return Promise.all(tables.map(t => db.$queryRawUnsafe(`SELECT row_to_json(t)::text FROM "${t}" t ORDER BY row_to_json(t)::text`)));
   };
 
-  test("re-evaluates sourced historical excerpts, preserves originals, stops at Ready to approve, and is idempotent", async () => {
-    const { c, evidence } = await historical();
+  test("an older-rules run is re-read once under r16, never reinterpreted into Ready; originals preserved; idempotent", async () => {
+    const { c, run, evidence } = await historical();
+    const runBefore = await db.candidateResearch.findUniqueOrThrow({ where: { id: run.id } });
     const before = await downstream();
     const plan = await preview(c.id);
-    assert.equal(plan.assessment.action, "qualify");
-    const applied = await applyDiscoveryAutomation(db, c.id, { token: plan.token });
-    assert.equal(applied.applied, true);
-    assert.equal((await preview(c.id)).assessment.action, "ready");
+    assert.deepEqual([plan.assessment.action, plan.assessment.code], ["research", "policy_refresh"]);
+    const [applied] = await applyDiscoveryBatch(db, [{ id: c.id, token: plan.token }]);
+    assert.equal(applied!.applied, true);
+    const queued = await db.candidateResearch.findMany({ where: { candidateId: c.id, status: "queued" } });
+    assert.deepEqual(queued.map((r) => r.version), [RESEARCH_VERSION]);
+    assert.equal((await preview(c.id)).assessment.action, "wait");
     assert.deepEqual(await db.candidateEvidence.findUnique({ where: { id: evidence.id } }), evidence);
+    assert.deepEqual(await db.candidateResearch.findUniqueOrThrow({ where: { id: run.id } }), runBefore, "the historical run is untouched");
+    assert.equal(await db.candidateSignal.count({ where: { candidateId: c.id, key: "automotive_repair_services" } }), 0, "old excerpts never become a repair Yes");
     assert.equal((await db.discoveryCandidate.findUniqueOrThrow({ where: { id: c.id } })).status, "researched");
     const count = await db.candidateEvidence.count();
-    assert.equal((await applyDiscoveryAutomation(db, c.id)).applied, false);
+    assert.equal((await applyDiscoveryAutomation(db, c.id, { allowResearch: true })).applied, false);
     assert.equal(await db.candidateEvidence.count(), count);
     assert.deepEqual(await downstream(), before, "zero prospect, message, queue, reply, campaign, invitation or opt-out side effects");
     await assert.rejects(approveCandidate(db, c.id, { automatic: true }), /person must approve/);
@@ -62,12 +88,12 @@ describe("Discovery automation boundaries", { skip: skipReason }, () => {
     assert.equal((await preview(weak.c.id)).assessment.action, "research");
     const unsourced = await historical();
     await db.researchSource.deleteMany({ where: { researchId: unsourced.run.id } });
-    assert.notEqual((await preview(unsourced.c.id)).assessment.action, "qualify");
+    assert.notEqual((await preview(unsourced.c.id)).assessment.action, "ready");
     const fleet = await historical({ businessName: "Fleet Auto Repair" });
-    assert.notEqual((await preview(fleet.c.id)).assessment.action, "qualify");
+    assert.notEqual((await preview(fleet.c.id)).assessment.action, "ready");
     const conflict = await historical();
     await db.candidateResearch.update({ where: { id: conflict.run.id }, data: { warnings: ["The website gives a different business address."] } });
-    assert.notEqual((await preview(conflict.c.id)).assessment.action, "qualify");
+    assert.notEqual((await preview(conflict.c.id)).assessment.action, "ready");
   });
 
   test("missing websites, blocked and mismatched sites are actionable exceptions; corrected websites can be researched", async () => {
@@ -212,9 +238,9 @@ describe("Discovery automation boundaries", { skip: skipReason }, () => {
     await db.discoveryCandidate.update({ where: { id: c.id }, data: { status: "needs_review" } });
     await assert.rejects(applyDiscoveryAutomation(db, c.id, { token: plan.token }), /changed/);
     const other = await historical(); const p = await preview(other.c.id);
-    const results = await Promise.allSettled([1, 2].map(() => applyDiscoveryAutomation(db, other.c.id, { token: p.token })));
+    const results = await Promise.allSettled([1, 2].map(() => applyDiscoveryAutomation(db, other.c.id, { token: p.token, allowResearch: true })));
     assert.equal(results.filter(r => r.status === "fulfilled" && r.value.applied).length, 1);
-    assert.equal(await db.candidateSignal.count({ where: { candidateId: other.c.id, key: "automotive_repair_services" } }), 1);
+    assert.equal(await db.candidateResearch.count({ where: { candidateId: other.c.id, version: RESEARCH_VERSION } }), 1);
   });
 
   test("research never creates prospects, retains evidence and more than five runs, including weaker blocked results", async () => {
@@ -230,7 +256,7 @@ describe("Discovery automation boundaries", { skip: skipReason }, () => {
     assert.deepEqual(await db.candidateEvidence.findMany({ where: { id: { in: evidence.map(e => e.id) } }, orderBy: { id: "asc" } }), evidence.sort((a, b) => a.id.localeCompare(b.id)));
     assert.equal(await db.prospect.count(), 0); assert.equal(await db.outreach.count(), 0);
     assert.equal((await preview(c.id)).assessment.code, "blocked");
-    assert.equal(RESEARCH_VERSION, "r15");
+    assert.equal(RESEARCH_VERSION, "r16");
   });
 
   test("a negative rerun preserves stronger signals, both sources, and blocks manual approval", async () => {
@@ -336,24 +362,24 @@ describe("Discovery automation boundaries", { skip: skipReason }, () => {
     assert.deepEqual(await downstream(), before);
   });
 
-  test("a sourced human warning review preserves the original run and permits safe historical re-evaluation", async () => {
-    const { c, run } = await historical();
+  test("a sourced human warning review preserves the original run and lets a current-rules candidate become Ready", async () => {
     const warnings = ["The website gives a different business address."];
-    await db.candidateResearch.update({ where: { id: run.id }, data: { warnings } });
-    assert.equal((await preview(c.id)).assessment.action, "research");
+    const { c, run } = await current({}, { warnings });
+    assert.equal((await preview(c.id)).assessment.action, "human");
     await assert.rejects(reviewResearchWarnings(db, c.id, { researchId: "stale", sourceUrl: c.website!, reason: "Verified the correct location." }), /Research changed/);
     await assert.rejects(addCandidateNote(db, c.id, WARNING_REVIEW_PREFIX + "{}"), /review form/);
     await reviewResearchWarnings(db, c.id, { researchId: run.id, sourceUrl: c.website!, reason: "The owner confirms this address identifies the same repair shop." });
     assert.deepEqual((await db.candidateResearch.findUniqueOrThrow({ where: { id: run.id } })).warnings, warnings);
-    assert.equal((await preview(c.id)).assessment.action, "qualify");
+    assert.equal((await preview(c.id)).assessment.action, "ready");
     const oldToken = (await preview(c.id)).token;
     await db.candidateResearch.update({ where: { id: run.id }, data: { warnings: [...warnings, "Business identity remains unclear."] } });
     await assert.rejects(applyDiscoveryAutomation(db, c.id, { token: oldToken }), /changed/);
-    assert.notEqual((await preview(c.id)).assessment.action, "qualify");
+    assert.notEqual((await preview(c.id)).assessment.action, "ready");
   });
 
-  test("admin previews are read-only; authenticated sourced qualification applies once with same-origin protection", async () => {
-    const { c } = await historical();
+  test("admin previews are read-only; an authenticated batch applies once with same-origin protection", async () => {
+    const audited = AUDITED_CATEGORY_CORRECTIONS[0]!;
+    const c = await candidate({ id: audited.id, businessName: audited.name, categoryVerdict: "wrong_category", categorySource: "name", categoryRules: "automotive@c1", categoryReason: audited.reason, providerCategory: "automotive_repair", categoryTier: "core" });
     const app = await buildApp(loadConfig({ DATABASE_URL: TEST_DATABASE_URL, ALLOWED_ORIGIN: "https://reclaimbay.com", ADMIN_SECRET: "discovery-regression-secret-0123456789", TRUST_PROXY_HOPS: "0" }), db, false);
     try {
       const plan = await preview(c.id);
@@ -367,14 +393,15 @@ describe("Discovery automation boundaries", { skip: skipReason }, () => {
       const page = await app.inject({ method: "GET", url: "/admin/discovery/automation", headers: { cookie } });
       assert.equal(page.statusCode, 200);
       assert.ok(page.body.includes(`candidate_${c.id}`));
-      assert.ok(page.body.includes(c.website!));
+      assert.ok(page.body.includes(audited.name.replace(/&/g, "&amp;").replace(/'/g, "&#39;")));
       assert.equal((await preview(c.id)).token, plan.token);
       const crossOrigin = await app.inject({ method: "POST", url: "/admin/discovery/automation", headers: { ...headers, cookie, origin: "https://untrusted.example.com" }, payload });
       assert.equal(crossOrigin.statusCode, 403);
       assert.equal((await preview(c.id)).token, plan.token);
       const applied = await app.inject({ method: "POST", url: "/admin/discovery/automation", headers: { ...headers, cookie }, payload });
       assert.equal(applied.statusCode, 200);
-      assert.equal((await preview(c.id)).assessment.action, "ready");
+      assert.equal((await db.discoveryCandidate.findUniqueOrThrow({ where: { id: c.id } })).categoryVerdict, "unclear");
+      assert.equal(await db.candidateResearch.count(), 0, "a category correction starts no research");
       const repeated = await app.inject({ method: "POST", url: "/admin/discovery/automation", headers: { ...headers, cookie }, payload });
       assert.equal(repeated.statusCode, 200);
       assert.match(repeated.body, /0 actions applied; 1 skipped/);
@@ -395,12 +422,14 @@ describe("Discovery automation boundaries", { skip: skipReason }, () => {
     assert.deepEqual(await downstream(), downstreamBefore);
   });
 
-  test("a negated dealership note does not override sourced repair fit, while a confirmed dealership stays held", async () => {
-    const { c, run } = await historical();
+  test("a negated dealership note does not override sourced repair fit, while a dealership or manufacturer stays held", async () => {
+    const { c, run } = await current({}, { ownership: "independent" });
     await db.researchFact.create({ data: { researchId: run.id, field: "business_type", value: "independent", state: "verified", note: "No chain, franchise or dealership indication found." } });
-    assert.equal((await preview(c.id)).assessment.action, "qualify");
-    await db.researchFact.updateMany({ where: { researchId: run.id, field: "business_type" }, data: { value: "dealership", note: "Verified dealership service department." } });
-    assert.notEqual((await preview(c.id)).assessment.action, "qualify");
+    assert.equal((await preview(c.id)).assessment.action, "ready");
+    for (const ownership of ["dealership", "possible_dealership", "manufacturer", "chain"]) {
+      await db.researchFact.updateMany({ where: { researchId: run.id, field: "ownership_class" }, data: { value: ownership } });
+      assert.deepEqual([(await preview(c.id)).assessment.action, (await preview(c.id)).assessment.code], ["human", "ownership"], ownership);
+    }
   });
 
   test("a newer blocked completion wins a queued-time tie and cannot reuse older fit for qualification", async () => {
@@ -412,18 +441,17 @@ describe("Discovery automation boundaries", { skip: skipReason }, () => {
   });
 
   test("identity edits invalidate website verification and prior warning reviews", async () => {
-    const { c, run } = await historical();
-    await db.candidateResearch.update({ where: { id: run.id }, data: { warnings: ["The website gives a different business address."] } });
+    const { c, run } = await current({}, { warnings: ["The website gives a different business address."] });
     await reviewResearchWarnings(db, c.id, { researchId: run.id, sourceUrl: c.website!, reason: "Verified the original business at this address." });
-    assert.equal((await preview(c.id)).assessment.action, "qualify");
-    await updateCandidate(db, c.id, readyForm({ businessName: "A Different Repair Business", website: c.website!, city: c.city!, state: c.state!, phone: "", phoneSourceUrl: "", signal_independent_shop: "unknown", signal_general_repair_services: "yes", signal_collision_repair_services: "unknown", signal_digital_inspections: "unknown", signal_no_online_booking: "unknown" }));
+    assert.equal((await preview(c.id)).assessment.action, "ready");
+    await updateCandidate(db, c.id, readyForm({ businessName: "A Different Repair Business", website: c.website!, city: c.city!, state: c.state!, phone: "", phoneSourceUrl: "", signal_independent_shop: "unknown", signal_general_repair_services: "unknown", signal_automotive_repair_services: "yes", signal_collision_repair_services: "unknown", signal_digital_inspections: "unknown", signal_no_online_booking: "unknown" }));
     const edited = await db.discoveryCandidate.findUniqueOrThrow({ where: { id: c.id } });
     assert.equal(edited.websiteVerifiedAt, null);
     assert.deepEqual(unreviewedWarnings(await db.candidateResearch.findUniqueOrThrow({ where: { id: run.id } }), await db.candidateNote.findMany({ where: { candidateId: c.id } }), edited), ["The website gives a different business address."]);
-    assert.notEqual((await preview(c.id)).assessment.action, "qualify");
+    assert.notEqual((await preview(c.id)).assessment.action, "ready");
   });
 
-  test("overlapping mixed batches and a second fresh pass create only one set of qualification and research work", async () => {
+  test("overlapping mixed batches and a second fresh pass create only one set of research work", async () => {
     const a = await historical({ businessName: "First Garage" });
     const b = await historical({ businessName: "Second Garage" });
     const fresh = await candidate({ businessName: "Third Garage" });
@@ -434,8 +462,8 @@ describe("Discovery automation boundaries", { skip: skipReason }, () => {
       assert.fail(JSON.stringify({ code: error.code, metaKeys: Object.keys(error.meta ?? {}), sqlState: error.meta?.code, adapterCode: error.meta?.driverAdapterError?.cause?.originalCode, adapterKind: error.meta?.driverAdapterError?.cause?.kind }));
     });
     assert.equal(raced.flat().filter(r => r.applied).length, 3);
-    assert.equal(await db.candidateSignal.count({ where: { key: "automotive_repair_services" } }), 2);
-    assert.equal(await db.candidateResearch.count({ where: { candidateId: fresh.id } }), 1);
+    assert.equal(await db.candidateSignal.count({ where: { key: "automotive_repair_services" } }), 0, "no historical reinterpretation");
+    for (const id of ids) assert.equal(await db.candidateResearch.count({ where: { candidateId: id, version: RESEARCH_VERSION } }), 1);
     const counts = [await db.candidateEvidence.count(), await db.candidateNote.count(), await db.candidateResearch.count()];
     const again = (await discoveryAutomationPreview(db)).rows.filter(r => ids.includes(r.id)).map(r => ({ id: r.id, token: r.token }));
     assert.equal((await applyDiscoveryBatch(db, again)).filter(r => r.applied).length, 0);
@@ -452,9 +480,95 @@ describe("Discovery automation boundaries", { skip: skipReason }, () => {
     assert.equal(result.find(r => r.id === stale.c.id)?.applied, false);
     assert.equal(result.find(r => r.id === safe.c.id)?.applied, true);
     assert.equal((await preview(stale.c.id)).assessment.code, "human_hold");
-    assert.equal((await preview(safe.c.id)).assessment.action, "ready");
+    assert.equal((await preview(safe.c.id)).assessment.action, "wait");
+    assert.equal(await db.candidateResearch.count({ where: { candidateId: stale.c.id, version: RESEARCH_VERSION } }), 0);
     assert.equal(await db.prospect.count(), 0);
     assert.equal(await db.outreach.count(), 0);
+  });
+
+  // ---------- research r16 / discovery@d2 Ready ----------
+
+  test("r16 Ready: verified location, quoted concrete services, allowed ownership and no duplicate question; never a prospect", async () => {
+    const { c } = await current({}, { phoneState: "uncertain" });
+    const before = await downstream();
+    const plan = await preview(c.id);
+    assert.deepEqual([plan.assessment.action, plan.assessment.code], ["ready", "qualified"]);
+    assert.match(plan.assessment.reason, /Concrete repair services, each quoted: engine, brakes/);
+    assert.ok(plan.assessment.warnings?.some((w) => /never use a phone for outreach/.test(w)), "contact is validated separately");
+    assert.equal((await applyDiscoveryAutomation(db, c.id, { token: plan.token })).applied, false, "Ready is not an automation action");
+    await assert.rejects(approveCandidate(db, c.id, { automatic: true }), /person must approve/);
+    assert.equal(await db.prospect.count(), 0);
+    assert.deepEqual(await downstream(), before);
+  });
+
+  test("r16 Ready needs strong service evidence from this run: one service, generic language or another run's quotes are not enough", async () => {
+    assert.equal((await preview((await current({ businessName: "One Service Garage" }, { quotes: ["Names brakes: We offer brake repair."] })).c.id)).assessment.code, "service_evidence");
+    assert.equal((await preview((await current({ businessName: "Generic Garage" }, { quotes: ["Names general repair: We offer quality auto repairs backed by years of experience!"] })).c.id)).assessment.code, "service_evidence");
+    const specialist = (await preview((await current({ businessName: "Valley Transmissions" }, { quotes: ["Names transmission/drivetrain: We rebuild and repair transmissions: transmission repair."] })).c.id)).assessment;
+    assert.equal(specialist.acquisition!.technicalQualification, "meets_criteria", "technical specialty qualification is preserved");
+    // R16.1: a stated single specialty is a legitimate repair business; it needs no breadth or workflow wording.
+    assert.deepEqual([specialist.action, specialist.code], ["ready", "qualified"], "a stated specialty is Ready without workflow wording");
+    assert.equal(specialist.acquisition!.commercial.disposition, "fit");
+    assert.equal((await preview((await current({ businessName: "Eckhart Trailer Hitch And Welding" }, { quotes: ["Names brakes: Axle & Brake Replacement, burnt trailer brakes."], trades: "trailer, hitch, welding" })).c.id)).assessment.code, "adjacent_trade");
+    assert.equal((await preview((await current({ businessName: "Brand Location" }, { identity: "unverified" })).c.id)).assessment.code, "location_identity");
+  });
+
+  test("an incoming duplicate flag or a shared phone keeps a candidate out of Ready until a person answers; nothing is resolved automatically", async () => {
+    const { c } = await current({ phone: "(805) 555-0101" });
+    const flagger = await candidate({ businessName: "Camarillo Alignment Center", status: "needs_review", duplicateHold: true, possibleDuplicateCandidateId: c.id });
+    const plan = await preview(c.id);
+    assert.deepEqual([plan.assessment.action, plan.assessment.code], ["human", "duplicate_relationship"]);
+    assert.deepEqual(await db.discoveryCandidate.findUniqueOrThrow({ where: { id: flagger.id } }), flagger, "detection never changes the flagging record");
+    await resolveDuplicate(db, flagger.id, "not_duplicate");
+    assert.equal((await preview(c.id)).assessment.action, "ready");
+    const sharer = await candidate({ businessName: "Other Shop Same Phone", providerPhone: "805-555-0101" });
+    assert.equal((await preview(c.id)).assessment.code, "duplicate_relationship");
+    assert.equal((await db.discoveryCandidate.findUniqueOrThrow({ where: { id: sharer.id } })).duplicateDecision, null);
+  });
+
+  test("r16 research on a multi-location brand site: the location with its address on the site qualifies, the one without does not", async () => {
+    const origin = "https://dependable.example.com";
+    const web = fixtureWeb({
+      [`${origin}/robots.txt`]: { status: 200, body: "User-agent: *\nDisallow:", contentType: "text/plain" },
+      [`${origin}/`]: { body: page("Auto Repair Shop Ventura & Simi Valley - Dependable Car Care", "<h1>Dependable Car Care</h1><p>Family owned and independent.</p><p>Ventura: 1561 Los Angeles Ave · (805) 659-2957</p><p>Simi Valley: 964 Chambers Ln · (805) 581-9013</p>") },
+      [`${origin}/services`]: { body: page("Our Services", "<h1>Our Services</h1><p>Our services include brake repair, engine repair, transmission repair and A/C repair.</p>") },
+    });
+    const simi = await candidate({ businessName: "Dependable Car Care", website: `${origin}/`, streetAddress: "964 Chambers Ln", city: "Simi Valley", providerPhone: "8055819013" });
+    const elsewhere = await candidate({ businessName: "Dependable Car Care", website: `${origin}/`, streetAddress: "100 Main St", city: "Thousand Oaks", providerPhone: "8055550123" });
+    for (const c of [simi, elsewhere]) {
+      const q = await enqueueResearch(db, [c.id], "admin");
+      await processResearch(db, q.queued[0]!.researchId, { makeFetcher: web.makeFetcher, today: new Date("2026-10-14T12:00:00Z") });
+    }
+    const facts = async (id: string) => Object.fromEntries((await db.researchFact.findMany({ where: { research: { candidateId: id }, field: { in: ["location_identity", "ownership_class", "site_locations"] } } })).map((f) => [f.field, f.value]));
+    assert.deepEqual(await facts(simi.id), { location_identity: "verified_location", ownership_class: "regional", site_locations: "2" });
+    assert.equal((await facts(elsewhere.id)).location_identity, "unverified");
+    const simiPlan = (await preview(simi.id)).assessment;
+    assert.equal(simiPlan.acquisition!.technicalQualification, "meets_criteria", "location-specific technical fit still qualifies");
+    assert.equal(simiPlan.acquisition!.commercial.disposition, "fit");
+    assert.deepEqual([simiPlan.action, simiPlan.code], ["human", "account_review"], "separate locations cannot silently become independent customer accounts");
+    const other = await preview(elsewhere.id);
+    assert.notEqual(other.assessment.action, "ready");
+    assert.equal(await db.candidateSignal.count({ where: { candidateId: elsewhere.id, key: "automotive_repair_services" } }), 0, "another location's evidence is never attributed");
+    assert.equal((await db.discoveryCandidate.findUniqueOrThrow({ where: { id: elsewhere.id } })).phone, null, "no contact phone for an unverified location");
+    const simiEvidence = await db.candidateEvidence.findMany({ where: { candidateId: simi.id, signalKey: "automotive_repair_services" } });
+    assert.ok(simiEvidence.length >= 4 && simiEvidence.every((e) => /^Names [^:,]+: /.test(e.excerpt)), "one quote per counted service");
+  });
+
+  test("an r16 re-read appends evidence; older-rules evidence, signals and runs stay byte-identical", async () => {
+    const { c, run, evidence } = await historical({ website: "https://saviersauto.example.com/", streetAddress: "5577 Saviers Rd", postalCode: "93033", providerPhone: "8055550101" });
+    const old = { run: await db.candidateResearch.findUniqueOrThrow({ where: { id: run.id }, include: { facts: true, sources: true } }), signals: await db.candidateSignal.findMany({ where: { candidateId: c.id }, orderBy: { id: "asc" } }) };
+    const plan = await preview(c.id);
+    const [queued] = await applyDiscoveryBatch(db, [{ id: c.id, token: plan.token }]);
+    assert.equal(queued!.applied, true);
+    const next = await db.candidateResearch.findFirstOrThrow({ where: { candidateId: c.id, status: "queued" } });
+    await processResearch(db, next.id, { makeFetcher: fixtureWeb(independentShop()).makeFetcher, today: new Date("2026-10-14T12:00:00Z") });
+    assert.deepEqual(await db.candidateEvidence.findUnique({ where: { id: evidence.id } }), evidence);
+    assert.deepEqual(await db.candidateResearch.findUniqueOrThrow({ where: { id: run.id }, include: { facts: true, sources: true } }), old.run);
+    for (const s of old.signals) assert.deepEqual(await db.candidateSignal.findUnique({ where: { id: s.id } }), s);
+    const added = await db.candidateEvidence.findMany({ where: { candidateId: c.id, researchId: next.id } });
+    assert.ok(added.length > 0 && added.every((e) => e.origin === "research"));
+    assert.equal((await preview(c.id)).assessment.action, "ready", (await preview(c.id)).assessment.reason);
+    assert.equal(await db.prospect.count(), 0);
   });
 
   test("machine-written historical service labels cannot turn maintenance-only quotes into primary repair fit", async () => {

@@ -41,7 +41,7 @@ describe("collision/body segment of the automotive repair ICP: full acquisition 
     const queued = await enqueueResearch(db, [id], "admin");
     return processResearch(db, queued.queued[0]!.researchId, { makeFetcher: web(services).makeFetcher, today: new Date("2026-10-05T12:00:00Z") });
   }
-  for (const services of ["We offer collision repair.", "We provide collision repair, brakes and oil changes.", "We provide brake repair and oil changes for cars and trucks."]) {
+  for (const services of ["We offer collision repair.", "We provide collision repair, brakes and oil changes.", "We provide brake repair, engine repair and oil changes for cars and trucks."]) {
     test(`default discovery to eligible prospect: ${services}`, async () => {
       const c = await discover(); assert.equal(c.categoryTier, "core"); assert.equal(c.categoryVerdict, "unclear");
       assert.ok(!c.signals.some(s => s.key === "collision_repair_services"));

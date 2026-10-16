@@ -6,7 +6,7 @@ import { TARGET_FIT_LABELS, businessTypeOf, targetFit, type BusinessType, type T
 import type { recentImports } from "../discovery/staging.js";
 import { OUTCOME_LABELS, type ResearchOutcome } from "../research/researcher.js";
 import type { automaticResearchStatus, candidateResearch, researchQueue } from "../research/service.js";
-import { CANDIDATE_SORTS, DEFAULT_BUSINESS_TYPE } from "../discovery/service.js";
+import { CANDIDATE_SORTS, COMMERCIAL_OVERRIDE_MAX, COMMERCIAL_OVERRIDE_MIN, DEFAULT_BUSINESS_TYPE } from "../discovery/service.js";
 import { AUTO_APPROVAL_LABELS, AUTO_APPROVAL_RULES, isAutoApproved } from "../discovery/autoApproval.js";
 import { CATEGORY_RULES } from "../discovery/categories.js";
 import { CATEGORY_SOURCE_LABELS, CATEGORY_VERDICTS, CATEGORY_VERDICT_LABELS, type CategorySource, type CategoryVerdict } from "@avannelli/aos/categories";
@@ -1112,6 +1112,19 @@ export function candidateDetailPage(opts: {
     : `<p class="small">${frozen ? "Approved: this candidate is now a prospect." : ""}</p>`;
 
   const auto = detail.autoApproval;
+  const acquisition = detail.acquisition;
+  const commercialCard = acquisition ? `<div class="card"><b>Commercial fit: ${esc(acquisition.commercial.disposition)} (${esc(acquisition.commercial.confidence)} confidence)</b>
+<p>Technical qualification: ${esc(acquisition.technicalQualification)}. Account: ${esc(acquisition.account?.reason ?? "Not assessed")}.</p>
+<ul>${acquisition.commercial.findings.map(f => `<li>${esc(f.code)}: ${esc(f.reason)} ${f.evidence.map(e => extLink(e.sourceUrl)).join(" ")}</li>`).join("")}</ul>
+<p class="small">Prospect creation requires your explicit approval. Contact readiness is separate. Export access, declined-work volume and buyer willingness remain unverified.</p>${
+    !frozen && acquisition.commercial.disposition === "exclude"
+      ? `<form method="post" action="/admin/discovery/candidates/${id}/approve" novalidate>
+<label class="lbl" for="f-commercial-override">Approve anyway: why does this business belong in the initial segment? <span class="muted" style="font-weight:400">(required, recorded with the prospect)</span></label>
+<textarea id="f-commercial-override" name="commercialOverrideReason" minlength="${COMMERCIAL_OVERRIDE_MIN}" maxlength="${COMMERCIAL_OVERRIDE_MAX}" rows="2"></textarea>
+<button type="submit" class="btn-secondary">Approve despite commercial exclusion</button>
+<p class="small muted">Identity, duplicate, account, protection and evidence checks still apply.</p></form>`
+      : ""
+  }</div>` : "";
   const autoColor = auto.decision === "approve" ? "var(--pos)" : auto.decision === "blocked" ? "var(--neg)" : "var(--amber)";
   const autoCard = frozen
     ? `<div class="card"><p class="small" style="margin:0">${isAutoApproved(c) ? `Approved automatically (${esc(AUTO_APPROVAL_RULES)}).` : "Approved by a person."}</p></div>`
@@ -1249,7 +1262,7 @@ ${disclosure(
   </dl></div>`,
 )}
 ${opts.aiShadow ? disclosure("ai", "AI shadow verdict (evaluation only)", aiShadowSummary(opts.aiShadow), aiShadowSection(opts.aiShadow)) : ""}
-${disclosure("approval", "Discovery assessment", esc(frozen ? (isAutoApproved(c) ? "Approved automatically" : "Approved by a person") : AUTO_APPROVAL_LABELS[auto.decision]), autoCard)}
+${disclosure("approval", "Discovery assessment", esc(frozen ? (isAutoApproved(c) ? "Approved automatically" : "Approved by a person") : AUTO_APPROVAL_LABELS[auto.decision]), autoCard + commercialCard)}
 ${disclosure(
   "state",
   "Research status (advanced)",

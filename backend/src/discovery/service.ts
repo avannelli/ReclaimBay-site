@@ -1,5 +1,7 @@
 import { automationInclude, type AutomationAssessment } from "./automationPolicy.js";
-import { applyDiscoveryAutomation, discoveryAutomationPreview } from "./automation.js";
+import { assessAcquisition } from "./acquisition.js";
+import { commercialAuditEntries } from "./commercial.js";
+import { applyDiscoveryAutomation, discoveryAutomationPreview, isDiscoveryConcurrencyConflict } from "./automation.js";
 import { duplicatePending } from "./duplicateReview.js";
 import { candidateProtection, protectionIndex } from "./protection.js";
 import { WARNING_REVIEW_PREFIX, unreviewedWarnings, warningReviewSignature } from "./warningReview.js";
@@ -1043,14 +1045,30 @@ export async function applyResearchFindings(db: Db, id: string, findings: Resear
  * here inside the same transaction so nothing can change in between, and
  * claimed only from Researched (never from a person's Needs review).
  */
-export async function approveCandidate(db: Db, id: string, opts: { automatic?: boolean } = {}) {
+export async function approveCandidate(db: Db, id: string, opts: { automatic?: boolean; commercialOverrideReason?: string } = {}) {
   if (opts.automatic) throw new ProspectError(["Automatic prospect creation is disabled. A person must approve this candidate."]);
+  const overrideReason = opts.commercialOverrideReason?.trim() ?? "";
   return db.$transaction(async (tx) => {
+    // Serialize human approvals across a shared domain as well as an individual candidate.
+    const identity = await tx.discoveryCandidate.findUnique({ where: { id }, select: { website: true } });
+    const accountDomain = normalizeDomain(identity?.website);
+    if (accountDomain) await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtextextended(${"discovery-account:" + accountDomain}, 0))::text`;
     await lockCandidate(tx, id);
     const c = await tx.discoveryCandidate.findUnique({ where: { id }, include: candidateInclude });
     if (!c) throw notFound();
     if (c.status === "approved" || c.prospectId) throw new ProspectError(["Already approved."], "conflict");
     const errors: string[] = [];
+    const full = await tx.discoveryCandidate.findUniqueOrThrow({ where: { id }, include: automationInclude });
+    const protection = candidateProtection(full, await protectionIndex(tx));
+    const acquisition = assessAcquisition(full, protection);
+    if (protection.relationships.blocking.length) errors.push(...protection.relationships.blocking);
+    if (protection.account.code === "existing_account") errors.push(protection.account.reason);
+    // A commercial exclusion is a person's call: approving it needs a recorded reason. It lifts nothing else.
+    const commercialOverride = acquisition.commercial.disposition === "exclude";
+    if (commercialOverride && !overrideReason) errors.push(...acquisition.commercial.findings.map(f => f.reason), COMMERCIAL_OVERRIDE_REQUIRED);
+    else if (commercialOverride && (overrideReason.length < COMMERCIAL_OVERRIDE_MIN || overrideReason.length > COMMERCIAL_OVERRIDE_MAX)) {
+      errors.push(`The commercial override reason must be ${COMMERCIAL_OVERRIDE_MIN} to ${COMMERCIAL_OVERRIDE_MAX} characters.`);
+    }
     if (duplicatePending(c)) errors.push("Resolve the possible duplicate before approval.");
     if (!APPROVABLE_FROM.includes(c.status)) {
       errors.push(
@@ -1094,6 +1112,11 @@ export async function approveCandidate(db: Db, id: string, opts: { automatic?: b
       },
     });
     if (count !== 1) throw new ProspectError(["The candidate changed meanwhile. Reload and try again."], "conflict");
+    const overrideNotes = commercialOverride
+      ? [JSON.stringify({ type: "commercial_override", action: "human_override", rules: acquisition.commercial.rules, candidateId: id, researchId: full.research[0]?.id,
+          disposition: acquisition.commercial.disposition, confidence: acquisition.commercial.confidence, codes: acquisition.commercial.findings.map(f => f.code),
+          reason: overrideReason, at: now.toISOString() })]
+      : [];
 
     const prospect = await insertProspect(tx, input, generateReferralCode(), {
       observedAt: Object.fromEntries(c.signals.map((s) => [s.key, s.observedAt])),
@@ -1116,12 +1139,25 @@ export async function approveCandidate(db: Db, id: string, opts: { automatic?: b
             release: c.providerRelease,
           },
         ),
+        ...overrideNotes,
+        ...commercialAuditEntries(acquisition.commercial, { candidateId: id, researchId: full.research[0]?.id, action: commercialOverride ? "human_override" : "human_approve" }),
       ],
     });
+    // Append-only: the override is also kept on the candidate, beside its retained research.
+    for (const body of overrideNotes) await tx.candidateNote.create({ data: { candidateId: id, body } });
     await tx.discoveryCandidate.update({ where: { id }, data: { prospectId: prospect.id } });
     return { prospect, candidateId: id };
+  }, { isolationLevel: "Serializable", timeout: 30_000 }).catch((error: unknown) => {
+    // Overlapping approvals/edits: report a retryable conflict instead of an unexpected error.
+    if (isDiscoveryConcurrencyConflict(error)) throw new ProspectError(["Another change was saved at the same time. Reload and try again."], "conflict");
+    throw error;
   });
 }
+
+export const COMMERCIAL_OVERRIDE_MIN = 10;
+export const COMMERCIAL_OVERRIDE_MAX = 500;
+export const COMMERCIAL_OVERRIDE_REQUIRED =
+  "To approve a commercially excluded business, record why it belongs in the initial segment (commercial override reason).";
 
 // ---------- Discovery assessment and compatibility entry points ----------
 
@@ -1370,7 +1406,7 @@ async function orderedQueue(db: Db, filters: CandidateFilters, view: QueueView) 
   const items: QueueItem[] = scored.map(r => {
     const assessment = plans.get(r.candidate.id);
     let step = stepOf(r);
-    if (assessment && ["category", "qualify"].includes(assessment.action)) step = { lane: "research", kind: "research_incomplete", action: "review" };
+    if (assessment && assessment.action === "category") step = { lane: "research", kind: "research_incomplete", action: "review" };
     else if (assessment?.action === "research" && step.lane === "decision") step = { lane: "research", kind: "not_researched", action: "run_research" };
     else if (assessment?.action === "wait") step = { lane: "research", kind: "research_running", action: "wait" };
     else if (step.kind === "ready" && assessment?.action !== "ready") step = { lane: "decision", kind: "on_hold", action: "review" };
@@ -1493,7 +1529,9 @@ export async function getCandidateDetail(db: Db, id: string) {
   const result = scoreCandidate(candidate);
   const approvalBlockers = approvalBlockersOf(candidate);
   const autoApproval = (await assessCandidateApproval(db, candidate.id))!;
-  return { candidate, result, outsideTarget: isOutsideTarget(candidate), autoApproval, dupCandidate, dupProspect, relCandidate, relProspect, approvalBlockers };
+  const full = await db.discoveryCandidate.findUniqueOrThrow({ where: { id }, include: automationInclude });
+  const acquisition = assessAcquisition(full, candidateProtection(full, await protectionIndex(db)));
+  return { candidate, result, acquisition, outsideTarget: isOutsideTarget(candidate), autoApproval, dupCandidate, dupProspect, relCandidate, relProspect, approvalBlockers };
 }
 
 /** Form values for editing a candidate (same field names as the prospect form). */
