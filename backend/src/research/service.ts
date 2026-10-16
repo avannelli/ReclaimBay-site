@@ -41,7 +41,7 @@ export const MAX_BATCH = 10;
 /** Pause between two candidates in a batch (different sites; politeness only). */
 export const BETWEEN_CANDIDATES_MS = 1_000;
 
-export type ResearchTrigger = "admin" | "batch" | "cli" | "scheduled" | "recovery";
+export type ResearchTrigger = "admin" | "batch" | "cli" | "scheduled" | "recovery" | "contact";
 
 const NOT_RESEARCHABLE = new Set(["approved", "rejected", "duplicate"]);
 
@@ -63,7 +63,7 @@ export async function enqueueResearch(db: Db, candidateIds: readonly string[], t
       if (NOT_RESEARCHABLE.has(c.status)) return void out.skipped.push({ candidateId, reason: `candidate is ${c.status}` });
       const pending = await tx.candidateResearch.findFirst({ where: { candidateId, status: { in: ["queued", "running"] } }, select: { id: true } });
       if (pending) return void out.skipped.push({ candidateId, reason: "research already queued or running" });
-      if (trigger === "scheduled" || trigger === "recovery") {
+      if (trigger === "scheduled" || trigger === "recovery" || trigger === "contact") {
         const assessment = assessDiscovery(c, candidateProtection(c, await protectionIndex(tx)), new Date(), { recovery: trigger === "recovery" });
         if (assessment.action !== "research") return void out.skipped.push({ candidateId, reason: assessment.reason });
       }

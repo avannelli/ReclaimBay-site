@@ -1,5 +1,6 @@
 import type { Prisma } from "../generated/prisma/client.js";
 import { RESEARCH_VERSION } from "../research/researcher.js";
+import { CONTACT_RULES } from "../research/analyze.js";
 import { fitBasis, fitEvidenceErrors, repairFit } from "../research/repairFit.js";
 import { assessReadiness } from "./readiness.js";
 import { assessAcquisition } from "./acquisition.js";
@@ -14,9 +15,15 @@ import { unreviewedWarnings } from "./warningReview.js";
 /** d2: research r16 Ready (readiness.ts) and an advisory commercial assessment (never an automatic rejection);
  * historical excerpts are re-read under current rules, never reinterpreted. */
 export const AUTOMATION_RULES = "discovery@d2";
+/** The trigger of the one contact re-read a Ready candidate may get under new email rules (CONTACT_RULES). */
+export const CONTACT_REFRESH_TRIGGER = "contact";
 export const automationInclude = {
   signals: { orderBy: { id: "asc" } }, evidence: { orderBy: { id: "asc" } }, notes: { orderBy: { id: "asc" } },
-  research: { orderBy: [{ queuedAt: "desc" }, { finishedAt: { sort: "desc", nulls: "last" } }, { startedAt: { sort: "desc", nulls: "last" } }, { id: "desc" }], include: { facts: { orderBy: { id: "asc" } }, sources: { orderBy: { id: "asc" } } } },
+  // A contact re-read that failed is history, not the latest research: the run before it still decides (and no retry budget is spent).
+  research: { where: { NOT: { trigger: CONTACT_REFRESH_TRIGGER, status: "failed" } },
+    orderBy: [{ queuedAt: "desc" }, { finishedAt: { sort: "desc", nulls: "last" } }, { startedAt: { sort: "desc", nulls: "last" } }, { id: "desc" }], include: { facts: { orderBy: { id: "asc" } }, sources: { orderBy: { id: "asc" } } } },
+  // Every contact re-read ever made, failed ones included: there is at most one.
+  _count: { select: { research: { where: { trigger: CONTACT_REFRESH_TRIGGER } } } },
 } as const satisfies Prisma.DiscoveryCandidateInclude;
 export type AutomationCandidate = Prisma.DiscoveryCandidateGetPayload<{ include: typeof automationInclude }>;
 export type Protection = ReturnType<typeof candidateProtection>;
@@ -29,13 +36,25 @@ export interface AutomationAssessment {
   evidenceIds?: string[];
   canonicalProspectId?: string;
   category?: NonNullable<ReturnType<typeof auditedCategoryCorrection>>;
-  researchKind?: "fresh" | "retry" | "refresh" | "recovery";
+  researchKind?: "fresh" | "retry" | "refresh" | "recovery" | "contact";
   /** Non-blocking Ready warnings (contact, ownership, shared building) for the person approving. */
   warnings?: string[];
 }
 const decision = (action: AutomationAction, code: string, reason: string, extra: Partial<AutomationAssessment> = {}): AutomationAssessment => ({ action, code, reason, ...extra });
 const warningsOf = (w: unknown): string[] => Array.isArray(w) ? w.filter((s): s is string => typeof s === "string") : [];
 export const blockingWarnings = (w: unknown) => warningsOf(w).filter(s => CRITICAL_WARNINGS.some(rule => rule.pattern.test(s)) || !NOTED_WARNINGS.some(rule => rule.pattern.test(s)));
+
+/**
+ * A Ready candidate without a verified contact whose current run predates the current email rules, and verified
+ * no email itself (newer rules can only add one), gets one contact re-read: never a second (failed or not),
+ * never for a run already under these rules.
+ */
+export function contactRefreshDue(c: AutomationCandidate, run: AutomationCandidate["research"][number], acquisition: ReturnType<typeof assessAcquisition>): boolean {
+  const attempts = (c as { _count?: { research?: number } })._count?.research ?? 0;
+  return !acquisition.gates.contact.pass && run.version === RESEARCH_VERSION && run.status === "completed" && run.outcome === "website_verified" &&
+    !run.facts.some(f => f.field === "email" && f.state === "verified") &&
+    !run.facts.some(f => f.field === "contact_rules" && f.value === CONTACT_RULES) && attempts === 0;
+}
 
 /** Pure assessment used by preview, worker selection and transaction-time revalidation. */
 export function assessDiscovery(c: AutomationCandidate, protection: Protection, now = new Date(), options: { recovery?: boolean } = {}): AutomationAssessment {
@@ -82,6 +101,9 @@ function assessDiscoveryAction(c: AutomationCandidate, protection: Protection, n
     if (readiness.ready) {
       if (acquisition.commercial.disposition !== "fit") return decision("human", "commercial_review", acquisition.commercial.findings.map(f => f.reason).join(" "));
       if (!protection.account.clear) return decision("human", "account_review", protection.account.reason);
+      if (contactRefreshDue(c, run, acquisition)) {
+        return decision("research", "contact_refresh", `Re-read the verified website once for published contact under ${CONTACT_RULES}; earlier evidence is kept and qualification is re-checked.`, { researchKind: "contact" });
+      }
       return decision("ready", "qualified", `${readiness.reason} Human approval is required to create a prospect.`, { warnings: readiness.warnings });
     }
     // An older run is re-read once under current rules (policy_refresh below); its evidence is never reinterpreted.

@@ -9,6 +9,7 @@ import type { Db } from "../../src/db.js";
 import { calibrateReadiness } from "../../src/discovery/calibration.js";
 import { RESEARCH_VERSION } from "../../src/research/researcher.js";
 import { freshDb, skipReason, truncate, TEST_DATABASE_URL } from "./helpers.js";
+import { CONTACT_RULES } from "../../src/research/analyze.js";
 
 /* R16.2: database calibration is read-only, deterministic, and agrees with the live decision. */
 
@@ -34,7 +35,7 @@ describe("readiness calibration against a database (read-only)", { skip: skipRea
     const run = await db.candidateResearch.create({ data: { candidateId: c.id, version: opts.version ?? RESEARCH_VERSION, status: "completed", outcome: "website_verified", trigger: "cli", subjectWebsite: website, warnings: [], queuedAt: NOW, finishedAt: NOW } });
     const source = await db.researchSource.create({ data: { researchId: run.id, kind: "website", url: website, ok: true } });
     const facts: [string, string, string | null][] = opts.current === false ? [["address", `${n} Main St`, null]]
-      : [["location_identity", "verified_location", null], ["ownership_class", "independent", null], ["site_locations", "1", null], ["page_location", "own_location", null], ["commercial_quote", "observed", "We are family-owned."]];
+      : [["location_identity", "verified_location", null], ["ownership_class", "independent", null], ["site_locations", "1", null], ["page_location", "own_location", null], ["commercial_quote", "observed", "We are family-owned."], ["contact_rules", CONTACT_RULES, null]];
     for (const [field, value, excerpt] of facts) await db.researchFact.create({ data: { researchId: run.id, field, value, excerpt, state: "verified", sourceId: source.id } });
     await db.candidateSignal.create({ data: { candidateId: c.id, key: "automotive_repair_services", value: "yes", origin: "research" } });
     for (const excerpt of ["Names brakes: Brake repair for cars.", "Names engine: Engine repair for cars."])

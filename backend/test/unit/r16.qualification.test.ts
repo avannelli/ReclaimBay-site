@@ -1,13 +1,13 @@
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
 import { parseHtml } from "@avannelli/aos/html";
-import { analyze, type Page, type Subject } from "../../src/research/analyze.js";
+import { CONTACT_RULES, analyze, type Page, type Subject } from "../../src/research/analyze.js";
 import { affirms, assessServiceEvidence, concreteServicesIn, tradeContext } from "../../src/research/serviceEvidence.js";
 import { addressKeysIn, classifyLocation, evidencePageAllowed } from "../../src/research/location.js";
 import { classifyOwnership } from "../../src/research/ownership.js";
 import { duplicateRelationships, type RelationshipRow } from "../../src/discovery/relationships.js";
 import { assessReadiness } from "../../src/discovery/readiness.js";
-import type { AutomationCandidate, Protection } from "../../src/discovery/automationPolicy.js";
+import { CONTACT_REFRESH_TRIGGER, automationInclude, contactRefreshDue, type AutomationCandidate, type Protection } from "../../src/discovery/automationPolicy.js";
 import { RESEARCH_VERSION } from "../../src/research/researcher.js";
 import { READY_OWNERSHIP } from "../../src/policies/reclaimbay/readiness.js";
 import { suiteKey } from "../../src/discovery/normalize.js";
@@ -400,5 +400,28 @@ describe("r16 hitch-only versus trailer/hitch/welding", () => {
     const r = assessServiceEvidence({ businessName: "Eckhart Trailer Hitch And Welding", quotes: [{ url: "https://e.example.com/", excerpt: "Trailer brake replacement." }] });
     assert.equal(r.outsideIcp, false);
     assert.notEqual(r.strength, "strong");
+  });
+});
+
+describe("contact re-read under new email rules (contactRefreshDue)", () => {
+  const run = (over: Record<string, unknown> = {}) => ({ version: RESEARCH_VERSION, status: "completed", outcome: "website_verified", facts: [] as { field: string; value: string | null }[], ...over });
+  const cand = (attempts = 0) => ({ _count: { research: attempts } }) as unknown as AutomationCandidate;
+  const acq = (contact: boolean) => ({ gates: { contact: { pass: contact } } }) as unknown as Parameters<typeof contactRefreshDue>[2];
+  const due = (c: AutomationCandidate, r: ReturnType<typeof run>, contact = false) => contactRefreshDue(c, r as never, acq(contact));
+
+  test("a current verified run from before the contact rules, without a verified contact: one re-read", () => assert.equal(due(cand(), run()), true));
+  test("never when the contact gate already passes", () => assert.equal(due(cand(), run(), true), false));
+  test("never for a run already under the current contact rules", () => assert.equal(due(cand(), run({ facts: [{ field: "contact_rules", value: CONTACT_RULES }] })), false));
+  test("an older contact-rules run is re-read", () => assert.equal(due(cand(), run({ facts: [{ field: "contact_rules", value: "contact@c1" }] })), true));
+  test("never when the run already verified an email (only the stored contact is missing): new rules can't add one", () =>
+    assert.equal(due(cand(), run({ facts: [{ field: "email", value: "service@shop.example.com", state: "verified" }] })), false));
+  test("never a second contact re-read, whether the first succeeded or failed", () => assert.equal(due(cand(1), run()), false));
+  test("never for older research rules or an unverified run (those have their own paths)", () => {
+    assert.equal(due(cand(), run({ version: "r15" })), false);
+    assert.equal(due(cand(), run({ outcome: "website_unconfirmed" })), false);
+  });
+  test("the failed-contact-run filter and the attempt count live in the shared automation query", () => {
+    assert.deepEqual(automationInclude.research.where, { NOT: { trigger: CONTACT_REFRESH_TRIGGER, status: "failed" } });
+    assert.deepEqual(automationInclude._count, { select: { research: { where: { trigger: CONTACT_REFRESH_TRIGGER } } } });
   });
 });

@@ -1,7 +1,9 @@
 /*
  * Researches one candidate from its stored website: reads the page it
  * points to, then at most a few relevant pages it links to on the same site
- * (contact, about, services, team), checks HTTPS, and analyses them.
+ * (contact, about, services, team), checks HTTPS, and analyses them. With
+ * no usable email on those pages, it may read an official contact/privacy page
+ * in the unused page budget, for the email rules only.
  * No database access; the service stores the result.
  *
  * Finding a website for a candidate that has none is NOT automated: there is
@@ -11,7 +13,7 @@
  */
 import { isOwnWebsiteHost } from "../discovery/normalize.js";
 import type { CategoryResult } from "@avannelli/aos/categories";
-import { analyze, type Fact, type Page, type PageRole, type SignalProposal, type Subject, type ContactProposal } from "./analyze.js";
+import { analyze, publicMailboxes, siteEmails, type Fact, type Page, type PageRole, type SignalProposal, type Subject, type ContactProposal } from "./analyze.js";
 import type { PoliteFetcher, SourceRecord } from "@avannelli/aos/fetch";
 import { RESEARCH_LIMITS } from "./fetcher.js";
 import { parseHtml } from "@avannelli/aos/html";
@@ -87,6 +89,43 @@ export function pickPages(home: Pick<Page, "url" | "parsed">, max: number): Sele
   return selectPages({ url: home.url, links: home.parsed.links }, { roles: PAGE_ROLES, skip: DEFAULT_SKIP, max });
 }
 
+/** Official pages that publish contact details: a further contact page, then the privacy policy (its "contact us" section). */
+const CONTACT_INFO_PAGES: readonly RegExp[] = [/contact|get-in-touch|reach-us/i, /privacy/i];
+/** At most this many contact-info pages per run, inside the run's page budget. */
+export const CONTACT_INFO_MAX = 2;
+
+/**
+ * Same-site contact/privacy links of the home page not yet attempted, best first: read only when the pages
+ * read gave no usable email, and only with the page budget the selection left unused. robots.txt and pacing
+ * still apply (the polite fetcher reads them).
+ */
+export function contactInfoLinks(home: Pick<Page, "url" | "parsed">, attempted: ReadonlySet<string>, max: number): string[] {
+  const base = new URL(home.url);
+  const site = (h: string) => h.replace(/^www\./, "");
+  const out: string[] = [];
+  for (const re of CONTACT_INFO_PAGES) {
+    for (const link of home.parsed.links) {
+      if (out.length >= max) return out;
+      if (DEFAULT_SKIP.test(link.href)) continue;
+      let u: URL;
+      try {
+        u = new URL(link.href, base);
+      } catch {
+        continue;
+      }
+      if (!/^https?:$/.test(u.protocol) || site(u.hostname) !== site(base.hostname)) continue;
+      u.hash = "";
+      const key = u.toString();
+      if (attempted.has(key) || out.includes(key) || u.pathname === base.pathname) continue;
+      if (re.test(u.pathname) || re.test(link.text)) {
+        out.push(key);
+        break; // one page per kind
+      }
+    }
+  }
+  return out;
+}
+
 const providerFacts = (s: Subject): Fact[] => [
   ...(s.providerPhone ? [{ field: "provider_phone", value: s.providerPhone, state: "unverified" as const, note: `Reported by ${s.provider}; not confirmed by research.` }] : []),
   ...(s.providerStatus
@@ -157,8 +196,22 @@ export async function researchCandidate(subject: Subject, fetcher: PoliteFetcher
   }
 
   const finalUrl = new URL(pages[0]!.url);
+  // No usable email on the pages read: spend the unused page budget on official contact/privacy pages, for the email rules only.
+  const contactPages: Page[] = [];
+  const hostOfPage = finalUrl.hostname.replace(/^www\./, "");
+  const usable = (ps: Page[]) => siteEmails(ps, hostOfPage).own.size > 0 || publicMailboxes(ps, subject.businessName).length > 0;
+  if (!usable(pages)) {
+    const attempted = new Set(fetcher.sources.filter((s) => s.kind === "website").flatMap((s) => [s.url, s.finalUrl]).filter((u): u is string => Boolean(u)));
+    const budget = Math.min(CONTACT_INFO_MAX, RESEARCH_LIMITS.maxPages - fetcher.sources.filter((s) => s.kind === "website").length);
+    for (const url of budget > 0 ? contactInfoLinks(pages[0]!, attempted, budget) : []) {
+      // One page through the same AOS reader: no further selection, no root fallback.
+      const read = await readSite(fetcher, url, { parse: parseHtml, select: () => [], maxPages: 1, rootFallback: false });
+      contactPages.push(...read.pages.map((p) => ({ ...p, role: "other" as const })));
+      if (usable(contactPages)) break;
+    }
+  }
   const secure = finalUrl.protocol === "https:" ? true : (await fetcher.httpsCheck(finalUrl.host)).secure;
-  const a = analyze(subject, pages, secure, today);
+  const a = analyze(subject, pages, secure, today, contactPages);
   const outcome: ResearchOutcome = a.ownership === "verified" ? "website_verified" : a.ownership === "uncertain" ? "website_unconfirmed" : "website_mismatch";
   return {
     ...base,
@@ -169,7 +222,7 @@ export async function researchCandidate(subject: Subject, fetcher: PoliteFetcher
     signals: a.signals,
     contact: a.contact,
     warnings: a.warnings,
-    pagesFetched: pages.length,
+    pagesFetched: pages.length + contactPages.length,
     websiteVerified: a.ownership === "verified",
     category: a.category,
   };

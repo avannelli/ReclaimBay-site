@@ -11,6 +11,7 @@ import { WARNING_REVIEW_PREFIX, unreviewedWarnings } from "../../src/discovery/w
 import { normalizeName } from "../../src/discovery/normalize.js";
 import { autoResearchSelection, enqueueResearch, processResearch, runAutoResearch } from "../../src/research/service.js";
 import { RESEARCH_VERSION } from "../../src/research/researcher.js";
+import { CONTACT_RULES } from "../../src/research/analyze.js";
 import { researchFetcher } from "../../src/research/fetcher.js";
 import { fixtureWeb, independentShop, page } from "../fixtures/researchSite.js";
 import { freshDb, readyForm, skipReason, truncate, TEST_DATABASE_URL } from "./helpers.js";
@@ -49,6 +50,7 @@ describe("Discovery automation boundaries", { skip: skipReason }, () => {
     await fact("page_location", "own_location", home.id);
     await fact("page_location", "own_site", services.id);
     await fact("phone", "(805) 555-0101", home.id, opts.phoneState ?? "verified");
+    await fact("contact_rules", CONTACT_RULES);
     if (opts.trades) await fact("trade_context", opts.trades);
     await db.candidateSignal.create({ data: { candidateId: c.id, key: "automotive_repair_services", value: "yes", origin: "research" } });
     for (const excerpt of opts.quotes ?? ["Names brakes: We offer brake repair.", "Names engine: Engine repair for cars and trucks."]) {

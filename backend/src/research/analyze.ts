@@ -131,8 +131,75 @@ export function sitePhones(pages: Page[]): Map<string, string> {
 }
 
 const EMAIL_IN_TEXT = /\b[a-z0-9._%+-]{1,64}@[a-z0-9.-]+\.[a-z]{2,24}\b/gi;
-const FREE_MAIL = /^(gmail|googlemail|yahoo|ymail|hotmail|outlook|live|msn|aol|icloud|me|mac|comcast|sbcglobal|att|verizon|cox|charter|proton|protonmail)\.[a-z.]+$/i;
+/** Free and ISP mailbox services: anyone can open an address there, so the domain says nothing about who owns it. */
+const FREE_MAIL = /^(gmail|googlemail|yahoo|ymail|rocketmail|hotmail|outlook|live|msn|aol|icloud|me|mac|comcast|sbcglobal|att|pacbell|bellsouth|verizon|cox|charter|earthlink|frontier|frontiernet|optonline|centurylink|windstream|proton|protonmail)\.[a-z.]+$/i;
 const NOT_CONTACT = /^(no-?reply|donotreply|privacy|abuse|postmaster|webmaster)@|@(sentry|wixpress|example|domain|email)\./i;
+
+/**
+ * The email rules a run was analysed under, recorded on every analysed run (fact "contact_rules").
+ *   c1  business-domain addresses only (implicit: runs without the fact)
+ *   c2  c1, plus a free/ISP mailbox visibly published as this business's contact (publicMailboxes)
+ */
+export const CONTACT_RULES = "contact@c2";
+
+/** Words too common in repair-shop names to tie a mailbox to one business on their own. */
+const GENERIC_NAME_WORDS = new Set([
+  "the", "and", "of", "inc", "llc", "co", "corp", "company", "auto", "autos", "automotive", "car", "cars", "repair", "repairs", "service", "services",
+  "care", "center", "centre", "shop", "garage", "tire", "tires", "wheel", "wheels", "body", "collision", "motor", "motors", "clinic", "import", "imports",
+  "specialist", "specialists", "professional", "professionals", "performance", "german", "european", "foreign", "domestic", "expert", "experts", "pros",
+  "brake", "brakes", "transmission", "smog", "lube", "oil", "express", "quality", "precision", "complete", "total", "best", "family", "works", "werks",
+]);
+
+/**
+ * Whether a mailbox's local part names this business: one of its segments (split on . _ - +) contains the
+ * whole name run together ("importautoclinic") or a distinctive word of it ("yosemite"). A person's address
+ * ("bob.smith", "service.manager") names no business and never qualifies.
+ */
+export function mailboxNamesBusiness(email: string, businessName: string): boolean {
+  const words = businessName.toLowerCase().replace(/&/g, " and ").replace(/['’]/g, "").split(/[^a-z0-9]+/).filter(Boolean);
+  const compact = words.filter((w) => !["the", "inc", "llc", "co", "corp"].includes(w)).join("");
+  const distinctive = words.filter((w) => w.length >= 4 && !GENERIC_NAME_WORDS.has(w));
+  const segments = email.split("@")[0]!.toLowerCase().split(/[._+-]+/).filter(Boolean);
+  return segments.some((s) => (compact.length >= 6 && s.includes(compact)) || distinctive.some((w) => s.includes(w)));
+}
+
+/** Within this distance of a text address, a word that presents it as contact ("Email:", "contact us at", "write to"). */
+const CONTACT_CUE = /\b(e-?mail(ed|ing)?|contact(ing)?|reach(ing)? us|write to|questions?|inquir(y|ies)|requests?)\b/i;
+const CUE_WINDOW = 80;
+
+export interface PublicMailbox {
+  email: string;
+  url: string;
+  /** How it is published: a mailto link, or visible text next to a contact word. */
+  how: "mailto" | "text";
+  excerpt: string;
+}
+
+/**
+ * Free/ISP mailboxes visibly published as this business's contact on the given pages: a mailto link, or
+ * visible text with a contact word beside it, whose name ties it to the business. Visible only: the parsed
+ * text has no hidden form values, attributes or scripts, and structured data alone doesn't count.
+ */
+export function publicMailboxes(pages: readonly Pick<Page, "url" | "parsed">[], businessName: string): PublicMailbox[] {
+  const found = new Map<string, PublicMailbox>();
+  const add = (raw: string, url: string, how: PublicMailbox["how"], excerpt: string) => {
+    const e = raw.trim().toLowerCase();
+    const domain = e.split("@")[1];
+    if (!domain || found.has(e) || NOT_CONTACT.test(e) || !FREE_MAIL.test(domain) || !mailboxNamesBusiness(e, businessName)) return;
+    found.set(e, { email: e, url, how, excerpt });
+  };
+  for (const p of pages) {
+    for (const raw of p.parsed.emails) {
+      const at = p.parsed.text.toLowerCase().indexOf(raw.toLowerCase());
+      add(raw, p.url, "mailto", at >= 0 ? quote(p.parsed.text, at, raw.length) : clip(raw));
+    }
+    for (const m of p.parsed.text.matchAll(EMAIL_IN_TEXT)) {
+      const around = p.parsed.text.slice(Math.max(0, m.index - CUE_WINDOW), m.index + m[0].length + CUE_WINDOW).replace(m[0], " ");
+      if (CONTACT_CUE.test(around)) add(m[0], p.url, "text", quote(p.parsed.text, m.index, m[0].length));
+    }
+  }
+  return [...found.values()];
+}
 
 /** Emails on the site split into the business's own domain and others. */
 export function siteEmails(pages: Page[], siteHost: string) {
@@ -502,8 +569,10 @@ const reviewedNote = (pages: Page[]) =>
 /**
  * Analyses the fetched pages of the stored website. `secureHttps` is the
  * result of the HTTPS check (null when unknown). `today` sets "recent".
+ * `contactPages` (official contact/privacy pages read only for an email) feed
+ * the email rules alone: never identity, location, signals or category.
  */
-export function analyze(subject: Subject, pages: Page[], secureHttps: boolean | null, today: Date): Analysis {
+export function analyze(subject: Subject, pages: Page[], secureHttps: boolean | null, today: Date, contactPages: Page[] = []): Analysis {
   const facts: Fact[] = [];
   const signals: SignalProposal[] = [];
   const contact: ContactProposal = {};
@@ -644,9 +713,26 @@ export function analyze(subject: Subject, pages: Page[], secureHttps: boolean | 
     facts.push({ field: "phone", value: null, state: "not_found", note: "No phone number on the pages read." });
   }
 
-  // ----- email (business domain only; personal-looking addresses are never kept) -----
-  const emails = siteEmails(pages, siteHost);
+  // ----- email (CONTACT_RULES): the business's own domain first; otherwise a free/ISP mailbox only when it is
+  // visibly published as this business's contact on this location's own pages. Anything else is never kept. -----
+  facts.push({ field: "contact_rules", value: CONTACT_RULES, state: "verified", note: "Email rules this run applied: business-domain addresses; a free/ISP mailbox only when visibly published as this business's contact on its verified website." });
+  const emailPages = [...pages, ...contactPages];
+  const emails = siteEmails(emailPages, siteHost);
   const [ownEmail] = [...emails.own.entries()];
+  // Contact pages are placed against this location the same way as the pages read (classification only: the identity above stands).
+  const contactLocation = contactPages.length
+    ? new Map(classifyLocation({
+        subjectStreet: subject.streetAddress,
+        providerPhoneOnSite: Boolean(providerOnSite),
+        pages: emailPages.map((p) => ({
+          url: p.url, isStored: p === home, nameOnPage: findName(subject, [p]) !== null, ownAddress: findAddress(subject, [p]) !== null,
+          addressKeys: addressKeysIn(p.parsed.text, p.parsed.structured.map((st) => st.streetAddress)),
+        })),
+      }).pages.map((p) => [p.url, p.location]))
+    : pageLocation;
+  // A mailbox anyone can open is this location's only when the page is this location's own (never a brand or another location's page).
+  const ownPage = (url: string) => ["own_location", "own_site"].includes((pageLocation.get(url) ?? contactLocation.get(url)) as string);
+  const mailboxes = publicMailboxes(emailPages, subject.businessName).filter((m) => ownPage(m.url));
   if (ownEmail) {
     facts.push({
       field: "email",
@@ -659,15 +745,29 @@ export function analyze(subject: Subject, pages: Page[], secureHttps: boolean | 
       contact.email = ownEmail[0];
       contact.emailSourceUrl = ownEmail[1];
     }
+  } else if (strongIdentity && mailboxes.length === 1) {
+    const m = mailboxes[0]!;
+    facts.push({
+      field: "email",
+      value: m.email,
+      state: "verified",
+      sourceUrl: m.url,
+      excerpt: m.excerpt,
+      note: `A ${m.email.split("@")[1]} mailbox published as the business's contact on its own verified website (${m.how === "mailto" ? "an email link" : "text presenting it as contact"}); its name matches the business.`,
+    });
+    contact.email = m.email;
+    contact.emailSourceUrl = m.url;
   } else {
     const other = emails.freeMail + emails.otherDomain;
     facts.push({
       field: "email",
       value: null,
       state: other ? "uncertain" : "not_found",
-      note: other
-        ? "An address on a free or third-party email service was found and deliberately not recorded: it may be personal. Confirm it by hand."
-        : "No email address on the pages read.",
+      note: mailboxes.length > 1
+        ? `${mailboxes.length} free-mail addresses are published as contact and none is clearly this business's; none was recorded. Confirm one by hand.`
+        : other
+          ? "An address on a free or third-party email service was found and not recorded: it isn't clearly published as this business's contact on this location's verified website, and may be personal. Confirm it by hand."
+          : "No email address on the pages read.",
     });
   }
 

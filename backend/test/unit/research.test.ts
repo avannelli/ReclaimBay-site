@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
 import { readFileSync } from "node:fs";
-import { sitePhones, type Subject } from "../../src/research/analyze.js";
+import { CONTACT_RULES, mailboxNamesBusiness, sitePhones, type Subject } from "../../src/research/analyze.js";
 import type { HttpGet, HttpResult } from "@avannelli/aos/fetch";
 import { RESEARCH_LIMITS, RESEARCH_ROBOTS_AGENT, RESEARCH_USER_AGENT, researchFetcher } from "../../src/research/fetcher.js";
 import { parseHtml } from "@avannelli/aos/html";
-import { pickPages, researchCandidate } from "../../src/research/researcher.js";
+import { contactInfoLinks, pickPages, researchCandidate } from "../../src/research/researcher.js";
 import { parseRobots, robotsAllows } from "@avannelli/aos/robots";
 import { readPages } from "../../src/ai/shadow.js";
 
@@ -1249,5 +1249,149 @@ describe("AOS site-reader consumer boundary", () => {
       () => researchCandidate(subject(), server(fixture).fetcher(), TODAY),
       () => readPages(server(fixture).fetcher(), subject().website!),
     ]) await assert.rejects(run, { name: "URIError", message: "URI malformed" });
+  });
+});
+
+describe("contact rules c2: free/ISP mailboxes published as the business's contact", () => {
+  // Import Auto Clinic (Thousand Oaks): a GoDaddy site whose home page shows "EMAIL:" with a mailto link to a Verizon mailbox.
+  const importSubject = subject({ businessName: "Import Auto Clinic", website: "https://importautoclinic.example.net/", streetAddress: "1300 E Thousand Oaks Blvd", city: "Thousand Oaks", postalCode: "91362", providerPhone: "+18054941668" });
+  const importHome = (contact: string) => `<!doctype html><html><head><title>Import Auto Clinic | Thousand Oaks</title></head><body>
+    <h1>Import Auto Clinic</h1><p>Brake repair, engine repair and scheduled maintenance for European and Asian imports.</p>
+    <p>1300 E Thousand Oaks Blvd, Thousand Oaks, CA 91362 · <a href="tel:8054941668">(805) 494-1668</a></p>${contact}</body></html>`;
+  const importSite = (contact: string, extra: Record<string, Fixture> = {}) => ({
+    "https://importautoclinic.example.net/robots.txt": { status: 404 },
+    "https://importautoclinic.example.net/": { body: importHome(contact) },
+    ...extra,
+  });
+  const VERIZON = `<p>EMAIL: <a href="mailto:importautoclinic@verizon.net" data-aid="CONTACT_INFO_EMAIL_REND">importautoclinic@verizon.net</a></p>`;
+
+  // Yosemite Auto Care (Simi Valley): no email on the pages read (its Contact link is a 404); the privacy policy says
+  // "By sending us an email with your request to yosemiteautocareinc@gmail.com."
+  const yosemiteSubject = subject({ businessName: "Yosemite Auto Care", website: "https://yosemiteautocare.example.com/", streetAddress: "2370 Yosemite Ave", city: "Simi Valley", postalCode: "93063", providerPhone: "+18055270070" });
+  const Y = "https://yosemiteautocare.example.com";
+  const yosemiteHome = `<!doctype html><html><head><title>Yosemite Auto Care | Simi Valley Auto Repair</title></head><body>
+    <nav><a href="/contact/">Contact</a> <a href="/services/">Services</a> <a href="/privacy-policy/">Privacy Policy</a></nav>
+    <h1>Yosemite Auto Care</h1><p>2370 Yosemite Ave, Simi Valley, CA 93063 · <a href="tel:8055270070">(805) 527-0070</a></p></body></html>`;
+  const yosemiteServices = page("Services | Yosemite Auto Care", "<h1>Services</h1><ul><li>Brake repair</li><li>Engine diagnostics</li><li>Oil changes</li></ul>");
+  const yosemitePrivacy = (body: string) => page("Privacy Policy | Yosemite Auto Care", `<h1>Privacy Policy</h1>${body}`);
+  const PRIVACY_TEXT = `<li>You can opt out by checking the relevant box on the form on which we collect your data. By sending us an email with your request to yosemiteautocareinc@gmail.com.</li>`;
+  const yosemiteSite = (privacy: string, extra: Record<string, Fixture> = {}) => ({
+    [`${Y}/robots.txt`]: { status: 404 },
+    [`${Y}/`]: { body: yosemiteHome },
+    [`${Y}/contact/`]: { status: 404, body: "not found" },
+    [`${Y}/services/`]: { body: yosemiteServices },
+    [`${Y}/privacy-policy/`]: { body: yosemitePrivacy(privacy) },
+    ...extra,
+  });
+
+  test("Import Auto Clinic: a Verizon mailbox shown as the shop's email on its verified home page is a verified contact", async () => {
+    const r = await researchCandidate(importSubject, server(importSite(VERIZON)).fetcher(), TODAY);
+    assert.equal(r.outcome, "website_verified");
+    const email = fact(r, "email")!;
+    assert.deepEqual([email.value, email.state, email.sourceUrl], ["importautoclinic@verizon.net", "verified", "https://importautoclinic.example.net/"]);
+    assert.match(email.note!, /verizon\.net mailbox published as the business's contact.*email link.*name matches/);
+    assert.match(email.excerpt!, /EMAIL: importautoclinic@verizon\.net/);
+    assert.deepEqual([r.contact.email, r.contact.emailSourceUrl], ["importautoclinic@verizon.net", "https://importautoclinic.example.net/"]);
+    assert.deepEqual([fact(r, "contact_rules")!.value, fact(r, "contact_rules")!.state], [CONTACT_RULES, "verified"]);
+  });
+
+  test("Yosemite Auto Care: with no email on the pages read, the privacy policy's contact address is found and attributed to it", async () => {
+    const s = server(yosemiteSite(PRIVACY_TEXT));
+    const r = await researchCandidate(yosemiteSubject, s.fetcher(), TODAY);
+    assert.equal(r.outcome, "website_verified");
+    const email = fact(r, "email")!;
+    assert.deepEqual([email.value, email.state, email.sourceUrl], ["yosemiteautocareinc@gmail.com", "verified", `${Y}/privacy-policy/`]);
+    assert.match(email.note!, /gmail\.com mailbox.*text presenting it as contact/);
+    assert.equal(r.contact.emailSourceUrl, `${Y}/privacy-policy/`);
+    assert.ok(r.sources.some((x) => x.kind === "website" && x.url === `${Y}/privacy-policy/` && x.ok), "the privacy page is a recorded source the fact can cite");
+    assert.equal(r.pagesFetched, 3, "home, services and the privacy page loaded (the 404 contact page did not)");
+    assert.ok(s.calls.filter((u) => !u.endsWith("robots.txt")).length <= RESEARCH_LIMITS.maxPages, "within the run's page budget");
+  });
+
+  test("a privacy page feeds the email rules only: its text is never identity, a signal, a closure or a category", async () => {
+    const legal = `${PRIVACY_TEXT}<p>We have closed our doors for good.</p><p>Authorized dealership franchise partner. Body shop and collision center.</p>`;
+    const withLegal = await researchCandidate(yosemiteSubject, server(yosemiteSite(legal)).fetcher(), TODAY);
+    const without = await researchCandidate(yosemiteSubject, server(yosemiteSite("<p>Nothing here.</p>")).fetcher(), TODAY);
+    const strip = (r: typeof without) => JSON.stringify({ signals: r.signals, warnings: r.warnings, category: r.category,
+      facts: r.facts.filter((f) => !["email", "contact_rules"].includes(f.field)) });
+    assert.equal(strip(withLegal), strip(without));
+    assert.equal(fact(withLegal, "email")!.state, "verified");
+    assert.equal(fact(without, "email")!.state, "not_found");
+  });
+
+  test("no contact/privacy page is read when an email was found, or when the page budget is spent", async () => {
+    const found = server(goodSite({ "https://saviersauto.example.com/privacy": { body: page("Privacy", "<p>info@saviersauto.example.com</p>") } }));
+    await researchCandidate(subject(), found.fetcher(), TODAY);
+    assert.ok(!found.calls.some((u) => /privacy/.test(u)), "an email was already found");
+    const noEmail = page("Contact | Saviers Road Auto Repair", "<h1>Contact us</h1><p>Call to schedule: (805) 555-0101</p>");
+    const homeWithPrivacy = HOME.replace("</nav>", ' <a href="/team">Team</a> <a href="/privacy">Privacy</a></nav>');
+    const full = server(goodSite({ "https://saviersauto.example.com/": { body: homeWithPrivacy }, "https://saviersauto.example.com/contact-us": { body: noEmail },
+      "https://saviersauto.example.com/team": { body: page("Team", "<p>Our team</p>") } }));
+    await researchCandidate(subject(), full.fetcher(), TODAY);
+    assert.ok(!full.calls.some((u) => /privacy/.test(u)), "home + 4 selected pages used the whole budget");
+  });
+
+  test("robots.txt still applies to contact/privacy pages", async () => {
+    const s = server(yosemiteSite(PRIVACY_TEXT, { [`${Y}/robots.txt`]: { status: 200, body: "User-agent: *\nDisallow: /privacy-policy/\n", contentType: "text/plain" } }));
+    const r = await researchCandidate(yosemiteSubject, s.fetcher(), TODAY);
+    assert.ok(!s.calls.includes(`${Y}/privacy-policy/`));
+    assert.equal(fact(r, "email")!.state, "not_found");
+    assert.equal(r.contact.email, undefined);
+  });
+
+  test("a mailbox only in a hidden form field is never recorded (Giant Oak Automotive)", async () => {
+    const hidden = `<form action="/send.php"><input type="hidden" name="location" value="Import Auto Clinic;importautoclinic@gmail.com;5402;;1300 E Thousand Oaks Blvd"><input name="email" placeholder="Your email"></form>`;
+    const r = await researchCandidate(importSubject, server(importSite(`<p>Email us using the form below.</p>${hidden}`)).fetcher(), TODAY);
+    assert.equal(fact(r, "email")!.state, "not_found");
+    assert.equal(r.contact.email, undefined);
+    assert.doesNotMatch(JSON.stringify(r), /importautoclinic@gmail/);
+  });
+
+  test("unrelated and personal mailboxes are never recorded: a web designer's, an employee's, one with no contact wording", async () => {
+    for (const contact of [
+      `<footer>Website by <a href="mailto:pixelcraftdesigns@gmail.com">pixelcraftdesigns@gmail.com</a></footer>`,
+      `<p>Email our service manager: <a href="mailto:dave.martinez@yahoo.com">dave.martinez@yahoo.com</a></p>`,
+      `<p>Photo gallery uploaded by importautoclinic@gmail.com last spring.</p>`,
+    ]) {
+      const r = await researchCandidate(importSubject, server(importSite(contact)).fetcher(), TODAY);
+      assert.equal(fact(r, "email")!.state, "uncertain", contact);
+      assert.equal(fact(r, "email")!.value, null);
+      assert.equal(r.contact.email, undefined);
+      assert.doesNotMatch(JSON.stringify([fact(r, "email"), r.contact]), /@(gmail|yahoo)\.com/, "a rejected address is never stored as email or contact");
+    }
+  });
+
+  test("a business-named mailbox on a site not confirmed as this location's is not a contact", async () => {
+    const unconfirmed = { ...importSubject, streetAddress: "88 Elsewhere Way", providerPhone: "+18059990000" };
+    const r = await researchCandidate(unconfirmed, server(importSite(VERIZON)).fetcher(), TODAY);
+    assert.notEqual(fact(r, "location_identity")!.state, "verified");
+    assert.equal(fact(r, "email")!.state, "uncertain");
+    assert.equal(r.contact.email, undefined);
+  });
+
+  test("the business's own domain still comes first, and two business-named mailboxes are ambiguous", async () => {
+    const both = await researchCandidate(importSubject, server(importSite(`${VERIZON}<p>Email <a href="mailto:office@importautoclinic.example.net">office@importautoclinic.example.net</a></p>`)).fetcher(), TODAY);
+    assert.deepEqual([fact(both, "email")!.value, fact(both, "email")!.note], ["office@importautoclinic.example.net", "An address on the business's own domain."]);
+    const two = await researchCandidate(importSubject, server(importSite(`${VERIZON}<p>Email <a href="mailto:importautoclinic2@gmail.com">importautoclinic2@gmail.com</a></p>`)).fetcher(), TODAY);
+    assert.equal(fact(two, "email")!.state, "uncertain");
+    assert.match(fact(two, "email")!.note!, /2 free-mail addresses/);
+    assert.equal(two.contact.email, undefined);
+  });
+
+  test("mailboxNamesBusiness: the whole name or a distinctive word in one segment; generic words and people never", () => {
+    const yes: [string, string][] = [["importautoclinic@verizon.net", "Import Auto Clinic"], ["yosemiteautocareinc@gmail.com", "Yosemite Auto Care"],
+      ["giantoakauto@gmail.com", "Giant Oak Automotive"], ["joesauto@gmail.com", "Joe's Auto"], ["service.yosemite@gmail.com", "Yosemite Auto Care"]];
+    const no: [string, string][] = [["joe.smith@gmail.com", "Joe's Auto"], ["autorepair@gmail.com", "Import Auto Clinic"], ["dave.martinez@yahoo.com", "Yosemite Auto Care"],
+      ["service@gmail.com", "Harbor Auto Service"], ["importauto@gmail.com", "Import Auto Clinic"]];
+    for (const [e, n] of yes) assert.equal(mailboxNamesBusiness(e, n), true, `${e} names ${n}`);
+    for (const [e, n] of no) assert.equal(mailboxNamesBusiness(e, n), false, `${e} does not name ${n}`);
+  });
+
+  test("contactInfoLinks: same-site contact then privacy links not yet tried, within the budget", () => {
+    const home = { url: "https://shop.example.com/", parsed: parseHtml(`<body><a href="/contact/">Contact</a><a href="/privacy-policy/">Privacy</a><a href="https://other.example.com/privacy">Other</a><a href="mailto:x@y.com">Mail</a></body>`) };
+    assert.deepEqual(contactInfoLinks(home, new Set(), 2), ["https://shop.example.com/contact/", "https://shop.example.com/privacy-policy/"]);
+    assert.deepEqual(contactInfoLinks(home, new Set(["https://shop.example.com/contact/"]), 2), ["https://shop.example.com/privacy-policy/"]);
+    assert.deepEqual(contactInfoLinks(home, new Set(), 1), ["https://shop.example.com/contact/"]);
+    assert.deepEqual(contactInfoLinks(home, new Set(), 0), []);
   });
 });

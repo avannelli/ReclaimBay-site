@@ -417,9 +417,31 @@ dealership), operating status.
   number in the provider phone's area code; the site's only number; the only non-toll-free number.
   Otherwise the phone is **uncertain** (the numbers are listed, a warning
   asks for a manual check) and none is set: the first number is never taken.
-- An email is kept only when it is on the business's own domain. An address on
-  a free or third-party mail service is never recorded (it may be personal);
-  the fact says one was seen.
+- Email (contact rules `contact@c2`, recorded on every run as the
+  `contact_rules` fact). An address on the business's own domain is kept, as
+  before, and always comes first. Otherwise a **free or ISP mailbox** (Gmail,
+  Outlook, Yahoo, Verizon, AT&T and similar) is kept only when all hold: the
+  website is verified with a strong location identity; the page is this
+  location's own (never a brand or another location's page); it is visibly
+  published, as a `mailto:` link or as text next to a contact word ("Email:",
+  "contact us at", "write to"); and its name ties it to the business (a
+  segment holds the whole name run together, or a distinctive word of it:
+  `importautoclinic@verizon.net`, `yosemiteautocareinc@gmail.com`). Hidden
+  form fields, scripts and structured data alone never count; a person's
+  address (`dave.martinez@yahoo.com`), a web designer's, one with no contact
+  wording, or two competing business mailboxes are never recorded, and the
+  fact only says one was seen. The fact's note says which rule verified the
+  address and its excerpt quotes where it is shown.
+- When the pages read give no usable email, research reads up to two more
+  official pages (a further contact page, then the privacy policy) with the
+  page budget the selection left unused, under the same robots.txt and
+  pacing. These pages are used for email only: never for identity, location,
+  signals, closure or category.
+- A Ready candidate without a verified contact whose current r16 run predates
+  `contact@c2` gets **one** contact re-read (`contact_refresh`, trigger
+  `contact`); its earlier runs and evidence are kept. A failed contact re-read
+  is history only: the run before it still decides, it never counts toward
+  the retry budget, and no second contact re-read is made.
 - Research fills contact only where none is stored, and never removes or
   overwrites contact a person entered (a different number is reported).
 - A provider website stays unverified until research confirms it

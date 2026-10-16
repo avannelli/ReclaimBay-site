@@ -4,7 +4,7 @@ import { ProspectError } from "../prospects.js";
 import { RESEARCH_VERSION } from "../research/researcher.js";
 import { lockCandidate } from "./service.js";
 import { categoryFields } from "./categoryCheck.js";
-import { AUTOMATION_RULES, assessDiscovery, automationInclude, type AutomationAction, type AutomationCandidate, type AutomationAssessment } from "./automationPolicy.js";
+import { AUTOMATION_RULES, CONTACT_REFRESH_TRIGGER, assessDiscovery, automationInclude, type AutomationAction, type AutomationCandidate, type AutomationAssessment } from "./automationPolicy.js";
 import { candidateProtection, protectionIndex } from "./protection.js";
 
 export const AUTOMATION_BATCH_LIMIT = 25;
@@ -64,7 +64,7 @@ export async function applyDiscoveryAutomation(db: Db, id: string, options: { to
     if (protection.protected) return { id, assessment: a, applied: false };
     const now = new Date();
     if (a.action === "research") {
-      await tx.candidateResearch.create({ data: { candidateId: id, version: RESEARCH_VERSION, trigger: a.researchKind === "recovery" ? "recovery" : "scheduled", candidateRevision: c.researchRevision, subjectWebsite: c.website } });
+      await tx.candidateResearch.create({ data: { candidateId: id, version: RESEARCH_VERSION, trigger: a.researchKind === "recovery" ? "recovery" : a.researchKind === "contact" ? CONTACT_REFRESH_TRIGGER : "scheduled", candidateRevision: c.researchRevision, subjectWebsite: c.website } });
       return { id, assessment: a, applied: true };
     }
     const data: Parameters<typeof tx.discoveryCandidate.update>[0]["data"] = { researchRevision: { increment: 1 } };
