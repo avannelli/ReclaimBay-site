@@ -1,5 +1,5 @@
-import { automationInclude, type AutomationAssessment } from "./automationPolicy.js";
-import { assessAcquisition } from "./acquisition.js";
+import { automationInclude, type AutomationAssessment, type AutomationCandidate, type Protection } from "./automationPolicy.js";
+import { assessAcquisition, type CommercialMinimum } from "./acquisition.js";
 import { commercialAuditEntries } from "./commercial.js";
 import { applyDiscoveryAutomation, discoveryAutomationPreview, isDiscoveryConcurrencyConflict } from "./automation.js";
 import { duplicatePending } from "./duplicateReview.js";
@@ -1046,112 +1046,156 @@ export async function applyResearchFindings(db: Db, id: string, findings: Resear
  * claimed only from Researched (never from a person's Needs review).
  */
 export async function approveCandidate(db: Db, id: string, opts: { automatic?: boolean; commercialOverrideReason?: string } = {}) {
+  // Automatic creation exists only as createProspectAutonomously, under an authorized, bounded campaign.
   if (opts.automatic) throw new ProspectError(["Automatic prospect creation is disabled. A person must approve this candidate."]);
-  const overrideReason = opts.commercialOverrideReason?.trim() ?? "";
   return db.$transaction(async (tx) => {
-    // Serialize human approvals across a shared domain as well as an individual candidate.
-    const identity = await tx.discoveryCandidate.findUnique({ where: { id }, select: { website: true } });
-    const accountDomain = normalizeDomain(identity?.website);
-    if (accountDomain) await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtextextended(${"discovery-account:" + accountDomain}, 0))::text`;
-    await lockCandidate(tx, id);
-    const c = await tx.discoveryCandidate.findUnique({ where: { id }, include: candidateInclude });
-    if (!c) throw notFound();
-    if (c.status === "approved" || c.prospectId) throw new ProspectError(["Already approved."], "conflict");
-    const errors: string[] = [];
-    const full = await tx.discoveryCandidate.findUniqueOrThrow({ where: { id }, include: automationInclude });
-    const protection = candidateProtection(full, await protectionIndex(tx));
-    const acquisition = assessAcquisition(full, protection);
-    if (protection.relationships.blocking.length) errors.push(...protection.relationships.blocking);
-    if (protection.account.code === "existing_account") errors.push(protection.account.reason);
-    // A commercial exclusion is a person's call: approving it needs a recorded reason. It lifts nothing else.
-    const commercialOverride = acquisition.commercial.disposition === "exclude";
-    if (commercialOverride && !overrideReason) errors.push(...acquisition.commercial.findings.map(f => f.reason), COMMERCIAL_OVERRIDE_REQUIRED);
-    else if (commercialOverride && (overrideReason.length < COMMERCIAL_OVERRIDE_MIN || overrideReason.length > COMMERCIAL_OVERRIDE_MAX)) {
-      errors.push(`The commercial override reason must be ${COMMERCIAL_OVERRIDE_MIN} to ${COMMERCIAL_OVERRIDE_MAX} characters.`);
-    }
-    if (duplicatePending(c)) errors.push("Resolve the possible duplicate before approval.");
-    if (!APPROVABLE_FROM.includes(c.status)) {
-      errors.push(
-        `Only Researched or Needs review candidates can be approved; this one is ${CANDIDATE_STATUS_LABELS[c.status]}.`,
-      );
-    }
-    errors.push(...researchGateErrors(c.signals, c.evidence));
-    errors.push(...categoryApprovalErrors(c));
-    const lastResearch = await tx.candidateResearch.findFirst({ where: { candidateId: c.id, status: "completed" }, orderBy: automationInclude.research.orderBy, select: { id: true, warnings: true } });
-    const warnings = unreviewedWarnings(lastResearch ?? undefined, await tx.candidateNote.findMany({ where: { candidateId: id } }), c);
-    const conflict = fitConflict(warnings, fitBasis(c.signals));
-    if (conflict) errors.push(`Resolve contradictory ${conflict} evidence before approving this business.`);
-    if (Array.isArray(warnings) && warnings.some(w => typeof w === "string" && /contradictory/i.test(w))) errors.push("Resolve contradictory research evidence before approving this business.");
-    if (fitBasis(c.signals)) errors.push(...fitEvidenceErrors(c, fitBasis(c.signals), c.evidence).filter(e => /contradictory/i.test(e)));
-    const { input, errors: inputErrors } = candidateToProspectInput(c);
-    errors.push(...inputErrors);
+    await lockAccountDomain(tx, id);
+    return createProspectFromCandidateInTx(tx, id, { kind: "person", commercialOverrideReason: opts.commercialOverrideReason }, new Date());
+  }, { isolationLevel: "Serializable", timeout: 30_000 }).catch(retryableConflict);
+}
 
-    // Existing prospects are authoritative: a confident match means this is a duplicate.
-    const verdict = (await loadMatchIndex(tx, { prospectsOnly: true })).classify({
-      provider: c.provider,
-      externalId: c.externalId,
-      ...matchKeysOf(c),
-    });
-    if (verdict.duplicateOf) {
-      errors.push(
-        `An existing prospect matches this candidate (${verdict.duplicateOf.reason}). Mark this candidate as a duplicate instead.`,
-      );
-    }
-    if (errors.length) throw new ProspectError([...new Set(errors)]);
+/** Overlapping approvals/edits: report a retryable conflict instead of an unexpected error. */
+export function retryableConflict(error: unknown): never {
+  if (isDiscoveryConcurrencyConflict(error)) throw new ProspectError(["Another change was saved at the same time. Reload and try again."], "conflict");
+  throw error;
+}
 
-    const now = new Date();
-    // Claim first: two simultaneous approvals can't both proceed.
-    const { count } = await tx.discoveryCandidate.updateMany({
-      where: { id, status: { in: [...APPROVABLE_FROM] }, prospectId: null },
-      data: {
-        status: "approved",
-        researchRevision: { increment: 1 },
-        statusChangedAt: now,
-        approvedAt: now,
-        decidedAt: now,
-      },
-    });
-    if (count !== 1) throw new ProspectError(["The candidate changed meanwhile. Reload and try again."], "conflict");
-    const overrideNotes = commercialOverride
-      ? [JSON.stringify({ type: "commercial_override", action: "human_override", rules: acquisition.commercial.rules, candidateId: id, researchId: full.research[0]?.id,
-          disposition: acquisition.commercial.disposition, confidence: acquisition.commercial.confidence, codes: acquisition.commercial.findings.map(f => f.code),
-          reason: overrideReason, at: now.toISOString() })]
-      : [];
+/** Serializes every prospect creation across a shared account domain as well as an individual candidate.
+ * Taken before the candidate's row lock (lock order: [campaign row] → account domain → candidate). */
+export async function lockAccountDomain(tx: Prisma.TransactionClient, candidateId: string) {
+  const identity = await tx.discoveryCandidate.findUnique({ where: { id: candidateId }, select: { website: true } });
+  const accountDomain = normalizeDomain(identity?.website);
+  if (accountDomain) await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtextextended(${"discovery-account:" + accountDomain}, 0))::text`;
+}
 
-    const prospect = await insertProspect(tx, input, generateReferralCode(), {
-      observedAt: Object.fromEntries(c.signals.map((s) => [s.key, s.observedAt])),
-      evidence: c.evidence.map((e) => ({
-        signalKey: e.signalKey,
-        sourceUrl: e.sourceUrl,
-        excerpt: e.excerpt,
-        createdAt: e.createdAt,
-      })),
-      notes: [
-        provenanceNote(
-          {
-            provider: c.provider,
-            externalId: c.externalId,
-            sourceUrl: c.sourceUrl,
-            query: c.query,
-            discoveredAt: c.discoveredAt,
-            candidateId: c.id,
-            runId: c.runId,
-            release: c.providerRelease,
-          },
-        ),
-        ...overrideNotes,
-        ...commercialAuditEntries(acquisition.commercial, { candidateId: id, researchId: full.research[0]?.id, action: commercialOverride ? "human_override" : "human_approve" }),
-      ],
-    });
-    // Append-only: the override is also kept on the candidate, beside its retained research.
-    for (const body of overrideNotes) await tx.candidateNote.create({ data: { candidateId: id, body } });
-    await tx.discoveryCandidate.update({ where: { id }, data: { prospectId: prospect.id } });
-    return { prospect, candidateId: id };
-  }, { isolationLevel: "Serializable", timeout: 30_000 }).catch((error: unknown) => {
-    // Overlapping approvals/edits: report a retryable conflict instead of an unexpected error.
-    if (isDiscoveryConcurrencyConflict(error)) throw new ProspectError(["Another change was saved at the same time. Reload and try again."], "conflict");
-    throw error;
+/** Who is creating the prospect. A person may override a commercial exclusion with a reason; an automatic
+ * creator never can, and adds its own eligibility check, decision reason and provenance. */
+export type ProspectCreator =
+  | { kind: "person"; commercialOverrideReason?: string }
+  | {
+      kind: "automatic";
+      commercialMinimum: CommercialMinimum;
+      /** Prospect provenance label ("autonomous campaign …"). */
+      label: string;
+      /** The candidate's decisionReason (starts with AUTONOMOUS_CREATED_PREFIX). */
+      decisionReason: string;
+      /** Extra eligibility, evaluated on the locked, current record. */
+      eligibilityErrors: (c: AutomationCandidate, protection: Protection, acquisition: ReturnType<typeof assessAcquisition>) => string[];
+      /** Append-only provenance, written as a note on the candidate and the prospect. */
+      provenance: Record<string, unknown>;
+    };
+
+/**
+ * The checks and writes every prospect creation from a candidate shares. Runs inside the caller's
+ * Serializable transaction, after lockAccountDomain. Every identity, duplicate, account, category,
+ * evidence and protection safeguard of a person's approval applies to every creator.
+ */
+export async function createProspectFromCandidateInTx(tx: Prisma.TransactionClient, id: string, creator: ProspectCreator, now: Date) {
+  const overrideReason = creator.kind === "person" ? creator.commercialOverrideReason?.trim() ?? "" : "";
+  await lockCandidate(tx, id);
+  const c = await tx.discoveryCandidate.findUnique({ where: { id }, include: candidateInclude });
+  if (!c) throw notFound();
+  if (c.status === "approved" || c.prospectId) throw new ProspectError(["Already approved."], "conflict");
+  const errors: string[] = [];
+  const full = await tx.discoveryCandidate.findUniqueOrThrow({ where: { id }, include: automationInclude });
+  const protection = candidateProtection(full, await protectionIndex(tx));
+  const acquisition = assessAcquisition(full, protection, creator.kind === "automatic" ? { commercialMinimum: creator.commercialMinimum } : {});
+  if (protection.relationships.blocking.length) errors.push(...protection.relationships.blocking);
+  if (protection.account.code === "existing_account") errors.push(protection.account.reason);
+  // A commercial exclusion is a person's call: approving it needs a recorded reason. It lifts nothing else.
+  const commercialOverride = creator.kind === "person" && acquisition.commercial.disposition === "exclude";
+  if (commercialOverride && !overrideReason) errors.push(...acquisition.commercial.findings.map(f => f.reason), COMMERCIAL_OVERRIDE_REQUIRED);
+  else if (commercialOverride && (overrideReason.length < COMMERCIAL_OVERRIDE_MIN || overrideReason.length > COMMERCIAL_OVERRIDE_MAX)) {
+    errors.push(`The commercial override reason must be ${COMMERCIAL_OVERRIDE_MIN} to ${COMMERCIAL_OVERRIDE_MAX} characters.`);
+  }
+  if (creator.kind === "automatic") errors.push(...creator.eligibilityErrors(full, protection, acquisition));
+  if (duplicatePending(c)) errors.push("Resolve the possible duplicate before approval.");
+  if (!APPROVABLE_FROM.includes(c.status)) {
+    errors.push(
+      `Only Researched or Needs review candidates can be approved; this one is ${CANDIDATE_STATUS_LABELS[c.status]}.`,
+    );
+  }
+  errors.push(...researchGateErrors(c.signals, c.evidence));
+  errors.push(...categoryApprovalErrors(c));
+  const lastResearch = await tx.candidateResearch.findFirst({ where: { candidateId: c.id, status: "completed" }, orderBy: automationInclude.research.orderBy, select: { id: true, warnings: true } });
+  const warnings = unreviewedWarnings(lastResearch ?? undefined, await tx.candidateNote.findMany({ where: { candidateId: id } }), c);
+  const conflict = fitConflict(warnings, fitBasis(c.signals));
+  if (conflict) errors.push(`Resolve contradictory ${conflict} evidence before approving this business.`);
+  if (Array.isArray(warnings) && warnings.some(w => typeof w === "string" && /contradictory/i.test(w))) errors.push("Resolve contradictory research evidence before approving this business.");
+  if (fitBasis(c.signals)) errors.push(...fitEvidenceErrors(c, fitBasis(c.signals), c.evidence).filter(e => /contradictory/i.test(e)));
+  const { input, errors: inputErrors } = candidateToProspectInput(c);
+  errors.push(...inputErrors);
+
+  // Existing prospects are authoritative: a confident match means this is a duplicate.
+  const verdict = (await loadMatchIndex(tx, { prospectsOnly: true })).classify({
+    provider: c.provider,
+    externalId: c.externalId,
+    ...matchKeysOf(c),
   });
+  if (verdict.duplicateOf) {
+    errors.push(
+      `An existing prospect matches this candidate (${verdict.duplicateOf.reason}). Mark this candidate as a duplicate instead.`,
+    );
+  }
+  if (errors.length) throw new ProspectError([...new Set(errors)]);
+
+  // Claim first: two simultaneous approvals can't both proceed.
+  const { count } = await tx.discoveryCandidate.updateMany({
+    where: { id, status: { in: creator.kind === "automatic" ? ["researched"] : [...APPROVABLE_FROM] }, prospectId: null },
+    data: {
+      status: "approved",
+      researchRevision: { increment: 1 },
+      statusChangedAt: now,
+      approvedAt: now,
+      decidedAt: now,
+      ...(creator.kind === "automatic" ? { decisionReason: creator.decisionReason.slice(0, 500) } : {}),
+    },
+  });
+  if (count !== 1) throw new ProspectError(["The candidate changed meanwhile. Reload and try again."], "conflict");
+  const overrideNotes = commercialOverride
+    ? [JSON.stringify({ type: "commercial_override", action: "human_override", rules: acquisition.commercial.rules, candidateId: id, researchId: full.research[0]?.id,
+        disposition: acquisition.commercial.disposition, confidence: acquisition.commercial.confidence, codes: acquisition.commercial.findings.map(f => f.code),
+        reason: overrideReason, at: now.toISOString() })]
+    : [];
+  const researchId = full.research[0]?.id;
+  const creationNotes = creator.kind === "automatic"
+    ? [JSON.stringify({ ...creator.provenance, candidateId: id, researchId,
+        commercial: { rules: acquisition.commercial.rules, disposition: acquisition.commercial.disposition, confidence: acquisition.commercial.confidence, minimum: creator.commercialMinimum },
+        at: now.toISOString() }).slice(0, 2000)]
+    : [];
+  const auditAction = creator.kind === "automatic" ? "autonomous_create" : commercialOverride ? "human_override" : "human_approve";
+
+  const prospect = await insertProspect(tx, input, generateReferralCode(), {
+    observedAt: Object.fromEntries(c.signals.map((s) => [s.key, s.observedAt])),
+    evidence: c.evidence.map((e) => ({
+      signalKey: e.signalKey,
+      sourceUrl: e.sourceUrl,
+      excerpt: e.excerpt,
+      createdAt: e.createdAt,
+    })),
+    notes: [
+      provenanceNote(
+        {
+          provider: c.provider,
+          externalId: c.externalId,
+          sourceUrl: c.sourceUrl,
+          query: c.query,
+          discoveredAt: c.discoveredAt,
+          candidateId: c.id,
+          runId: c.runId,
+          release: c.providerRelease,
+        },
+        creator.kind === "automatic" ? { automatic: creator.label } : {},
+      ),
+      ...overrideNotes,
+      ...creationNotes,
+      ...commercialAuditEntries(acquisition.commercial, { candidateId: id, researchId, action: auditAction }),
+    ],
+  });
+  // Append-only: overrides and automatic provenance are also kept on the candidate, beside its retained research.
+  for (const body of [...overrideNotes, ...creationNotes]) await tx.candidateNote.create({ data: { candidateId: id, body } });
+  await tx.discoveryCandidate.update({ where: { id }, data: { prospectId: prospect.id } });
+  return { prospect, candidateId: id, researchId, commercial: acquisition.commercial };
 }
 
 export const COMMERCIAL_OVERRIDE_MIN = 10;

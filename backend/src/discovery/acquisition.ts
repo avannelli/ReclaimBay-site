@@ -8,8 +8,15 @@ import type { AutomationCandidate, Protection } from "./automationPolicy.js";
 
 export const ACQUISITION_RULES = "reclaimbay.acquisition@v1";
 export interface AcquisitionGate { pass: boolean; code: string; reason: string }
-/** Read-only readiness contract for a future creator. This module cannot approve, enqueue, fetch or send. */
-export function assessAcquisition(c: AutomationCandidate, protection: Protection) {
+export type CommercialMinimum = "high" | "medium";
+const CONFIDENCE_RANK: Record<string, number> = { low: 0, medium: 1, high: 2 };
+/** A commercial fit at or above the minimum confidence; review and exclude never pass. */
+export const commercialMeets = (commercial: { disposition: string; confidence: string }, minimum: CommercialMinimum) =>
+  commercial.disposition === "fit" && (CONFIDENCE_RANK[commercial.confidence] ?? -1) >= CONFIDENCE_RANK[minimum]!;
+/** Read-only readiness contract. This module cannot approve, enqueue, fetch or send: creation happens only in
+ * createProspectAutonomously, under an authorized campaign (its commercial minimum is passed here). */
+export function assessAcquisition(c: AutomationCandidate, protection: Protection, options: { commercialMinimum?: CommercialMinimum } = {}) {
+  const commercialMinimum = options.commercialMinimum ?? "high";
   const run = c.research[0];
   const commercial = commercialCandidate(c);
   const identityPass = Boolean(run?.version === RESEARCH_VERSION && run.status === "completed" && run.outcome === "website_verified" &&
@@ -28,13 +35,13 @@ export function assessAcquisition(c: AutomationCandidate, protection: Protection
   const gates = {
     identity: gate(identityPass, identityPass ? "identity.verified" : "identity.unverified", "Autonomy requires a current successful run for this physical business/location."),
     technical: gate(technicalPass, technicalPass ? "technical.fit" : "technical.incomplete", "Existing technical qualification and evidence rules remain authoritative."),
-    commercial: gate(commercial.disposition === "fit" && commercial.confidence === "high", `commercial.${commercial.disposition}`, commercial.findings.map(f => f.reason).join(" ")),
+    commercial: gate(commercialMeets(commercial, commercialMinimum), `commercial.${commercial.disposition}`, `${commercial.findings.map(f => f.reason).join(" ")} Minimum: ${commercialMinimum} confidence.`),
     account: gate(duplicatePass && Boolean(account?.clear), account?.code ?? "account.unassessed", account?.reason ?? "Account relationships have not been assessed."),
     contact: gate(contactPass, contactPass ? "contact.verified_email" : "contact.incomplete", "A verified, source-linked recipient for this current location is required; a provider phone is insufficient."),
     protection: gate(!protection.protected, protection.protected ? "protection.protected" : "protection.clear", "Existing Prospect, outreach, suppression and unsubscribe identities cannot enter Discovery automation."),
     lifecycle: gate(c.status === "researched" && !c.notes.some(n => n.body.startsWith("Reopened by a person")), "lifecycle.researched", "Human holds, reopened and terminal records require their existing review path."),
   };
-  return { rules: ACQUISITION_RULES, technicalQualification: scoreCandidate(c).qualification, commercial, account,
+  return { rules: ACQUISITION_RULES, commercialMinimum, technicalQualification: scoreCandidate(c).qualification, commercial, account,
     gates, eligibleForAutonomousProspecting: Object.values(gates).every(g => g.pass),
     prospectCreationEnabled: false as const, requiresHumanApproval: true as const,
     outreachAuthorization: "not_evaluated_no_send_permission" as const };

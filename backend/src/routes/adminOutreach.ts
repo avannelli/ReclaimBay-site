@@ -1,5 +1,5 @@
 import type { FastifyInstance, FastifyReply } from "fastify";
-import { outreachControlPage, outreachDetailPage, outreachMessagesPage, unsubscribeReviewsPage, type CampaignApprovalForm, type MessagesPageData } from "../admin/outreachViews.js";
+import { outreachControlPage, outreachDetailPage, outreachMessagesPage, unsubscribeReviewsPage, type AutonomousLaunchForm, type CampaignApprovalForm, type MessagesPageData } from "../admin/outreachViews.js";
 import { sendingVerdict, type ProviderCheckMemo } from "../admin/sendingState.js";
 import type { Config } from "../config.js";
 import type { Db } from "../db.js";
@@ -24,6 +24,7 @@ import { ProspectError } from "../prospects.js";
 import { reconcileSent } from "../outreach/reconcile.js";
 import { listUnsubscribeReviews, resolveUnsubscribeReview } from "../outreach/emailedUnsubscribe.js";
 import { campaignControls, startCampaign } from "../outreach/campaigns.js";
+import { autonomousCampaignOverview, emergencyStop, launchAutonomousCampaign, launchPreflight } from "../outreach/autonomousCampaign.js";
 import { setDailyLimit } from "../outreach/policy.js";
 
 type Form = Record<string, string>;
@@ -51,6 +52,8 @@ const NOTICES: Record<string, string> = {
   switched_off: "Sending switched off. No further message will be sent.",
   limit_saved: "Daily limit saved. No messages were queued or sent; sending state is unchanged.",
   campaign_started: "Selected messages approved and queued. Sending remains OFF; enable it separately when ready.",
+  autonomous_launched: "Autonomous campaign launched: sending is ON for this campaign only, within its caps, expiry and the daily limit. Nothing is sent until the scheduled sender is armed and runs.",
+  emergency_stopped: "Emergency stop: sending is OFF and the autonomous campaign is stopped for good. Nothing further will be prepared, queued or sent for it.",
   invitation_revoked: "Invitation revoked. Its link no longer works; everything it recorded is kept.",
   invitation_already_revoked: "This invitation was already revoked; nothing changed.",
 };
@@ -121,7 +124,7 @@ export async function outreachRoutes(
     return html(reply, outreachDetailPage({ detail, invitation, canReconcile: sender.name === "gmail" && !!sender.lookupSent, ...extra }), reply.statusCode);
   };
 
-  const renderControl = async (reply: FastifyReply, extra: { notice?: string; errors?: string[]; campaignForm?: CampaignApprovalForm } = {}) => {
+  const renderControl = async (reply: FastifyReply, extra: { notice?: string; errors?: string[]; campaignForm?: CampaignApprovalForm; autonomousForm?: AutonomousLaunchForm } = {}) => {
     const now = new Date();
     const [sw, grouped, stuck, eligible, metrics, gmail, capacity, attention, activity, queue, openedInvitations, unsubscribeReviewCount] = await Promise.all([
       sendingSwitch(db),
@@ -139,6 +142,9 @@ export async function outreachRoutes(
     ]);
     const counts = Object.fromEntries(grouped.map((g) => [g.status, g._count._all]));
     const campaigns = await campaignControls(db);
+    const autonomous = await autonomousCampaignOverview(db, now);
+    // The launch preflight reuses the live check just made; it is computed only while no autonomous campaign is active.
+    const preflight = autonomous?.state === "active" || autonomous?.state === "exhausted" ? null : await launchPreflight(db, config, sender, now, { providerProblem: gmail ? (gmail.authorized ? null : (gmail.problem ?? "Not authorized.")) : sender.enabled ? null : (sender.problem ?? "No email provider is configured.") });
     const readiness = [...readinessErrors(config, sender), ...(campaigns.active ? [] : ["Approve and start a campaign before enabling sending."])];
     // The live check's result, remembered so the top bar and Overview can show it without calling Gmail again.
     if (gmail) opts.providerChecks?.record(gmail.authorized ? null : (gmail.problem ?? "Not authorized."), now);
@@ -158,6 +164,8 @@ export async function outreachRoutes(
       {
         sw,
         campaigns,
+        autonomous,
+        preflight,
         status,
         readiness,
         blockers,
@@ -241,6 +249,38 @@ export async function outreachRoutes(
       return reply.redirect("/admin/outreach?done=campaign_started", 303);
     } catch (err) {
       return handleError(err, reply, (errors) => renderControl(reply, { errors, campaignForm }));
+    }
+  });
+
+  /**
+   * The one-click launch of one bounded autonomous campaign. The person's explicit confirmation authorizes
+   * the campaign and switches sending on for it, together (launchAutonomousCampaign), after a fail-closed
+   * preflight. No message is prepared or sent by this request.
+   */
+  app.post<{ Body: Form }>("/admin/outreach/autonomous/launch", writeLimit, async (req, reply) => {
+    const body = req.body ?? {};
+    const autonomousForm = { ...pick(body, ["name", "prospectCap", "messageCap", "expiresInDays", "reason"]), confirm: body.confirm === "1" };
+    try {
+      const now = new Date();
+      const days = /^\d{1,2}$/.test(body.expiresInDays ?? "") ? Number(body.expiresInDays) : NaN;
+      const campaign = await launchAutonomousCampaign(db, { name: body.name, prospectCap: body.prospectCap, messageCap: body.messageCap,
+        expiresAt: Number.isFinite(days) ? new Date(now.getTime() + days * 24 * 60 * 60 * 1000) : "", reason: body.reason, confirm: body.confirm === "1" }, config, sender, now);
+      req.log.warn({ campaignId: campaign.id, prospectCap: campaign.prospectCap, messageCap: campaign.messageCap }, "autonomous campaign launched");
+      return reply.redirect("/admin/outreach?done=autonomous_launched", 303);
+    } catch (err) {
+      return handleError(err, reply, (errors) => renderControl(reply, { errors, autonomousForm }));
+    }
+  });
+
+  /** Emergency stop: sending OFF and every autonomous campaign stopped for good, in one transaction. */
+  app.post<{ Body: Form }>("/admin/outreach/autonomous/stop", writeLimit, async (req, reply) => {
+    try {
+      if (req.body?.confirm !== "1") throw new ProspectError(["Confirm the emergency stop."]);
+      const result = await emergencyStop(db, req.body?.reason);
+      req.log.warn(result, "outreach emergency stop");
+      return reply.redirect("/admin/outreach?done=emergency_stopped", 303);
+    } catch (err) {
+      return handleError(err, reply, (errors) => renderControl(reply, { errors }));
     }
   });
 

@@ -14,14 +14,18 @@ export function approvedMessageHash(o: Pick<Outreach, "recipientEmail" | "subjec
   return createHash("sha256").update(JSON.stringify([o.recipientEmail, o.subject, o.body, o.senderName, o.senderEmail, o.template, o.campaign])).digest("hex");
 }
 
-export async function campaignMessageErrors(tx: Db | Tx, o: Outreach): Promise<string[]> {
+export async function campaignMessageErrors(tx: Db | Tx, o: Outreach, now = new Date()): Promise<string[]> {
   const policy = await sendingPolicy(tx);
   if (!policy.activeCampaignId) return ["Approve and start a campaign before sending."];
+  // Ordered against a stop that holds this row (autonomous stops lock it): decided before or after, never during.
+  await tx.$queryRaw`SELECT id FROM "OutreachCampaign" WHERE id = ${policy.activeCampaignId}::uuid FOR SHARE`;
   const member = await tx.outreachCampaignMessage.findUnique({
     where: { campaignId_outreachId: { campaignId: policy.activeCampaignId, outreachId: o.id } },
     include: { campaign: true },
   });
   if (!member || member.campaign.attributionCampaign !== o.campaign) return ["This message is outside the active approved campaign."];
+  if (member.campaign.stoppedAt) return [`The campaign was stopped: ${member.campaign.stopReason ?? "no reason recorded"}.`];
+  if (member.campaign.mode === "autonomous" && (!member.campaign.expiresAt || member.campaign.expiresAt.getTime() <= now.getTime())) return ["The autonomous campaign's authorization has expired."];
   if (member.messageHash !== approvedMessageHash(o)) return ["The reviewed message changed after campaign approval. Approve a new selection before sending."];
   return [];
 }

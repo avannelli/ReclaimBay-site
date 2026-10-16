@@ -24,6 +24,11 @@
  * after 10 minutes, and on SIGTERM finishes the candidate in progress and
  * exits. It prints one summary line. Exit code 0 unless something
  * unexpected failed (1). It never sends anything.
+ *
+ * After the research pass, in the same armed, locked run (3 minutes of the budget are kept for it), it
+ * advances the launched autonomous campaign, if any (runAutonomousCampaign): creates prospects for
+ * eligible candidates within the caps, and prepares and queues their first messages as campaign members.
+ * The sender job (outreach:send) remains the only thing that sends.
  */
 import { parseArgs } from "node:util";
 import { loadConfig } from "../config.js";
@@ -31,6 +36,10 @@ import { createDb } from "../db.js";
 import { isAutoApproved } from "../discovery/autoApproval.js";
 import { listCandidates } from "../discovery/service.js";
 import { autoResearchIds, enqueueResearch, processQueuedResearch, runAutoResearch, type AutoResearchReport } from "../research/service.js";
+import { runAutonomousCampaign, type AutonomousRunReport } from "../outreach/autonomousCampaign.js";
+
+/** Of the worker's time budget, what is kept for the autonomous campaign step after research. */
+const AUTONOMOUS_RESERVE_MS = 3 * 60 * 1000;
 
 const MAX_CLI = 25;
 
@@ -49,6 +58,16 @@ const { values } = parseArgs({
 const config = loadConfig();
 if (values.auto) await auto();
 else await manual();
+
+/** One line, counts and ids only (never an address or message content). */
+function campaignSummary(r: AutonomousRunReport) {
+  if (r.outcome === "no_campaign") return "Autonomous campaign: none active; nothing done.";
+  if (r.outcome === "not_launched") return `Autonomous campaign ${r.campaignId}: authorized but not launched; nothing done.`;
+  const p = r.prepare;
+  return `Autonomous campaign ${r.campaignId}: created ${r.created.length} prospect(s), held ${r.held.length}, failed ${r.failed.length}, deferred ${r.deferred.length}; ` +
+    `messages committed ${p?.committed.length ?? 0}, skipped ${p?.skipped.length ?? 0}${p?.stoppedBecause ? ` (${p.stoppedBecause})` : ""}; ${r.outcome.replace("_", " ")}.` +
+    (r.failed.length ? ` Failed candidates: ${r.failed.map((f) => f.candidateId).join(", ")}.` : "");
+}
 
 function summary(r: AutoResearchReport) {
   if (r.outcome === "disabled") return "Automatic research: off (RESEARCH_AUTORUN_ENABLED is not 1); nothing done.";
@@ -73,13 +92,20 @@ async function auto() {
   process.on("SIGINT", onSignal);
   const db = createDb(config.databaseUrl);
   try {
+    let campaign: AutonomousRunReport | null = null;
     const report = await runAutoResearch(db, {
       enabled: config.researchAutorunEnabled,
       databaseUrl: config.databaseUrl,
       limit: Math.max(1, Number(values.limit ?? 10) || 10),
       shouldStop: () => stop,
+      // Then the active autonomous campaign, if one was launched: create prospects, prepare and commit their outreach.
+      reserveMs: AUTONOMOUS_RESERVE_MS,
+      afterResearch: async ({ shouldStop, deadline }) => {
+        campaign = await runAutonomousCampaign(db, { draft: { siteUrl: config.publicSiteUrl, sender: config.outreachSender }, compliance: config, shouldStop, deadline });
+      },
     });
     console.log(summary(report));
+    if (campaign) console.log(campaignSummary(campaign));
   } catch (err) {
     // Never echo connection strings.
     console.error(`Automatic research failed: ${(err instanceof Error ? err.message : "unknown error").replace(/\S+:\/\/\S+/g, "[url]").slice(0, 300)}`);

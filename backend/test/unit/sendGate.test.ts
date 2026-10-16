@@ -19,6 +19,7 @@ const read = (path: string) => readFileSync(new URL(path, SRC), "utf8");
 /** Every top-level function that takes the gate, and how many gated transactions it runs. */
 const GATED: Record<string, Record<string, number>> = {
   "outreach/campaigns.ts": { startCampaign: 1 },
+  "outreach/autonomousCampaign.ts": { launchAutonomousCampaign: 1, emergencyStop: 1, commitCampaignMessage: 1 },
   "outreach/policy.ts": { setDailyLimit: 1 },
   "outreach/dispatch.ts": { setSendingSwitch: 1, dispatchQueued: 2, confirmStuckSent: 1 },
   "outreach/reconcile.ts": { reconcileSent: 1 },
@@ -31,6 +32,7 @@ const GATED: Record<string, Record<string, number>> = {
 /** Transactions in those modules that can't make or stop a send, so take no gate. */
 const UNGATED: Record<string, string[]> = {
   "outreach/campaigns.ts": [],
+  "outreach/autonomousCampaign.ts": [],
   "outreach/policy.ts": [],
   "outreach/dispatch.ts": [],
   "outreach/reconcile.ts": [],
@@ -44,6 +46,7 @@ const UNGATED: Record<string, string[]> = {
 /** Helpers that run inside a caller's transaction: they must never take the gate themselves. */
 const HELPERS: Record<string, string[]> = {
   "outreach/policy.ts": ["appendSendingControlInTx"],
+  "outreach/autonomousCampaign.ts": ["commitBlockers"],
   "outreach/records.ts": ["cancelOne", "cancelOpenOutreach", "suppressEmail"],
   "outreach/inboxAttribution.ts": ["resolveInboxAttribution"],
   "outreach/service.ts": ["queueOutreachInTx", "moveOutreachInTx", "advanceProspect", "queueBlockers", "recordSentInTx", "applyReplyOutcome", "recordReplyInTx", "unsubscribeOutreachInTx"],

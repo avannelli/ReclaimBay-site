@@ -7,7 +7,7 @@ import type { recentImports } from "../discovery/staging.js";
 import { OUTCOME_LABELS, type ResearchOutcome } from "../research/researcher.js";
 import type { automaticResearchStatus, candidateResearch, researchQueue } from "../research/service.js";
 import { CANDIDATE_SORTS, COMMERCIAL_OVERRIDE_MAX, COMMERCIAL_OVERRIDE_MIN, DEFAULT_BUSINESS_TYPE } from "../discovery/service.js";
-import { AUTO_APPROVAL_LABELS, AUTO_APPROVAL_RULES, isAutoApproved } from "../discovery/autoApproval.js";
+import { AUTO_APPROVAL_LABELS, AUTO_APPROVAL_RULES, isAutoApproved, isAutonomouslyCreated } from "../discovery/autoApproval.js";
 import { CATEGORY_RULES } from "../discovery/categories.js";
 import { CATEGORY_SOURCE_LABELS, CATEGORY_VERDICTS, CATEGORY_VERDICT_LABELS, type CategorySource, type CategoryVerdict } from "@avannelli/aos/categories";
 import {
@@ -1127,7 +1127,7 @@ export function candidateDetailPage(opts: {
   }</div>` : "";
   const autoColor = auto.decision === "approve" ? "var(--pos)" : auto.decision === "blocked" ? "var(--neg)" : "var(--amber)";
   const autoCard = frozen
-    ? `<div class="card"><p class="small" style="margin:0">${isAutoApproved(c) ? `Approved automatically (${esc(AUTO_APPROVAL_RULES)}).` : "Approved by a person."}</p></div>`
+    ? `<div class="card"><p class="small" style="margin:0">${isAutonomouslyCreated(c) ? esc(c.decisionReason ?? "") : isAutoApproved(c) ? `Approved automatically (${esc(AUTO_APPROVAL_RULES)}).` : "Approved by a person."}</p></div>`
     : `<div class="card" style="border-left:4px solid ${autoColor}"><b>Discovery assessment: ${esc(AUTO_APPROVAL_LABELS[auto.decision])}</b>
 <ul class="plain small" style="margin:6px 0">${auto.reasons.map((r) => `<li>${esc(r)}</li>`).join("")}</ul>${auto.noted.length ? `<p class="small muted" style="margin:0 0 6px">Noted, not blocking: ${esc(auto.noted.join("; "))}.</p>` : ""}
 <p class="small muted" style="margin:0">${

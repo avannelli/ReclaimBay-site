@@ -213,7 +213,7 @@ export async function dispatchQueued(db: Db, opts: DispatchOptions): Promise<Dis
       const o = await tx.outreach.findUnique({ where: { id }, include: { prospect: { include: { signals: true } } } });
       // Its send started since the list was read (another dispatcher): never a second send.
       if (!o || o.status !== "queued" || o.sendStartedAt !== null) return { kind: "skip" };
-      const approvalErrors = await campaignMessageErrors(tx, o);
+      const approvalErrors = await campaignMessageErrors(tx, o, now);
       if (approvalErrors.length) return { kind: "stop", reason: approvalErrors.join(" ") };
       const errors = await messageEligibilityErrors(tx, o, cfg, "send");
       if (errors.length) {

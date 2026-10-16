@@ -15,6 +15,21 @@ Ready means a person can approve the business as a Prospect without doing basic 
 - **Location parsing.** A year in a copyright or founding notice ("© 2025 Saviers Road Auto Repair", "Since 1988", "Est. 1972") is never read as a house number, so a business name containing a street word cannot invent a second location or turn a single site into a "regional" brand.
 - **Rule versions.** A candidate whose latest verified run predates r16 is never Ready from that run: it gets one current-rules re-read (`policy_refresh`). Historical evidence, runs, facts, sources and signals are never rewritten, and the d1 "qualify from historical excerpts" action is retired. r16/d2 is one release (it includes the commercial assessment below); no interim version was deployed.
 
+### Bounded autonomous campaigns (M1: prospect creation only)
+
+`discovery/autonomous.ts`. A person authorizes one campaign (`authorizeAutonomousCampaign`): a name, a prospect cap (1–100), a message cap (1–250, used from M2), an expiry within 30 days, a reason and an explicit confirmation. The campaign (`OutreachCampaign`, mode `autonomous`) records the commercial minimum (`medium`), when and through which channel it was authorized, and the rule versions in force; database CHECK constraints refuse an autonomous campaign without them. At most one autonomous campaign is active at a time. Authorizing changes no sending control, active message selection, draft or queue.
+
+`createProspectAutonomously(db, candidateId, campaignId)` creates one prospect without an individual approval, or refuses with the reasons, all inside one Serializable transaction (lock order: campaign row → account domain → candidate):
+
+- the campaign is autonomous, authorized, not stopped, not expired, and under its prospect cap;
+- the candidate was never created automatically before (`OutreachCampaignProspect.candidateId` is unique across campaigns);
+- the live Discovery decision is Ready, every acquisition gate passes with the commercial gate at the campaign's minimum (`medium`: a fit without stated independence is acceptable once identity and repair evidence are verified), and the recorded ownership class is one Ready allows. Chain, dealership, possible dealership, manufacturer, commercial review and commercial exclusion are never created, and there is no automatic override;
+- every safeguard of a person's approval, through the same extracted transaction body (`createProspectFromCandidateInTx`): duplicate and inbound-flag relationships, existing account, category, evidence gates, contradictions, existing-prospect matches, and the claim from Researched.
+
+Each creation writes an append-only `OutreachCampaignProspect` row (campaign, candidate, prospect, research run, rule versions, commercial disposition/confidence), an `autonomous_creation` provenance note on the candidate and the prospect, the commercial audit entries with their evidence references (`autonomous_create`), and the candidate's `decisionReason` ("Created automatically under autonomous campaign …"). It creates no outreach.
+
+`stopAutonomousCampaign` stops a campaign for good (a reason is required; repeating keeps the first). It takes the campaign row lock, so it lands wholly before or after any creation; a stopped or expired campaign creates nothing more. `approveCandidate({ automatic })` still refuses.
+
 ### Readiness calibration (read-only)
 
 `npm run discovery:calibrate` compares stored candidates with the current rules without changing anything: against `DATABASE_URL` inside a `READ ONLY, REPEATABLE READ` transaction (it refuses to run otherwise), or offline with `--snapshot <file>` from a read-only audit snapshot. For each candidate it reports the live decision, a projection of what an r16 re-read is likely to find from retained quotes (never sufficient on its own), missing evidence kept apart from negative evidence, relationship/account holds, and a simulation of the decision after a verified, failed or blocked re-read (a research answer there would be a loop). The CLI disables network access and writes only the `--out`/`--markdown` files it is given.

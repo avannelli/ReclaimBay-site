@@ -241,6 +241,7 @@ model Prospect {
   internalTest Boolean @default(false)
 
   candidate     DiscoveryCandidate?
+  autonomousCreation OutreachCampaignProspect?
   sessions      AnalyticsSession[]
   events        ProductEvent[]
   signals       ProspectSignal[]
@@ -491,6 +492,7 @@ model DiscoveryCandidate {
   evidence CandidateEvidence[]
   notes    CandidateNote[]
   research CandidateResearch[]
+  autonomousCreation OutreachCampaignProspect?
 
   @@unique([provider, externalId])
   @@index([status, discoveredAt])
@@ -856,13 +858,53 @@ model OutreachControlChange {
 
 // An explicitly reviewed, fixed selection of existing messages. Attribution
 // remains on Outreach/Invitation; this selection is the sending approval.
+/// selected: a person approves a fixed message selection (startCampaign).
+/// autonomous: a person authorizes bounded automatic prospect creation (authorizeAutonomousCampaign).
+enum CampaignMode {
+  selected
+  autonomous
+}
+
 model OutreachCampaign {
   id String @id @default(uuid()) @db.Uuid
   name String @db.VarChar(120)
   attributionCampaign String @db.VarChar(64)
   startedAt DateTime @default(now())
+  mode CampaignMode @default(selected)
+  // Autonomous bounds (required by CHECK constraints when mode = autonomous; never changed after authorization).
+  prospectCap Int?
+  messageCap Int?
+  expiresAt DateTime?
+  commercialMinimum String? @db.VarChar(16)
+  authorizedAt DateTime?
+  authorizedReason String? @db.VarChar(500)
+  authorizedVia String? @db.VarChar(32)
+  /// Rule versions in force at authorization: research, automation, commercial, acquisition.
+  policyVersions Json?
+  // Set once; a stopped campaign is never resumed.
+  stoppedAt DateTime?
+  stopReason String? @db.VarChar(500)
   messages OutreachCampaignMessage[]
   controls OutreachControlChange[]
+  prospects OutreachCampaignProspect[]
+}
+
+/// One prospect created automatically under an autonomous campaign. Append-only. A candidate is
+/// created at most once, whichever campaign, and a prospect belongs to at most one campaign.
+model OutreachCampaignProspect {
+  campaignId String @db.Uuid
+  candidateId String @unique @db.Uuid
+  prospectId String @unique @db.Uuid
+  researchId String? @db.Uuid
+  createdAt DateTime @default(now())
+  /// Rule versions that decided this creation.
+  policyVersions Json
+  commercialDisposition String @db.VarChar(16)
+  commercialConfidence String @db.VarChar(16)
+  campaign OutreachCampaign @relation(fields: [campaignId], references: [id], onDelete: Restrict)
+  candidate DiscoveryCandidate @relation(fields: [candidateId], references: [id], onDelete: Restrict)
+  prospect Prospect @relation(fields: [prospectId], references: [id], onDelete: Restrict)
+  @@id([campaignId, candidateId])
 }
 
 model OutreachCampaignMessage {

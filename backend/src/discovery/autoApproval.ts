@@ -254,7 +254,11 @@ export function assessAutoApproval(c: AutoApprovalInput): AutoApprovalAssessment
   return out("approve", conditions, noted, note);
 }
 
-/** Whether a candidate was approved by the rules rather than a person. */
+/** Every candidate turned into a prospect under an authorized autonomous campaign records this. */
+export const AUTONOMOUS_CREATED_PREFIX = "Created automatically under autonomous campaign";
+export const isAutonomouslyCreated = (c: { status: string; decisionReason: string | null }) =>
+  c.status === "approved" && Boolean(c.decisionReason?.startsWith(AUTONOMOUS_CREATED_PREFIX));
+/** Whether a candidate was approved by the rules (historical approval rule, or an autonomous campaign) rather than a person. */
 export const isAutoApproved = (c: { status: string; decisionReason: string | null }) =>
-  c.status === "approved" && Boolean(c.decisionReason?.startsWith(AUTO_APPROVED_PREFIX));
+  c.status === "approved" && Boolean(c.decisionReason?.startsWith(AUTO_APPROVED_PREFIX) || isAutonomouslyCreated(c));
 

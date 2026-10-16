@@ -286,6 +286,55 @@ The migration preserves switch values and creates no campaigns or queue
 entries. Old queued messages fail closed until explicitly selected and
 approved. Batch 1 is not seeded, selected, queued, or sent by the migration.
 
+### Bounded autonomous campaign (M2)
+
+[`src/outreach/autonomousCampaign.ts`](src/outreach/autonomousCampaign.ts), on top of the autonomous
+campaign authorization and prospect creation in [DISCOVERY.md](DISCOVERY.md) (M1). It reuses the existing
+draft, queue, fingerprint, send gate and dispatcher; it adds no sender.
+
+- **Preflight** (`launchPreflight`, shown on the Outreach page before confirmation) fails closed unless:
+  the Gmail provider is configured and its live check passes; the sender identity is complete; this
+  deployment is armed; the switch is OFF; no other autonomous campaign is active; nothing is queued; daily
+  capacity remains; and at least one researched candidate passes the automatic-creation gate. It also
+  states that the scheduled sender's and research worker's arms are set on those services and can't be
+  read from the web service. The page shows the prospect cap, message cap, expiry, commercial minimum
+  (`medium`), daily limit and pacing.
+- **Launch** (`launchAutonomousCampaign`, **Launch autonomous campaign**): the person's explicit
+  confirmation authorizes the campaign and its bounded sending. Under the send gate it re-checks the
+  database conditions, creates the campaign (`authorizeAutonomousCampaignInTx`) and switches sending ON
+  with it as the active campaign, both or neither. It prepares and sends nothing itself.
+- **Membership** (`prepareCampaignOutreach`, `commitCampaignMessage`): for the campaign's own prospects
+  only, the standard first message (`createOutreachDraft`: template, invitation, eligibility). Then, under
+  the send gate and the campaign row lock, the existing queue operation (eligibility, suppression,
+  recipient ownership, sender identity, compliance, invitation) and a campaign membership with
+  `approvedMessageHash`. The dispatcher's fingerprint check is unchanged: a message edited afterwards is
+  never sent. A draft left by an interrupted run is reused, never duplicated.
+- **Message cap**: every membership ever committed counts (memberships are never deleted), so a
+  cancelled, failed or re-prepared message never frees capacity. Checked under the send gate, so
+  concurrent preparations can't exceed it.
+- **Stale authorization**: the dispatcher refuses members of a stopped campaign, or of an autonomous
+  campaign past its expiry, and preparation commits nothing for a stopped, expired, unlaunched or capped
+  campaign. The dispatcher takes a share lock on the campaign row, so a stop lands wholly before or after
+  a claim.
+- **Emergency stop** (`emergencyStop`, **Emergency stop** on the Outreach page; a reason and a
+  confirmation): switches sending OFF and stops every autonomous campaign for good in one send-gate
+  transaction. Repeating it changes nothing more. Queued members of a stopped campaign stay queued for a
+  person to discard, and a new launch fails closed until they are resolved: the Outreach page names
+  them and links **Messages › Queued**, where each is discarded with a reason.
+- **Orchestration (M3)**: the existing research worker (`discovery:research -- --auto`, armed by
+  `RESEARCH_AUTORUN_ENABLED=1`, one worker at a time under its session lock) runs
+  `runAutonomousCampaign` after its research pass, with 3 minutes of its 10-minute budget kept for it
+  and the same shutdown signal. For the active, launched campaign only, it creates prospects for
+  `autonomousCandidates` (at most 10 per run and the remaining prospect cap) through
+  `createProspectAutonomously`, then runs `prepareCampaignOutreach`. A stopped or expired campaign ends
+  the run at once. A candidate refused by a safeguard, or failing unexpectedly, gets an append-only
+  `autonomous_refusal` note and is not tried again by that campaign until it changes (its research
+  revision moves); races and serialization conflicts are simply tried on a later run. The worker never
+  sends: the sender job (`outreach:send`) remains the only sender.
+- **Status** (Outreach page): authorization, prospect and message caps used, messages queued, sent,
+  failed or bounced, cancelled and replied, replies to classify, prospects without a message, and held
+  candidates with their reasons.
+
 ### Before each send
 
 The dispatcher re-checks every condition. If any fails, the message is

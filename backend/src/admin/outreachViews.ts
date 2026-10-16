@@ -16,6 +16,8 @@ import { invitationStatus } from "../invitations/status.js";
 import type { FunnelRow } from "../outreach/metrics.js";
 import type { SendingStatus } from "../outreach/dispatch.js";
 import type { campaignControls } from "../outreach/campaigns.js";
+import type { autonomousCampaignOverview, Preflight } from "../outreach/autonomousCampaign.js";
+import { AUTONOMOUS_BOUNDS } from "../discovery/autonomous.js";
 import { canConfirmStuckSent } from "../outreach/records.js";
 import { canReconcileSent } from "../outreach/reconcile.js";
 import { REVIEW_REASONS, type listUnsubscribeReviews } from "../outreach/emailedUnsubscribe.js";
@@ -393,6 +395,9 @@ ${actions.length ? section("actions", "Actions", `<div class="stack">${actions.j
 
 export interface ControlPageData {
   campaigns?: Awaited<ReturnType<typeof campaignControls>>;
+  /** The latest autonomous campaign, if any, and the launch preflight (computed while none is active). */
+  autonomous?: Awaited<ReturnType<typeof autonomousCampaignOverview>>;
+  preflight?: Preflight | null;
   sw: { enabled: boolean; reason: string; at: Date | null };
   /** Whether mail is going out now, and why not (dispatch.ts sendingStatus). */
   status: SendingStatus;
@@ -532,6 +537,15 @@ function attentionGroup(tone: "warn" | "neg" | "pos", glyph: string, title: stri
   return `<div class="o-attn t-${tone}"><h3><span aria-hidden="true">${glyph}</span> ${esc(title)} <span class="q-count">${total}</span></h3><p class="q-hint">${esc(why)}</p><ul>${items.join("")}${more}</ul></div>`;
 }
 
+export interface AutonomousLaunchForm {
+  name?: string;
+  prospectCap?: string;
+  messageCap?: string;
+  expiresInDays?: string;
+  reason?: string;
+  confirm: boolean;
+}
+
 export interface CampaignApprovalForm {
   name?: string;
   reason?: string;
@@ -539,7 +553,7 @@ export interface CampaignApprovalForm {
   confirm: boolean;
 }
 
-export function outreachControlPage(d: ControlPageData, opts: { notice?: string; errors?: string[]; campaignForm?: CampaignApprovalForm } = {}): string {
+export function outreachControlPage(d: ControlPageData, opts: { notice?: string; errors?: string[]; campaignForm?: CampaignApprovalForm; autonomousForm?: AutonomousLaunchForm } = {}): string {
   const fe = fieldErrors(opts.errors);
   const s = d.status;
   const a = d.attention;
@@ -710,6 +724,7 @@ ${
     `${notice(opts.notice)}${errorSummary(opts.errors, fe, "Not done")}
 ${pageHead({ title: "Sending", lede: "Sending state, daily capacity and the decisions that keep outreach safe." })}
 ${statusBlock}
+${autonomousCampaignSection(d, opts.autonomousForm)}
 ${campaignControlSection(d, opts.campaignForm)}
 ${tiles}
 <div class="review-link"><a href="/admin/outreach/unsubscribe-reviews">Emailed unsubscribe reviews (${d.unsubscribeReviewCount ?? 0} open)</a> <span class="small muted">Ambiguous requests remain unsuppressed until explicitly resolved.</span></div>
@@ -720,6 +735,54 @@ ${prepare}
 ${provider}
 ${details}`,
   );
+}
+
+/** One bounded autonomous campaign: its state and emergency stop while active; otherwise the preflight and the one-click launch. */
+function autonomousCampaignSection(d: ControlPageData, form?: AutonomousLaunchForm): string {
+  const a = d.autonomous;
+  const live = a && (a.state === "active" || a.state === "exhausted");
+  // Compact status: authorization, caps, what became of the messages, and who was held back.
+  const status = a ? (() => {
+    const c = a.campaign;
+    const held = a.held.map((h) => `<li>${esc(h.businessName ?? h.candidateId)} (${h.kind === "error" ? "failed" : "held"}): ${esc(h.reasons.join(" "))}</li>`).join("");
+    return `<dl class="kv small">
+<dt>Authorization</dt><dd>${c.authorizedAt ? fmtDate(c.authorizedAt) : "—"} via ${esc(c.authorizedVia ?? "—")}: ${esc(c.authorizedReason ?? "")} · expires ${c.expiresAt ? fmtDate(c.expiresAt) : "—"} · commercial minimum ${esc(c.commercialMinimum ?? "")}</dd>
+<dt>Prospects</dt><dd>${a.created} of ${c.prospectCap} created${a.withoutMessage ? ` · ${a.withoutMessage} without a message (not eligible to email yet)` : ""}</dd>
+<dt>Messages</dt><dd>${a.committed} of ${c.messageCap} committed · ${a.queued} queued · ${a.sent} sent · ${a.failed} failed or bounced · ${a.cancelled} cancelled · ${a.replied} replied</dd>
+<dt>Replies</dt><dd>${a.replies}${a.replies ? ` · <a href="/admin/outreach/messages?view=replies">classify replies</a>` : ""}</dd>
+<dt>Held candidates</dt><dd>${a.heldCount}${a.heldCount ? " (not tried again until the candidate changes)" : ""}</dd></dl>${held ? `<ul class="plain small">${held}</ul>` : ""}`;
+  })() : "";
+  if (a && live) {
+    const c = a.campaign;
+    return `<section class="card" id="autonomous-campaign"><h2>Autonomous campaign: ${esc(c.name)}</h2>
+<p><b>${a.state === "exhausted" ? "Prospect cap reached; its messages continue" : "Active"}</b> until ${c.expiresAt ? fmtDate(c.expiresAt) : "—"}. Sending: ${d.sw.enabled ? "ON" : "OFF"}; daily limit ${d.capacity.limit} (${d.capacity.remaining} left).</p>
+${status}
+<form method="post" action="/admin/outreach/autonomous/stop" class="stack">
+<div class="field"><label for="stop-reason">Reason for the emergency stop</label><input id="stop-reason" name="reason" maxlength="450" required></div>
+<label><input type="checkbox" name="confirm" value="1" required> Stop this campaign for good and switch all sending off.</label>
+<button class="btn-danger" type="submit">Emergency stop</button><p class="small muted">Takes effect before the next message; a stopped campaign is never resumed.</p></form></section>`;
+  }
+  const p = d.preflight;
+  if (!p) return "";
+  const { prospectCap, messageCap, maxDays } = AUTONOMOUS_BOUNDS;
+  const resolve = a && a.queued
+    ? `<div class="o-blockers"><p><b>${a.queued} message(s) of this ${a.state} campaign are still queued.</b> They will not be sent. Before launching another campaign, discard each one: open <a href="/admin/outreach/messages?status=queued">Messages › Queued</a>, then each message's <b>Discard</b> (a reason and confirmation; it stays in the history as Cancelled).</p></div>`
+    : "";
+  const last = a ? `<details${a.queued ? " open" : ""}><summary>Last autonomous campaign: ${esc(a.campaign.name)} (${a.state}${a.campaign.stopReason ? `: ${esc(a.campaign.stopReason)}` : ""})</summary>${status}</details>${resolve}` : "";
+  const checks = p.checks.map((c) => `<li>${c.pass ? "✓" : c.blocking ? "✕" : "!"} <b>${esc(c.label)}</b>: ${esc(c.detail)}</li>`).join("");
+  const v = (k: keyof AutonomousLaunchForm, fallback: string) => esc(String(form?.[k] ?? fallback));
+  return `<section class="card" id="autonomous-campaign"><h2>Launch an autonomous campaign</h2>${last}
+<p>Eligible researched candidates become prospects automatically (commercial minimum <b>${esc(p.commercialMinimum)}</b>), get the standard first message, and are sent within the caps below, the daily limit (<b>${p.capacity.limit}</b> per rolling 24 hours, ${p.capacity.remaining} left) and at least ${p.minSendIntervalSeconds} seconds between sends.</p>
+<p><b>Preflight: ${p.ok ? "ready" : "not ready"}</b></p><ul class="plain small">${checks}</ul>
+<form method="post" action="/admin/outreach/autonomous/launch" class="stack">
+<div class="field"><label for="auto-name">Campaign name</label><input id="auto-name" name="name" maxlength="120" value="${v("name", "")}" required></div>
+<div class="row"><div class="field"><label for="auto-pcap">Prospect cap (${prospectCap.min}–${prospectCap.max})</label><input id="auto-pcap" name="prospectCap" type="number" min="${prospectCap.min}" max="${prospectCap.max}" value="${v("prospectCap", "10")}" required></div>
+<div class="field"><label for="auto-mcap">Message cap (${messageCap.min}–${messageCap.max})</label><input id="auto-mcap" name="messageCap" type="number" min="${messageCap.min}" max="${messageCap.max}" value="${v("messageCap", "10")}" required></div>
+<div class="field"><label for="auto-days">Expires after (days, 1–${maxDays})</label><input id="auto-days" name="expiresInDays" type="number" min="1" max="${maxDays}" value="${v("expiresInDays", "7")}" required></div></div>
+<div class="field"><label for="auto-reason">Authorization reason</label><input id="auto-reason" name="reason" maxlength="500" value="${v("reason", "")}" required></div>
+<label><input type="checkbox" name="confirm" value="1"${form?.confirm ? " checked" : ""} required> I authorize automatic prospect creation and sending, within these caps, this expiry and the daily limit, with no individual approvals.</label>
+<button type="submit"${p.ok ? "" : " disabled"}>Launch autonomous campaign</button><p class="small muted">Switches sending ON for this campaign only. Everything is checked again when you confirm; the emergency stop ends it at any time.</p>
+</form></section>`;
 }
 
 function campaignControlSection(d: ControlPageData, form?: CampaignApprovalForm): string {

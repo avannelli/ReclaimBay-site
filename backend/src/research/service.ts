@@ -666,6 +666,13 @@ export async function runAutoResearch(
     deps?: ProcessDeps;
     /** Tests replace the lock; the worker always uses one. */
     lock?: () => Promise<{ release: () => Promise<void> } | null>;
+    /**
+     * A further bounded step run after the research pass, while this worker still holds its lock
+     * (the autonomous campaign orchestration). It gets the rest of the budget and the shutdown signal.
+     */
+    afterResearch?: (ctx: { shouldStop: () => boolean; deadline: number }) => Promise<void>;
+    /** Of the budget, the part kept for afterResearch (research starts nothing new once only this is left). */
+    reserveMs?: number;
   },
 ): Promise<AutoResearchReport> {
   const clock = opts.clock ?? Date.now;
@@ -674,13 +681,15 @@ export async function runAutoResearch(
   if (!opts.enabled) return { ...report, outcome: "disabled" };
   const lock = await (opts.lock ?? (() => acquireWorkerLock(opts.databaseUrl)))();
   if (!lock) return { ...report, outcome: "locked" };
+  const budgetMs = opts.budgetMs ?? AUTO_TIME_BUDGET_MS;
+  const researchBudgetMs = Math.max(0, budgetMs - (opts.afterResearch ? opts.reserveMs ?? 0 : 0));
   try {
     const limit = Math.max(1, Math.min(MAX_BATCH_AUTO, opts.limit));
     report.reclaimed = await failStaleResearch(db);
     const preview = await discoveryAutomationPreview(db);
     // Only executable category/technical-rejection actions; a commercial finding is never one (automation.ts).
     for (const item of preview.rows.filter(r => executable(r.assessment) && r.assessment.action !== "research").slice(0, limit)) {
-      if (opts.shouldStop?.() || clock() - started >= (opts.budgetMs ?? AUTO_TIME_BUDGET_MS)) break;
+      if (opts.shouldStop?.() || clock() - started >= researchBudgetMs) break;
       const results = await applyDiscoveryBatch(db, [{ id: item.id, token: item.token }]);
       report.rejected += results.filter(r => r.applied && item.assessment.action === "reject").length;
     }
@@ -688,7 +697,7 @@ export async function runAutoResearch(
     const slots = Math.max(0, limit - (await db.candidateResearch.count({ where: { status: "queued" } })));
     const { fresh, retries } = slots ? await autoResearchSelection(db, slots, new Date(clock())) : { fresh: [], retries: [] };
     const picked = [...fresh, ...retries].slice(0, slots);
-    const stopped = () => opts.shouldStop?.() || clock() - started >= (opts.budgetMs ?? AUTO_TIME_BUDGET_MS);
+    const stopped = () => opts.shouldStop?.() || clock() - started >= researchBudgetMs;
     const queued: string[] = [];
     for (const id of picked) {
       if (stopped()) break;
@@ -703,7 +712,7 @@ export async function runAutoResearch(
     const sleep = opts.deps?.sleep ?? ((ms: number) => new Promise((r) => setTimeout(r, ms)));
     const { results, stoppedBy } = await drainWithBudget({
       limit,
-      budgetMs: Math.max(0, (opts.budgetMs ?? AUTO_TIME_BUDGET_MS) - (clock() - started)),
+      budgetMs: Math.max(0, researchBudgetMs - (clock() - started)),
       clock,
       shouldStop: opts.shouldStop ?? (() => false),
       sleep,
@@ -726,6 +735,7 @@ export async function runAutoResearch(
       else if (c?.status === "rejected") report.rejected++;
       else report.review++;
     }
+    if (opts.afterResearch && !opts.shouldStop?.()) await opts.afterResearch({ shouldStop: () => Boolean(opts.shouldStop?.()), deadline: started + budgetMs });
   } finally {
     await lock.release();
   }
