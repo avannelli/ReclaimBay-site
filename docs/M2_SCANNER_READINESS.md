@@ -1,7 +1,8 @@
 # M2 entry task: assess commercial readiness of the scanner
 
-Next milestone: **M2 — Commercial readiness of the customer-facing scanner**.
-This document defines the next task; it does not claim that M2 has started or passed.
+Current milestone: **M2 — Commercial readiness of the customer-facing scanner**.
+M1 strategic alignment is complete; this local assessment has begun. M2 has not
+passed. Follow the [fixed company roadmap](ROADMAP.md).
 
 ## Exact next task
 

@@ -1,7 +1,8 @@
 # ReclaimBay backend
 
 This service supports acquisition and operations for the customer-facing
-self-service declined-work revenue scanner. Follow the [company charter](../docs/COMPANY_CHARTER.md)
+self-service declined-work revenue scanner. Follow the [company charter](../docs/COMPANY_CHARTER.md),
+[fixed M1–M5 roadmap](../docs/ROADMAP.md)
 and [M2 scanner-readiness task](../docs/M2_SCANNER_READINESS.md). The
 [unfinished replenishment controller](../docs/PARKED_REPLENISHMENT.md) is parked
 and must not enter a release or resume development without a new explicit task.

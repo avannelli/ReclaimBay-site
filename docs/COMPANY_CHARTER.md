@@ -37,16 +37,15 @@ scanner adoption, customer value, revenue or profitability.
 
 ## Execution and autonomy
 
-The current milestone is **M1 — Strategic alignment**. The next milestone is
-**M2 — Commercial readiness of the customer-facing scanner**. Milestone work
-must follow the fixed company roadmap; historical acquisition implementation
-labels such as M1, M2 and M3 are not company milestone completions.
+**M1 — Strategic alignment** is complete with the charter, fixed roadmap and
+agent guidance recorded, and unfinished replenishment work preserved separately.
+The current milestone is **M2 — Commercial readiness of the customer-facing
+scanner**, beginning with a local assessment of the existing product.
 
-The agreed definitions of company milestones M3–M5 were not present in the
-repository or supplied task context during this alignment pass. Their fixed
-wording must be supplied by the owner before the complete M1–M5 roadmap can be
-recorded. Do not invent those milestones or mark M1 alignment complete while
-that roadmap remains unresolved.
+Follow the [fixed M1–M5 company roadmap](ROADMAP.md). Historical acquisition
+implementation labels such as M1, M2 and M3 are not company milestone completions.
+The fixed definitions guide sequencing; they do not authorize new features,
+scope expansion or operational actions.
 
 Progressive autonomy means automating a demonstrated, bounded process with
 evidence, costs, observability, idempotency, stop conditions and an appropriate
@@ -55,7 +54,7 @@ deploy, change production, activate acquisition, launch campaigns or send emails
 Existing identity, duplicate, commercial, contact, suppression and protected-record
 safeguards remain authoritative.
 
-For the present strategic-alignment task, do not resume replenishment development,
+For the present M2 assessment, do not resume replenishment development,
 introduce product features, change acquisition policy or alter production. Preserve
 unfinished work separately and keep it out of release inputs. A later task must
 explicitly authorize any implementation, deployment or operational action it needs.

@@ -10,16 +10,17 @@ This block is written and re-added by `next dev` — verify at `node_modules/nex
 
 # ReclaimBay product and milestone instructions
 
-Read [the company charter](docs/COMPANY_CHARTER.md) before planning or implementing
+Read [the company charter](docs/COMPANY_CHARTER.md) and
+[fixed M1–M5 roadmap](docs/ROADMAP.md) before planning or implementing
 work. ReclaimBay is a self-service automotive declined-work revenue scanner.
 Acquisition and outreach serve customer acquisition for that scanner. The primary
 business objective is profitable, recurring, progressively autonomous software revenue.
 
-Current milestone: **M1 — Strategic alignment**. Next: **M2 — Commercial readiness
-of the customer-facing scanner**. Start the next scanner task with the
+M1 strategic alignment is complete. Current milestone: **M2 — Commercial readiness
+of the customer-facing scanner**. Begin with the scoped local
 [M2 readiness assessment](docs/M2_SCANNER_READINESS.md), not new acquisition infrastructure.
-The agreed company M3–M5 definitions still require owner-provided wording; do not
-invent them or report the complete fixed roadmap as implemented.
+Preserve the fixed M3–M5 definitions; they are future milestones, not permission
+to expand scope or build features. Do not implement scanner changes during the assessment.
 
 The [unfinished replenishment work](docs/PARKED_REPLENISHMENT.md) is preserved
 separately. Do not restore it, develop it or include it in a release without an

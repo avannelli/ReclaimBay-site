@@ -4,8 +4,9 @@ ReclaimBay is a self-service automotive declined-work revenue scanner. Upload a 
 
 The [company charter](docs/COMPANY_CHARTER.md) fixes the product direction and the
 objective: profitable, recurring, progressively autonomous software revenue.
-Current milestone: **M1 — Strategic alignment**; next: **M2 — Commercial readiness
-of the customer-facing scanner**. See the [next scanner-readiness task](docs/M2_SCANNER_READINESS.md).
+The [fixed M1–M5 roadmap](docs/ROADMAP.md) records M1 strategic alignment complete.
+Current milestone: **M2 — Commercial readiness of the customer-facing scanner**,
+starting with the [local scanner-readiness assessment](docs/M2_SCANNER_READINESS.md).
 Acquisition and outreach support the scanner. [Unfinished replenishment work](docs/PARKED_REPLENISHMENT.md)
 is parked outside active release inputs.
 
