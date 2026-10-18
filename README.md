@@ -1,6 +1,13 @@
 # ReclaimBay
 
-ReclaimBay: declined-work intelligence for repair shops. Upload a declined/deferred-work export (CSV or XLSX) from an independent auto repair shop and see how much declined work it contains, organized by value and age.
+ReclaimBay is a self-service automotive declined-work revenue scanner. Upload a declined/deferred-work export (CSV or XLSX) from an independent auto repair shop and see how much declined work it contains, organized by value and age.
+
+The [company charter](docs/COMPANY_CHARTER.md) fixes the product direction and the
+objective: profitable, recurring, progressively autonomous software revenue.
+Current milestone: **M1 — Strategic alignment**; next: **M2 — Commercial readiness
+of the customer-facing scanner**. See the [next scanner-readiness task](docs/M2_SCANNER_READINESS.md).
+Acquisition and outreach support the scanner. [Unfinished replenishment work](docs/PARKED_REPLENISHMENT.md)
+is parked outside active release inputs.
 
 Files are parsed in the browser and held only in React state. The file and its contents are never uploaded, stored, or sent anywhere.
 

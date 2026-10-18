@@ -1,5 +1,11 @@
 # ReclaimBay backend
 
+This service supports acquisition and operations for the customer-facing
+self-service declined-work revenue scanner. Follow the [company charter](../docs/COMPANY_CHARTER.md)
+and [M2 scanner-readiness task](../docs/M2_SCANNER_READINESS.md). The
+[unfinished replenishment controller](../docs/PARKED_REPLENISHMENT.md) is parked
+and must not enter a release or resume development without a new explicit task.
+
 A small Fastify + Prisma (PostgreSQL) service for anonymous product analytics,
 referral attribution, a private admin funnel, and manual prospect research
 with transparent scoring (see [PROSPECTS.md](PROSPECTS.md)), and an evidence-backed
