@@ -44,7 +44,7 @@ test("the demonstration reconciles its six source jobs through the actual scanne
 test("homepage has one headline, direct upload path, real sample total and truthful boundaries", () => {
   const html = renderToStaticMarkup(<UploadPanel onFile={noop} onSample={noop} busy={false} error={null} />);
   assert.equal((html.match(/<h1\b/g) ?? []).length, 1);
-  assert.match(html, /Find the value/);
+  assert.match(html, /Find potential revenue/);
   assert.match(html, /href="#scan"/);
   assert.match(html, /id="scan"/);
   assert.match(html, /accept=".csv,.xlsx"/);
@@ -157,7 +157,7 @@ test("the upload area says column names can differ, and offers the contact form 
   const upload = home.slice(home.indexOf('id="scan"'), home.indexOf('<div class="home-close">'));
   assert.doesNotMatch(home, /Unusual headers|Match the columns before analyzing/);
   // The hint keeps its place under the upload actions; only "Talk to ReclaimBay" is interactive, and it's the shared contact form.
-  const help = /<p class="upload-hint">Different column names are fine\. You&#x27;ll match them in the next step\.<\/p><p>Not sure which report to export\? <button type="button" aria-haspopup="dialog"[^>]*>Talk to ReclaimBay<\/button><\/p>/;
+  const help = /<p class="upload-hint">Different column names are fine\. If needed, you&#x27;ll confirm which columns to use\.<\/p><p>Not sure which report to export\? <button type="button" aria-haspopup="dialog"[^>]*>Talk to ReclaimBay<\/button><\/p>/;
   assert.match(upload, help);
   assert.ok(upload.indexOf(">Analyze my report</button>") < upload.indexOf(">See an example</button>"));
   assert.ok(upload.indexOf(">See an example</button>") < upload.search(help));

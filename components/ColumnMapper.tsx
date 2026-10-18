@@ -92,6 +92,12 @@ export default function ColumnMapper({
               Often called: {HEADER_EXAMPLES[field]}
             </p>
           )}
+          {field === "amount" && (
+            <p id="amount-guidance" className="mt-1 text-xs text-ink-3">
+              Choose the amount for the declined job, not a whole invoice total
+              that also includes approved work.
+            </p>
+          )}
           {value !== undefined && (
             <p className="mt-1 truncate text-xs text-ink-3">
               e.g. {sampleFor(table, value) || "(empty)"}
@@ -100,6 +106,7 @@ export default function ColumnMapper({
         </div>
         <select
           id={`map-${field}`}
+          aria-describedby={field === "amount" ? "amount-guidance" : undefined}
           value={value ?? ""}
           onChange={(e) => update(field, e.target.value)}
           className="h-11 w-full rounded-lg border border-slate-300 bg-surface px-3 text-sm text-ink transition-colors hover:border-slate-400 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-navy"

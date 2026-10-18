@@ -38,9 +38,9 @@ export default function UploadPanel({ focusOnMount = false, onFile, onSample, bu
       <section className="home-hero" aria-labelledby="hero-heading">
         <div className="hero-copy">
           <p className="eyebrow hero-kicker"><span aria-hidden /> For independent repair shops</p>
-          <h1 id="hero-heading">Find the value<br />in work <em>left undone.</em></h1>
-          <p className="hero-description">ReclaimBay turns your shop’s declined and <span className="whitespace-nowrap">deferred-work</span> export into a prioritized list of jobs worth another look. See the reported value, start with the largest opportunities, and inspect the source details behind each one.</p>
-          <div className="hero-actions"><a href="#scan" className={`${button.primary} ${size.lg}`}>Analyze my report <span aria-hidden>↓</span></a><button type="button" onClick={onSample} disabled={busy} className="text-action">See an example <span aria-hidden>→</span></button></div>
+          <h1 id="hero-heading">Find potential revenue<br /><em>in declined repair work.</em></h1>
+          <p className="hero-description">Open your shop’s declined or deferred repair export to see the reported value and largest jobs worth reviewing. Start with a free preview; a one-time purchase unlocks the complete report and exports when available. Reported value is not guaranteed revenue.</p>
+          <div className="hero-actions"><a href="#scan" className={`${button.primary} ${size.lg}`}>Preview my report <span aria-hidden>↓</span></a><button type="button" onClick={onSample} disabled={busy} className="text-action">See an example <span aria-hidden>→</span></button></div>
           <p className="hero-trust"><LockIcon className="h-4 w-4" /> Your file stays on your device. No account needed.</p>
         </div>
         <ProductDemo onOpen={onSample} />
@@ -91,7 +91,7 @@ export default function UploadPanel({ focusOnMount = false, onFile, onSample, bu
       </section>
 
       <section id="scan" className="upload-section" aria-labelledby="upload-heading">
-        <div className="upload-intro"><p className="eyebrow">Start here</p><h2 id="upload-heading">Put your own<br />numbers in view.</h2><p>Works with CSV or Excel (.xlsx) exports of declined or deferred work. Include a service description and an amount.</p><p className="upload-access">Free analysis. No account needed.</p><p className="upload-privacy"><LockIcon className="h-4 w-4" /> Read in this browser. Never uploaded.</p></div>
+        <div className="upload-intro"><p className="eyebrow">Start here</p><h2 id="upload-heading">Put your own<br />numbers in view.</h2><p>Export only declined, deferred or unapproved jobs from your shop software as CSV or Excel (.xlsx). Include each job’s service description and declined amount; leave out approved or completed work. Dates are optional.</p><p className="upload-access">Free analysis. No account needed.</p><p className="upload-privacy"><LockIcon className="h-4 w-4" /> Read in this browser. Never uploaded.</p></div>
         <div className={`upload-drop ${drag}`} onDragOver={(event) => { event.preventDefault(); if (!busy) setDrag(dragStateOf(event)); }} onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node)) setDrag("idle"); }} onDrop={(event) => { event.preventDefault(); setDrag("idle"); pick(event.dataTransfer.files); }}>
           <input ref={inputRef} type="file" accept=".csv,.xlsx" className="hidden" tabIndex={-1} aria-hidden onChange={(event) => { pick(event.target.files); event.target.value = ""; }} />
           <svg aria-hidden viewBox="0 0 40 40" className="upload-glyph" fill="none" stroke="currentColor" strokeWidth="1.4"><path d="M12 5h12l7 7v23H9V5h3M24 5v8h7M20 28V17m-5 5 5-5 5 5" /></svg>
@@ -100,7 +100,7 @@ export default function UploadPanel({ focusOnMount = false, onFile, onSample, bu
           <button ref={uploadRef} type="button" disabled={busy} onClick={() => inputRef.current?.click()} className={`${button.primary} ${size.lg}`}>{busy ? "Reviewing your report…" : "Analyze my report"}</button>
           <button type="button" disabled={busy} onClick={onSample} className="text-action">See an example</button>
           {error && <p role="alert" className="upload-error">{error}</p>}
-          <p className="upload-hint">Different column names are fine. You&apos;ll match them in the next step.</p>
+          <p className="upload-hint">Different column names are fine. If needed, you&apos;ll confirm which columns to use.</p>
           <p>Not sure which report to export? <ContactLink unstyled label="Talk to ReclaimBay" className="cursor-pointer whitespace-nowrap rounded-md text-white underline decoration-1 underline-offset-4 focus-visible:outline-2 focus-visible:outline-offset-4" /></p>
         </div>
       </section>
