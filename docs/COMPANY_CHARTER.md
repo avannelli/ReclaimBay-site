@@ -28,7 +28,9 @@ scanner adoption, customer value, revenue or profitability.
   An estimate's declined amount is potential work represented in an export;
   it is not proof of recoverable revenue, realized sales or profit.
 - Preserve the existing browser-only report boundary: uploaded files and report
-  contents stay in browser memory. Report contents must not enter analytics,
+  contents stay in browser memory by default. The customer may explicitly opt
+  into a password-encrypted recovery copy on their own device; never silently
+  persist repair data or send the recovery password to a server. Report contents must not enter analytics,
   contact requests, backend records or outreach personalization.
 - Keep sample activity distinct from real customer activity. Report measured
   outcomes honestly, including uncertainty and incomplete evidence.
@@ -54,10 +56,14 @@ deploy, change production, activate acquisition, launch campaigns or send emails
 Existing identity, duplicate, commercial, contact, suppression and protected-record
 safeguards remain authoritative.
 
-For the present M2 assessment, do not resume replenishment development,
-introduce product features, change acquisition policy or alter production. Preserve
-unfinished work separately and keep it out of release inputs. A later task must
-explicitly authorize any implementation, deployment or operational action it needs.
+The M2 entry assessment identified payment and fulfillment as the first blocker.
+The subsequently approved offering is a meaningful free preview and a $49 USD
+one-time complete-report purchase through Stripe Checkout, with the launch price
+configured through server-side Stripe Price IDs. Subscriptions remain future
+scope. See [the scoped purchase implementation](SCANNER_PURCHASES.md).
+Do not resume replenishment development, change acquisition policy or alter
+production. Preserve unfinished work separately and keep it out of release inputs.
+Implementation authorization does not authorize deployment or operational actions.
 
 ## Decision rule
 

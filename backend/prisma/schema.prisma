@@ -11,6 +11,66 @@ datasource db {
   provider = "postgresql"
 }
 
+// Purchase identities and payment evidence only: never report data, filenames,
+// report hashes, amounts from repair exports, or customer repair details.
+model ReportBuyer {
+  id        String @id @db.Uuid
+  publicKey Json
+  createdAt DateTime @default(now())
+  challenges BuyerChallenge[]
+  purchases ReportPurchase[]
+  entitlements ReportEntitlement[]
+}
+
+model BuyerChallenge {
+  id        String @id @default(uuid()) @db.Uuid
+  buyerId   String @db.Uuid
+  expiresAt DateTime
+  usedAt    DateTime?
+  buyer     ReportBuyer @relation(fields:[buyerId],references:[id],onDelete:Cascade)
+  @@index([expiresAt])
+}
+
+model ReportPurchase {
+  id            String @id @default(uuid()) @db.Uuid
+  buyerId       String @db.Uuid
+  reportId      String @db.Uuid
+  // One creating/open Checkout at a time for this buyer + opaque report ID.
+  activeKey     String? @unique @db.VarChar(80)
+  state         String @default("creating") @db.VarChar(24)
+  priceId       String @db.VarChar(200)
+  productId     String @db.VarChar(200)
+  unitAmount    Int
+  currency      String @db.VarChar(3)
+  livemode      Boolean
+  stripeSessionId String? @unique @db.VarChar(200)
+  paymentIntentId String? @unique @db.VarChar(200)
+  createdAt     DateTime @default(now())
+  paidAt        DateTime?
+  revokedAt     DateTime?
+  buyer         ReportBuyer @relation(fields:[buyerId],references:[id],onDelete:Restrict)
+  entitlement   ReportEntitlement?
+  @@index([buyerId,reportId,createdAt])
+}
+
+model ReportEntitlement {
+  id         String @id @default(uuid()) @db.Uuid
+  buyerId    String @db.Uuid
+  reportId   String @db.Uuid
+  purchaseId String @unique @db.Uuid
+  grantedAt  DateTime @default(now())
+  revokedAt  DateTime?
+  buyer      ReportBuyer @relation(fields:[buyerId],references:[id],onDelete:Restrict)
+  purchase   ReportPurchase @relation(fields:[purchaseId],references:[id],onDelete:Restrict)
+  @@unique([buyerId,reportId])
+}
+
+model StripePaymentEvent {
+  id          String @id @db.VarChar(200)
+  type        String @db.VarChar(100)
+  processedAt DateTime @default(now())
+}
+
 // Lifecycle rules (allowed transitions, entry requirements) live in
 // src/prospectStatus.ts. do_not_contact is terminal: a compliance flag.
 // The commercial outcome of outreach (meeting, proposal, customer, lost) is

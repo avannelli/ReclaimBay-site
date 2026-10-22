@@ -66,7 +66,7 @@ test("product demo offers named, keyboard-native source/evidence interactions", 
   assert.match(html, /Why it appears/);
   assert.match(html, /Report reference/);
   assert.match(html, /JAC-001/);
-  assert.match(html, /Open full report/);
+  assert.match(html, /Open sample preview/);
 });
 test("how it works describes opening the export locally, never sending it to ReclaimBay", () => {
   const home = renderToStaticMarkup(<UploadPanel onFile={noop} onSample={noop} busy={false} error={null} />);
@@ -111,10 +111,12 @@ test("privacy states only what the code does: local reading and exports, no acco
   assert.match(privacy, /Your report stays <em>yours\.<\/em>/);
   assert.match(privacy, /Your file is read in your browser and is not uploaded to ReclaimBay’s servers for analysis\./);
   for (const fact of ["Local", "Private", "Exports", "No account"]) assert.match(privacy, new RegExp(`<dt>${fact}</dt>`));
-  assert.match(privacy, /PDF and CSV files are made locally\./);
+  assert.match(privacy, /Complete-report purchases include PDF and CSV exports, made locally\./);
   assert.match(privacy, /may collect basic usage analytics[\s\S]*never include your report’s contents/);
   assert.equal((privacy.match(/<details>/g) ?? []).length, 5);
-  assert.doesNotMatch(privacy, /<details open|SOC ?2|HIPAA|GDPR|encrypt|bank-level|military|certif|zero data|nothing leaves/i);
+  assert.match(privacy, /explicitly choose an encrypted recovery copy on this device/);
+  assert.match(privacy, /password is not stored or sent to us/);
+  assert.doesNotMatch(privacy, /<details open|SOC ?2|HIPAA|GDPR|bank-level|military|certif|zero data|nothing leaves/i);
 });
 test("FAQ asks the practical questions in a first-visit order, all closed, without an account question", () => {
   const home = renderToStaticMarkup(<UploadPanel onFile={noop} onSample={noop} busy={false} error={null} />);
@@ -129,13 +131,15 @@ test("FAQ asks the practical questions in a first-visit order, all closed, witho
   assert.equal((faq.match(/<details>/g) ?? []).length, 5);
   assert.match(faq, /Use a CSV or Excel \(\.xlsx\) export, up to 15 MB\. Each job needs a service description and an amount\. Older \.xls files need to be re-saved as \.xlsx or CSV\./);
   assert.match(faq, /No\. Your report is read and analyzed in your browser and is not sent to ReclaimBay’s servers for analysis\. Basic site analytics may still be collected, but they do not include your report’s contents\./);
-  assert.match(faq, /Not your report\.[\s\S]*Your report itself is not stored\./);
+  assert.match(faq, /Your report stays in memory unless you explicitly choose an encrypted recovery copy on this device/);
+  assert.match(faq, /Clearing site data removes your device access key; keep your Stripe receipt/);
   assert.match(faq, /The reported value is the total of the readable, positive declined amounts in your report\./);
   assert.doesNotMatch(faq, /account|predict|guarantee|AI\b|nothing leaves/i);
 });
-test("cost is stated as it is today, without implying a pricing model", () => {
+test("approved free preview and one-time complete-report purchase are stated without subscriptions", () => {
   const home = renderToStaticMarkup(<UploadPanel onFile={noop} onSample={noop} busy={false} error={null} />);
-  assert.match(home, /Free analysis\. No account needed\./);
+  assert.match(home, /Free scanner preview\. No account needed\./);
+  assert.match(home, /A one-time purchase unlocks the complete report and PDF\/CSV exports/);
   assert.doesNotMatch(home, /get started|free forever|always free|pricing|per month|credit card|trial/i);
   const invite = readFileSync(new URL("../components/InvitationExperience.tsx", import.meta.url), "utf8");
   assert.match(invite, /Start a free analysis/);

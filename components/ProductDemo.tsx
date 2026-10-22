@@ -87,7 +87,7 @@ export default function ProductDemo({ onOpen }: { onOpen: () => void }) {
           {view === "processing" && <div className="demo-processing" role="status"><span className="processing-line" />Reviewing the sample report…</div>}
         </div>
       )}
-      <footer className="demo-footer"><button type="button" className="demo-replay" onClick={run} disabled={view === "processing"}>Run sample analysis <span aria-hidden>↻</span></button><button type="button" className="demo-open" onClick={onOpen} disabled={view === "processing"}>Open full report <span aria-hidden>→</span></button></footer>
+      <footer className="demo-footer"><button type="button" className="demo-replay" onClick={run} disabled={view === "processing"}>Run sample analysis <span aria-hidden>↻</span></button><button type="button" className="demo-open" onClick={onOpen} disabled={view === "processing"}>Open sample preview <span aria-hidden>→</span></button></footer>
     </section>
   );
 }

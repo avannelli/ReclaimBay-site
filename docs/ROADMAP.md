@@ -13,14 +13,18 @@ work is safely [parked](PARKED_REPLENISHMENT.md) outside active release inputs.
 
 ## M2 — Commercial readiness of the customer-facing scanner
 
-**Status: current; local assessment in progress.** Begin with the existing scanner's
+**Status: current; local purchase implementation and validation.** Begin with the existing scanner's
 import, field mapping, calculations, duplicate treatment, results, exports,
 privacy and self-service workflow. Identify existing payment and customer-access
 capabilities and concrete obstacles to a customer using and paying for the scanner.
 See the [scoped readiness assessment](M2_SCANNER_READINESS.md).
 
-This assessment does not authorize scanner changes. Local tests or an assessment
-report alone do not establish commercial readiness or complete M2.
+The completed entry assessment identified missing payment and fulfillment as
+the first blocker. The user approved a free preview and a configurable $49 USD
+one-time complete report using Stripe Checkout. See [purchase implementation and
+remaining verification](SCANNER_PURCHASES.md). This does not authorize subscriptions,
+new scanner features, deployment or production changes. Local tests alone do not
+establish commercial readiness or complete M2.
 
 ## M3 — First Paying Customer
 

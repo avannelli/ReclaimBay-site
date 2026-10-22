@@ -37,6 +37,7 @@ export interface Config {
    * without it `discovery:research --auto` exits at once.
    */
   researchAutorunEnabled: boolean;
+  billing: { secretKey: string | null; webhookSecret: string | null; priceId: string | null; productId: string | null; mode: "test" | "live" };
   /** This backend's public base URL, for one-click unsubscribe links. */
   publicApiUrl: string | null;
   /** @deprecated Compatibility field only; persisted admin controls set the actual ceiling. */
@@ -113,6 +114,13 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     },
     outreachSendingArmed: env.OUTREACH_SENDING_ENABLED === "1",
     researchAutorunEnabled: env.RESEARCH_AUTORUN_ENABLED === "1",
+    billing: {
+      secretKey: env.STRIPE_SECRET_KEY?.trim() || null,
+      webhookSecret: env.STRIPE_WEBHOOK_SECRET?.trim() || null,
+      priceId: env.STRIPE_REPORT_PRICE_ID?.trim() || null,
+      productId: env.STRIPE_REPORT_PRODUCT_ID?.trim() || null,
+      mode: env.STRIPE_MODE === "live" ? "live" : "test",
+    },
     publicApiUrl: env.PUBLIC_API_URL?.trim().replace(/\/+$/, "") || null,
     // Compatibility only. The persisted admin policy is authoritative, including over a legacy value of 1.
     outreachDailyLimit: Math.min(500, Math.max(1, Number.parseInt(env.OUTREACH_DAILY_LIMIT ?? "25", 10) || 25)),

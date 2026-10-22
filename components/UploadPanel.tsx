@@ -75,7 +75,7 @@ export default function UploadPanel({ focusOnMount = false, onFile, onSample, bu
           <dl className="privacy-facts">
             <div><dt>Local</dt><dd>Read and analyzed in this tab.</dd></div>
             <div><dt>Private</dt><dd>Report contents are not sent to us.</dd></div>
-            <div><dt>Exports</dt><dd>PDF and CSV files are made locally.</dd></div>
+            <div><dt>Exports</dt><dd>Complete-report purchases include PDF and CSV exports, made locally.</dd></div>
             <div><dt>No account</dt><dd>No sign-up. Just open a report.</dd></div>
           </dl>
           <p className="privacy-note">The site may collect basic usage analytics, such as visits and completed scans. They never include your report’s contents.</p>
@@ -84,14 +84,14 @@ export default function UploadPanel({ focusOnMount = false, onFile, onSample, bu
         <div className="home-faq">
           <details><summary>What file types can I use?</summary><p>Use a CSV or Excel (.xlsx) export, up to 15 MB. Each job needs a service description and an amount. Older .xls files need to be re-saved as .xlsx or CSV.</p></details>
           <details><summary>Does my report leave my computer?</summary><p>No. Your report is read and analyzed in your browser and is not sent to ReclaimBay’s servers for analysis. Basic site analytics may still be collected, but they do not include your report’s contents.</p></details>
-          <details><summary>What does ReclaimBay remember?</summary><p>Not your report. The browser may remember confirmed column matches, tour completion, and an anonymous analytics ID, plus a referral code if your link included one. Your report itself is not stored.</p></details>
+          <details><summary>What does ReclaimBay remember?</summary><p>Your report stays in memory unless you explicitly choose an encrypted recovery copy on this device. The recovery password is not stored or sent to us. The browser also remembers your purchase device key and opaque report ID, confirmed column matches, tour completion, an analytics ID and any referral code. Clearing site data removes your device access key; keep your Stripe receipt.</p></details>
           <details><summary>How are the numbers calculated?</summary><p>The reported value is the total of the readable, positive declined amounts in your report. Those rows become opportunities, ranked by value and grouped by service and available dates. Report checks explain exclusions and duplicate handling.</p></details>
           <details><summary>Does this show recovered revenue?</summary><p>No. This is reported declined value. You verify job status, customer interest, and any recovery. ReclaimBay does not track recovered revenue or contact your customers.</p></details>
         </div>
       </section>
 
       <section id="scan" className="upload-section" aria-labelledby="upload-heading">
-        <div className="upload-intro"><p className="eyebrow">Start here</p><h2 id="upload-heading">Put your own<br />numbers in view.</h2><p>Export only declined, deferred or unapproved jobs from your shop software as CSV or Excel (.xlsx). Include each job’s service description and declined amount; leave out approved or completed work. Dates are optional.</p><p className="upload-access">Free analysis. No account needed.</p><p className="upload-privacy"><LockIcon className="h-4 w-4" /> Read in this browser. Never uploaded.</p></div>
+        <div className="upload-intro"><p className="eyebrow">Start here</p><h2 id="upload-heading">Put your own<br />numbers in view.</h2><p>Export only declined, deferred or unapproved jobs from your shop software as CSV or Excel (.xlsx). Include each job’s service description and declined amount; leave out approved or completed work. Dates are optional.</p><p className="upload-access">Free scanner preview. No account needed.</p><p>Preview the total, opportunity count and highest-value job. A one-time purchase unlocks the complete report and PDF/CSV exports. The current price is shown before Checkout; no subscription.</p><p className="upload-privacy"><LockIcon className="h-4 w-4" /> Read in this browser. Never uploaded.</p></div>
         <div className={`upload-drop ${drag}`} onDragOver={(event) => { event.preventDefault(); if (!busy) setDrag(dragStateOf(event)); }} onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node)) setDrag("idle"); }} onDrop={(event) => { event.preventDefault(); setDrag("idle"); pick(event.dataTransfer.files); }}>
           <input ref={inputRef} type="file" accept=".csv,.xlsx" className="hidden" tabIndex={-1} aria-hidden onChange={(event) => { pick(event.target.files); event.target.value = ""; }} />
           <svg aria-hidden viewBox="0 0 40 40" className="upload-glyph" fill="none" stroke="currentColor" strokeWidth="1.4"><path d="M12 5h12l7 7v23H9V5h3M24 5v8h7M20 28V17m-5 5 5-5 5 5" /></svg>

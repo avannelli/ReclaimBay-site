@@ -1,8 +1,16 @@
 # M2 entry task: assess commercial readiness of the scanner
 
 Current milestone: **M2 — Commercial readiness of the customer-facing scanner**.
-M1 strategic alignment is complete; this local assessment has begun. M2 has not
+M1 strategic alignment is complete; the entry assessment is recorded locally in
+`review/m2-scanner-assessment/report.md`. M2 has not
 passed. Follow the [fixed company roadmap](ROADMAP.md).
+
+The following describes the original assessment scope. Its payment/fulfillment
+gap is now being addressed by the explicitly approved [one-time report purchase
+implementation](SCANNER_PURCHASES.md). The offering is a meaningful free preview
+and a configurable launch price of $49 USD for the complete report and existing
+exports. No subscription is authorized. Browser report data remains local; only
+explicitly opted-in encrypted recovery may persist on the customer's device.
 
 ## Exact next task
 

@@ -1,5 +1,9 @@
 # ReclaimBay backend
 
+The scanner's one-time Stripe Checkout, purchase ledger and authenticated private
+report fulfillment also run here. They never receive repair datasets or report
+contents. See [scanner purchases and local Stripe test setup](../docs/SCANNER_PURCHASES.md).
+
 This service supports acquisition and operations for the customer-facing
 self-service declined-work revenue scanner. Follow the [company charter](../docs/COMPANY_CHARTER.md),
 [fixed M1–M5 roadmap](../docs/ROADMAP.md)
@@ -18,7 +22,11 @@ static export on Cloudflare Pages. This service runs separately on Railway.
 
 Reports are analyzed only in the visitor's browser. This service never
 receives files, report rows, customer names, phones, emails, vehicle data,
-repair descriptions, amounts or totals, or filenames.
+repair descriptions, amounts or totals, or filenames from repair reports.
+Purchase handling receives Stripe payment evidence, which can include payer
+information in signed webhooks. It persists opaque purchase/payment identifiers,
+device public keys and purchase prices; raw webhook bodies and payer details are
+not retained or logged by this implementation.
 
 `POST /api/events` accepts exactly six fields and rejects any request with an
 extra field, a wrong type, or a value outside the allowlist:
@@ -187,6 +195,9 @@ local site through.
 | `AI_MODEL` | no | Default `claude-opus-5-5`; only models with a known price run |
 | `AI_SHADOW_DAILY_BUDGET` | with AI | Estimated US dollars per rolling 24 hours (default 0: nothing runs; at most 100) |
 | `AI_SHADOW_BATCH_LIMIT` | no | Provider calls per shadow run (default 5, at most 25) |
+| `STRIPE_MODE` | with purchases | `test` (default) or `live`. Production refuses to start with Stripe keys unless this is `live` and `PUBLIC_SITE_URL` is HTTPS |
+| `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET` | with purchases | Secrets. Either unset: report purchases are off and the free preview is unaffected |
+| `STRIPE_REPORT_PRICE_ID`, `STRIPE_REPORT_PRODUCT_ID` | with purchases | The one-time USD report Price and its Product. Unsetting the Price stops new checkouts only; existing buyers keep access |
 
 Generate an admin secret:
 
@@ -199,6 +210,11 @@ Frontend (Cloudflare Pages build variable, inlined at build time):
 | Variable                        | Purpose                                                  |
 | ------------------------------- | -------------------------------------------------------- |
 | `NEXT_PUBLIC_ANALYTICS_API_URL` | Backend base URL, no trailing slash. Unset = analytics off |
+| `NEXT_PUBLIC_BILLING_API_URL`   | Backend base URL for report purchases. Unset = purchasing unavailable, preview unaffected |
+
+Production purchase configuration, the Stripe webhook endpoint, the private
+report renderer packaging requirement and rollback are in
+[SCANNER_PURCHASES.md](../docs/SCANNER_PURCHASES.md#production-configuration-for-a-separately-authorized-live-release).
 
 ## Endpoints
 

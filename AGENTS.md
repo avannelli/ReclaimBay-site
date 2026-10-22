@@ -20,7 +20,11 @@ M1 strategic alignment is complete. Current milestone: **M2 — Commercial readi
 of the customer-facing scanner**. Begin with the scoped local
 [M2 readiness assessment](docs/M2_SCANNER_READINESS.md), not new acquisition infrastructure.
 Preserve the fixed M3–M5 definitions; they are future milestones, not permission
-to expand scope or build features. Do not implement scanner changes during the assessment.
+to expand scope or build features. The entry assessment identified missing payment
+and fulfillment as the first blocker. The approved M2 implementation is a free
+preview and a configurable launch price of $49 USD once per complete report,
+using Stripe Checkout. See [purchase boundaries and local verification](docs/SCANNER_PURCHASES.md).
+Subscriptions, deployment, production changes and outreach require separate scope.
 
 The [unfinished replenishment work](docs/PARKED_REPLENISHMENT.md) is preserved
 separately. Do not restore it, develop it or include it in a release without an

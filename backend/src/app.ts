@@ -9,9 +9,13 @@ import type { ProcessDeps } from "./research/service.js";
 import { gmailOAuthRoutes } from "./routes/gmailOAuth.js";
 import { unsubscribeRoutes } from "./routes/unsubscribe.js";
 import { applicationLogger, registerRequestLogSanitization } from "./logging.js";
+import { billingRoutes } from "./routes/billing.js";
+import type { PaymentGateway } from "./billing/stripe.js";
 
 /** Optional dependencies, injected by tests (production uses the defaults). */
 export interface AppDeps {
+  paymentGateway?: PaymentGateway;
+  paidReportBundle?: string;
   /** Optional log destination; the application sanitization policy always applies. */
   logStream?: FastifyLoggerOptions["stream"];
   /** How automated research reaches the web (tests pass a fixture fetcher). */
@@ -55,6 +59,7 @@ export async function buildApp(config: Config, db: Db, logger: boolean = true, d
   });
 
   await app.register(eventRoutes, { config, db });
+  await app.register(billingRoutes, {prefix:'/api/billing',config,db,gateway:deps.paymentGateway,bundle:deps.paidReportBundle});
   const googleFetch = deps.googleFetch ?? globalThis.fetch;
   const sender = deps.outreachSender ?? senderFromConfig(config, googleFetch);
   await app.register(brandIconRoutes);

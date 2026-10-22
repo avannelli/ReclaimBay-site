@@ -10,9 +10,16 @@ starting with the [local scanner-readiness assessment](docs/M2_SCANNER_READINESS
 Acquisition and outreach support the scanner. [Unfinished replenishment work](docs/PARKED_REPLENISHMENT.md)
 is parked outside active release inputs.
 
-Files are parsed in the browser and held only in React state. The file and its contents are never uploaded, stored, or sent anywhere.
+Files are parsed in the browser and held in React state by default. Repair data
+and report contents never go to ReclaimBay servers or Stripe. Customers may
+explicitly save a password-encrypted recovery copy on their own device.
 
-Optional anonymous analytics (event names, a random browser ID, and referral codes only; never report data) go to the separate service in [`backend/`](backend/README.md). Set `NEXT_PUBLIC_ANALYTICS_API_URL` at build time to turn them on (see `.env.example`). With it unset, the site sends nothing.
+The approved commercial offering is a free preview and a one-time complete-report
+purchase, with a $49 USD launch Price configured server-side in Stripe. Existing
+PDF/CSV exports unlock after verified payment. See [purchase architecture, local
+Stripe test setup and remaining release checks](docs/SCANNER_PURCHASES.md).
+
+Optional anonymous analytics (event names, a random browser ID, and referral codes only; never report data) go to the separate service in [`backend/`](backend/README.md). Set `NEXT_PUBLIC_ANALYTICS_API_URL` at build time to turn them on (see `.env.example`). With it unset, analytics sends nothing. Purchasing independently uses `NEXT_PUBLIC_BILLING_API_URL` for opaque purchase IDs, public device keys and payment proofs.
 
 ## Contact form
 

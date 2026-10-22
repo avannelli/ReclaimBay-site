@@ -3,11 +3,14 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
+    "build:paid-report": "node scripts/buildPaidReport.mjs",
     "dev": "next dev",
-    "build": "next build",
+    "build": "npm run build:paid-report && next build && npm run verify:public-build",
+    "verify:public-build": "node scripts/verifyPublicBuild.mjs",
     "start": "next start",
     "lint": "eslint",
     "test": "tsx --test test/*.test.ts test/*.test.tsx",
+    "test:purchase-browser": "node test/e2e/purchase.mjs",
     "dev:admin": "npm --prefix backend run dev:db -- migrate && npm --prefix backend run dev",
     "dev:admin:setup": "npm --prefix backend run dev:setup --",
     "dev:admin:reset": "npm --prefix backend run dev:db -- reset",
@@ -22,13 +25,16 @@
     "read-excel-file": "^9.3.10"
   },
   "devDependencies": {
+    "@next/env": "16.3.7",
     "@tailwindcss/postcss": "^4",
     "@types/node": "^20",
     "@types/papaparse": "^5.5.2",
     "@types/react": "^19",
     "@types/react-dom": "^19",
+    "esbuild": "0.28.2",
     "eslint": "^9",
     "eslint-config-next": "16.3.7",
+    "fake-indexeddb": "6.2.6",
     "tailwindcss": "^4",
     "tsx": "4.23.15",
     "typescript": "^5"

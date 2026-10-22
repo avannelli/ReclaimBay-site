@@ -35,7 +35,10 @@ export default function PrivacyBadge({
         Customer data is not uploaded to ReclaimBay or stored on a server.
       </p>
       <p className="text-ink-3">
-        Refreshing or closing the page clears the current report.
+        Refreshing or closing clears the current report unless you explicitly
+        saved an encrypted recovery copy on this device. Its password stays
+        with you and is required to restore it. Purchases remember only a device
+        key and report references; clearing site data removes that access key.
       </p>
       <p className="text-ink-3">
         ReclaimBay records limited product-usage events, such as visits,

@@ -21,7 +21,7 @@ import BrandTransition, {
 } from "./BrandTransition";
 import ColumnMapper from "./ColumnMapper";
 import HeaderChooser from "./HeaderChooser";
-import Dashboard from "./Dashboard";
+import ReportAccess, {ResumeReport} from "./ReportAccess";
 import EmptyResult from "./EmptyResult";
 import { buildDemoTable } from "@/lib/demoReport";
 import UploadPanel from "./UploadPanel";
@@ -29,6 +29,7 @@ import { useReportHistory } from "./useReportHistory";
 
 /** What the file's columns were matched to, and how. */
 interface Matching {
+  reportId?: string;
   table: ParsedTable;
   detection: DetectionResult;
   /** Fields prefilled from mappings the user confirmed on an earlier upload. */
@@ -38,11 +39,12 @@ interface Matching {
 type Stage =
   | { name: "upload" }
   | { name: "parsing" }
-  | { name: "header"; table: ParsedTable }
+  | { name: "header"; table: ParsedTable; reportId: string }
   | { name: "mapping"; matching: Matching; suggested: ColumnMapping }
   | { name: "empty"; matching: Matching; mapping: ColumnMapping }
   | {
       name: "results";
+      reportId: string;
       fileName: string;
       analysis: Analysis;
       isSample: boolean;
@@ -51,8 +53,8 @@ type Stage =
 
 /**
  * Owns the whole flow. Uploaded data lives only in this component's state,
- * so it disappears on reset or page refresh; nothing is sent or stored.
- * Only the column-header matches a user confirms are remembered locally.
+ * so it disappears on reset or page refresh unless the user explicitly saves
+ * an encrypted local recovery copy. Report data is never sent to a server.
  */
 export default function ScannerApp() {
   const [stage, setStage] = useState<Stage>({ name: "upload" });
@@ -180,6 +182,7 @@ export default function ScannerApp() {
       trackEvent("scan_completed", isSample);
       return {
         name: "results",
+        reportId: matching.reportId ?? crypto.randomUUID(),
         fileName: table.fileName,
         analysis,
         isSample,
@@ -216,16 +219,17 @@ export default function ScannerApp() {
       });
     });
 
-  const handleFile = (file: File) =>
+  const handleFile = (file: File, resumeReportId?: string) =>
     startScan(async () => {
       setStage({ name: "parsing" });
       trackEvent("upload_started");
       try {
         const table = await parseFile(file);
-        if (table.pendingHeaderRows) return { name: "header", table };
+        const reportId = resumeReportId ?? crypto.randomUUID();
+        if (table.pendingHeaderRows) return { name: "header", table, reportId };
         const detection = detectColumns(table);
         const { mapping, applied } = applyRememberedMappings(table, detection);
-        const matching = { table, detection, remembered: applied };
+        const matching = { table, detection, remembered: applied, reportId };
         return detection.confident
           ? analyzeToStage(matching, mapping)
           : { name: "mapping", matching, suggested: mapping };
@@ -254,7 +258,7 @@ export default function ScannerApp() {
             const table = confirmHeader(stage.table, index);
             const detection = detectColumns(table);
             const { mapping, applied } = applyRememberedMappings(table, detection);
-            setStage({ name: "mapping", matching: { table, detection, remembered: applied }, suggested: mapping });
+            setStage({ name: "mapping", matching: { table, detection, remembered: applied, reportId: stage.reportId }, suggested: mapping });
           }} />
         )}
         {(stage.name === "upload" || stage.name === "parsing") && (
@@ -266,6 +270,7 @@ export default function ScannerApp() {
             error={error}
           />
         )}
+        {stage.name === "upload" && <ResumeReport onFile={handleFile} onRestore={r=>setStage({name:'results',...r,isSample:false})}/>}
         {stage.name === "mapping" && (
           <ColumnMapper
             table={stage.matching.table}
@@ -308,7 +313,8 @@ export default function ScannerApp() {
           />
         )}
         {stage.name === "results" && (
-          <Dashboard
+          <ReportAccess
+            reportId={stage.reportId}
             fileName={stage.fileName}
             analysis={stage.analysis}
             isSample={stage.isSample}
