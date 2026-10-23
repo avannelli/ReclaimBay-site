@@ -117,6 +117,9 @@ test("privacy states only what the code does: local reading and exports, no acco
   assert.equal((privacy.match(/<details>/g) ?? []).length, 5);
   assert.match(privacy, /explicitly choose an encrypted recovery copy on this device/);
   assert.match(privacy, /password is not stored or sent to us/);
+  // Matches the purchase ledger (backend/prisma/schema.prisma): device public key, opaque report ID, Stripe references, amount, times.
+  assert.match(privacy, /server keeps that device’s public key and, if you buy, the opaque report ID, Stripe payment references, amount and times; never your report’s contents/);
+  assert.match(privacy, /Stripe processes your card details and receipt email; ReclaimBay does not receive your card details\./);
   assert.doesNotMatch(privacy, /<details open|SOC ?2|HIPAA|GDPR|bank-level|military|certif|zero data|nothing leaves/i);
 });
 test("FAQ asks the practical questions in a first-visit order, all closed, without an account question", () => {
