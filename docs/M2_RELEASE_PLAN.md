@@ -59,7 +59,8 @@ Check Git autodeploy behavior before pushing so that a push does not bypass this
 
 Railway web backend only:
 
-- Repository root `/`; config `/railway.backend.toml`; Railpack, Node 24 via
+- Repository root `/`; settings from `/railway.backend.toml` (applied as service
+  settings, not a config-file selection); Railpack, Node 24 via
   `RAILPACK_NODE_VERSION=24`.
 - Build: `npm ci --include=dev && npm --prefix backend ci --include=dev && npm run build:backend-release`.
   This builds the renderer, compiles backend and checks the private artifact.

@@ -46,13 +46,14 @@ No dependency changes; the prior advisory triage remains in
 
 ## Exact backend build contract
 
-Source: [railway.backend.toml](../railway.backend.toml), explicitly selected only
-for the web backend. It does not alter scheduled Acquisition OS services.
+Source: [railway.backend.toml](../railway.backend.toml), applied only to the web
+backend. Railway rejects config-as-code file selection as deprecated, so its exact
+values are set as the web service's settings. It does not alter scheduled Acquisition OS services.
 
 | Railway setting | Value for a separately authorized deployment |
 | --- | --- |
 | Root Directory | `/` (repository root; remove the current `backend` restriction) |
-| Config File | `/railway.backend.toml` |
+| Config File | None (values from `/railway.backend.toml` set as service settings) |
 | Builder | RAILPACK |
 | Build Command | `npm ci --include=dev && npm --prefix backend ci --include=dev && npm run build:backend-release` |
 | Start Command | `npm --prefix backend start` |

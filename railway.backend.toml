@@ -1,5 +1,6 @@
-# Select this config explicitly for the web backend; repository root is required.
-# Applying these settings to Railway requires separate deployment authorization.
+# Reviewed web-backend settings; repository root is required. Railway no longer accepts a
+# config-as-code file selection, so these exact values are applied as the web service's
+# settings. Scheduled services keep their own settings. Changes need deployment authorization.
 [build]
 builder = "RAILPACK"
 buildCommand = "npm ci --include=dev && npm --prefix backend ci --include=dev && npm run build:backend-release"

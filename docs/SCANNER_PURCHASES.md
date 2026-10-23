@@ -239,7 +239,7 @@ and the free preview works. Never put a Stripe value in a `NEXT_PUBLIC_*` variab
 **Backend packaging fix prepared and locally verified.** The root command
 `npm run build:backend-release` builds the private renderer, compiles the backend
 and runs a fail-closed private-asset gate. The web backend must use repository
-root `/` and `/railway.backend.toml`; the current backend-only build context must
+root `/` and the settings in `/railway.backend.toml`; the current backend-only build context must
 be changed during a separately authorized rollout. See [the exact production
 configuration, acceptance evidence and rollback runbook](M2_PRODUCTION_READINESS.md).
 No production settings were changed.
