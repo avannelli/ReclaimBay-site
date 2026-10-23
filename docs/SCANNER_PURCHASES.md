@@ -81,21 +81,25 @@ The implementation follows Stripe's [fulfillment guidance](https://docs.stripe.c
 
 ## Exact local Stripe test-mode setup
 
-The owner has not created a Stripe account yet. **The next owner action is to
-create that account and select its test sandbox**, then perform the setup below.
-Account authentication and entering secrets are owner actions; Codex can resume
-the hosted test checklist once local configuration is ready. Banking/merchant
+The owner has created the Stripe sandbox and its existing **$49 USD one-time
+Revenue Opportunity Report**. Use Product `prod_VUSTxrnO622OG7` and Price
+`price_1UTTYWAihvfhVDvfqIlLOgOE`; do not create replacements or duplicates.
+The owner entered the sandbox key securely and the local CLI listener is configured.
+See the hosted verification record above. Banking/merchant
 activation for a future live release is separate from these local test steps.
 This implementation does not use a Stripe publishable key or Stripe.js: the
 backend creates hosted Checkout and the browser opens its returned URL.
 
-No Stripe credentials or CLI were found locally during this task. Automated
+The October 22 continuation installed Stripe CLI 1.55.1 in a Git-ignored local
+tools directory, configured these IDs and localhost origins, and prepared an
+isolated PostgreSQL database. See the [local setup record](../review/m2-stripe-sandbox/README.md).
+The secret key and authenticated listener are now configured locally. Automated
 fixtures are not real Stripe test-mode evidence. Complete these steps before
 calling hosted Checkout verified:
 
-1. In Stripe **test mode/a sandbox**, create a report Product and an active
-   **one-time USD 49.00 Price**. Keep its `prod_…` and `price_…` IDs. Enable card
-   payments. Do not create a subscription, live Price or real charge.
+1. Use the **existing sandbox Product and Price above**. Verify through Stripe
+   that the Price is active, one-time, USD 49.00 and belongs to that Product.
+   Do not create another Product/Price, a subscription, live Price or real charge.
 2. Follow the [official Stripe CLI installation](https://docs.stripe.com/stripe-cli),
    run `stripe login` for the intended test account/sandbox, and use test mode
    throughout (never `--live`). Start:
@@ -214,8 +218,10 @@ and `…?result=cancelled`. The browser cannot supply or change them, and a retu
 grants nothing: only signed, reconciled Stripe evidence does. Stripe needs no
 separate return-URL allowlist.
 
-**Stripe Dashboard (live mode).** Create the report Product with an active one-time
-USD 49.00 Price (card payments enabled). Add one webhook endpoint at
+**Stripe Dashboard (live mode, future authorized setup).** Use the owner-verified
+existing live Product `prod_VUSTxrnO622OG7` and Price
+`price_1UTXAvAibfYd2OeIPdjWbigl`; recheck active/one-time/USD 49.00/live association
+and merchant card-payment approval. Do not create duplicates. Add one webhook endpoint at
 `https://<backend-domain>/api/billing/webhook`, API version `2026-09-30.endive`,
 with exactly these events: `checkout.session.completed`,
 `checkout.session.async_payment_succeeded`, `checkout.session.async_payment_failed`,
@@ -230,12 +236,13 @@ Pages does not publish, and runs the public-artifact gate. A production build ne
 falls back to a localhost API: without the variable, purchasing shows as unavailable
 and the free preview works. Never put a Stripe value in a `NEXT_PUBLIC_*` variable.
 
-**Release blocker: the backend package.** Railway currently builds with Root Directory
-`backend` and `npm run build`, which does not produce `backend/private/report.js`. It
-is built from the repository root and is gitignored. Without it, the offer fails closed
-with 503 `fulfillment_unavailable` before any Checkout is created, so live purchasing
-cannot work until an authorized deployment change builds the renderer from the root and
-ships it in the backend runtime, outside every static directory.
+**Backend packaging fix prepared and locally verified.** The root command
+`npm run build:backend-release` builds the private renderer, compiles the backend
+and runs a fail-closed private-asset gate. The web backend must use repository
+root `/` and `/railway.backend.toml`; the current backend-only build context must
+be changed during a separately authorized rollout. See [the exact production
+configuration, acceptance evidence and rollback runbook](M2_PRODUCTION_READINESS.md).
+No production settings were changed.
 
 ## Release order and rollback
 
@@ -303,8 +310,9 @@ fulfillment through the actual private-file route, local PDF/CSV/summary outputs
 cancel/forged return handling, refresh recovery, earlier purchase references,
 mobile layout and absence of repair data in captured requests.
 
-Real Stripe credentials/Price/webhook setup and hosted test-mode Checkout remain
-unverified. No real payment, live configuration, deployment or outreach occurred.
+Core hosted sandbox Checkout and payment/webhook/recovery checks passed on October 22;
+see the linked verification record for remaining checks. No real-money payment,
+live configuration, deployment or outreach occurred.
 The existing `npm audit` advisories (7 root, 4 backend package alerts) have now
 been [triaged against the release architecture](M2_RELEASE_VERIFICATION.md#dependency-advisory-triage).
 None was demonstrated reachable in this static/Pg purchase deployment; versions

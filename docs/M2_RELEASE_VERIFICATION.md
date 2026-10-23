@@ -1,5 +1,15 @@
 # M2 purchase release verification
 
+Current assessment: [M2 production readiness](M2_PRODUCTION_READINESS.md).
+The remaining hosted/ordering/device checks and local backend packaging fix are
+recorded there. Historical setup/packaging blockers below are superseded; owner
+live configuration and an authorized rollout remain.
+
+October 22 update: [real hosted sandbox results](../review/m2-stripe-sandbox/RESULTS.md)
+verify the core purchase flow. The October 18 missing-account blocker below is
+historical. Remaining hosted checks and backend release packaging keep M2 open;
+no public paid release is authorized.
+
 Assessment date: **October 18, 2026 (America/Los_Angeles)**.
 
 **NO-GO for a public paid release. Local application/artifact verification passes;

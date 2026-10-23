@@ -4,6 +4,8 @@
   "private": true,
   "scripts": {
     "build:paid-report": "node scripts/buildPaidReport.mjs",
+    "build:backend-release": "npm run build:paid-report && npm --prefix backend run build && npm run verify:backend-release",
+    "verify:backend-release": "node scripts/verifyBackendBuild.mjs",
     "dev": "next dev",
     "build": "npm run build:paid-report && next build && npm run verify:public-build",
     "verify:public-build": "node scripts/verifyPublicBuild.mjs",

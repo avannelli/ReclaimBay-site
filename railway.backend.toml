@@ -1,0 +1,12 @@
+# Select this config explicitly for the web backend; repository root is required.
+# Applying these settings to Railway requires separate deployment authorization.
+[build]
+builder = "RAILPACK"
+buildCommand = "npm ci --include=dev && npm --prefix backend ci --include=dev && npm run build:backend-release"
+watchPatterns = ["/backend/**", "/paid/**", "/components/**", "/lib/**", "/scripts/buildPaidReport.mjs", "/scripts/verifyBackendBuild.mjs", "/package.json", "/package-lock.json", "/tsconfig.json", "/railway.backend.toml"]
+
+[deploy]
+preDeployCommand = ["npm --prefix backend run db:migrate"]
+startCommand = "npm --prefix backend start"
+healthcheckPath = "/health"
+healthcheckTimeout = 120

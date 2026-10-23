@@ -297,6 +297,11 @@ computer, and nothing seeds automatically.
 
 ## Deploying to Railway
 
+For the scanner paid-report release, use the [M2 root-context backend build and
+release runbook](../docs/M2_PRODUCTION_READINESS.md). It supersedes the historical
+backend-only settings below for the web service; scheduled services keep their
+existing configuration. Applying production changes needs separate authorization.
+
 In the ReclaimBay project, open the app service's **Settings**:
 
 | Setting            | Value                 |
