@@ -15,6 +15,7 @@ import OpportunityList from "../components/OpportunityList";
 import ColumnMapper from "../components/ColumnMapper";
 import EmptyResult from "../components/EmptyResult";
 import { SiteFooter, SiteHeader } from "../components/SiteChrome";
+import TermsPage from "../app/terms/page";
 import type { Analysis } from "../lib/types";
 
 const noop = () => undefined;
@@ -144,6 +145,20 @@ test("approved free preview and one-time complete-report purchase are stated wit
   const invite = readFileSync(new URL("../components/InvitationExperience.tsx", import.meta.url), "utf8");
   assert.match(invite, /Start a free analysis/);
   assert.doesNotMatch(invite, /Get started free/);
+});
+test("purchase terms state the one-time price, the three refund cases and preserve legal rights without promising revenue", () => {
+  const terms = renderToStaticMarkup(<TermsPage />);
+  assert.match(terms, /one-time payment, currently \$49 USD/);
+  assert.match(terms, /not a subscription and there are no recurring charges/);
+  assert.match(terms, /charged more than once for the same report/);
+  assert.match(terms, /could not be delivered because of a\s+technical problem/);
+  assert.match(terms, /cannot produce a valid report from a supported export/);
+  assert.match(terms, /Other refund requests are reviewed individually\. Nothing in these terms limits any\s+rights you have under applicable law\./);
+  assert.match(terms, /href="\/#privacy"/);
+  assert.match(terms, /Please do not send your\s+report file or any customer information/);
+  assert.doesNotMatch(terms, /guarantee|recovered revenue is|no refunds|non-refundable/i);
+  const access = readFileSync(new URL("../components/ReportAccess.tsx", import.meta.url), "utf8");
+  assert.match(access, /href="\/terms" target="_blank" rel="noopener noreferrer"/);
 });
 test("the upload area is the page's one action; the close after it is a statement, not another control", () => {
   const home = renderToStaticMarkup(<UploadPanel onFile={noop} onSample={noop} busy={false} error={null} />);

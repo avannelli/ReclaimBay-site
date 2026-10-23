@@ -270,6 +270,13 @@ export default function ReportAccess(props: Props) {
                   ? `${offerPrice(offer)} USD one-time for this report. No subscription.`
                   : "One-time complete-report purchases are not available yet. Your free preview still works."}
             </p>
+            <p className="mt-2 text-sm">
+              {/* A new tab, so following the link never clears this report. */}
+              <a href="/terms" target="_blank" rel="noopener noreferrer" className="underline">
+                Purchase terms and refunds
+              </a>{" "}
+              (opens in a new tab)
+            </p>
             <p className="mt-3 text-sm">
               {!paid &&
                 "Checkout opens in a separate tab. This analysis stays here. "}
