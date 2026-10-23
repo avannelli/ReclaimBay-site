@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   allocatePercents,
   formatAverage,
@@ -10,7 +10,9 @@ import {
 } from "@/lib/format";
 import { trackEvent, trackExport } from "@/lib/analytics";
 import { CONTACT_EMAIL } from "@/lib/contact";
-import { buildOpportunitiesCsv, exportFileName } from "@/lib/exportCsv";
+import { buildFollowUpsCsv, buildOpportunitiesCsv, exportFileName } from "@/lib/exportCsv";
+import { downloadCallSheetPdf } from "@/lib/callSheetPdf";
+import { buildFollowUps, GROUPING_RULE, tierRule } from "@/lib/followUps";
 import { downloadSummaryPdf } from "@/lib/pdfReport";
 import { saveTourState, type TourState } from "@/lib/prefs";
 import { scrollPageTo } from "@/lib/scroll";
@@ -18,6 +20,7 @@ import { buildSummaryText } from "@/lib/summaryText";
 import type { Analysis } from "@/lib/types";
 import BarBreakdown from "./BarBreakdown";
 import ContactLink from "./ContactLink";
+import FollowUpList from "./FollowUpList";
 import { CountUp, FillBar, Reveal } from "./motion";
 import OpportunityList from "./OpportunityList";
 import { Dialog, InfoTip, dialogPrimary, dialogSecondary } from "./overlay";
@@ -435,7 +438,7 @@ export default function Dashboard({
       `${plural(possibleDuplicateRows, "possible duplicate", "possible duplicates")} preserved (${money(possibleDuplicateValue)}). ${possibleDuplicateRows === 1 ? "It matches" : "They match"} another row on customer, vehicle, service, amount, and date, but with no unique record ID to confirm, ${possibleDuplicateRows === 1 ? "it stays" : "they stay"} in the totals. Review ${possibleDuplicateRows === 1 ? "it" : "them"} in the list below.`,
     a.hasDates &&
       a.undatedCount > 0 &&
-      `${plural(a.undatedCount, "opportunity has", "opportunities have")} a missing or unreadable date (${money(a.undated.value)}). ${a.undatedCount === 1 ? "It is" : "They are"} included in the totals, shown as "Unknown / invalid date" in the age breakdown, and left out of the recent/older split.`,
+      `${plural(a.undatedCount, "declined job has", "declined jobs have")} a missing or unreadable date (${money(a.undated.value)}). ${a.undatedCount === 1 ? "It is" : "They are"} included in the totals, shown as "Unknown / invalid date" in the age breakdown, and left out of the recent/older split.`,
     !a.hasDates &&
       "No usable dates were found, so the age breakdowns aren't shown.",
   ].filter((n): n is string => Boolean(n));
@@ -460,6 +463,8 @@ export default function Dashboard({
   const showLead = a.count > LEAD_N;
 
   const exportSource = { fileName, isSample, date: analyzedAt };
+  const plan = useMemo(() => buildFollowUps(a.ranked), [a]);
+  const [sheetBusy, setSheetBusy] = useState(false);
 
   // Everything is generated in this tab; no report data is sent anywhere.
   // Analytics record only that an export happened, and its format.
@@ -477,6 +482,42 @@ export default function Dashboard({
     setTimeout(() => URL.revokeObjectURL(url), 0);
     trackExport("csv", isSample);
   };
+
+  // The follow-up list, one row per customer and vehicle, built in this tab.
+  const exportFollowUps = () => {
+    const url = URL.createObjectURL(
+      new Blob(["﻿", buildFollowUpsCsv(plan.followUps)], { type: "text/csv;charset=utf-8" }),
+    );
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = exportFileName("call-list", "csv", exportSource);
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 0);
+    trackExport("csv", isSample);
+  };
+  const downloadCallSheet = async () => {
+    setSheetBusy(true);
+    try {
+      await downloadCallSheetPdf({ plan, money, fileName, isSample, analyzedAt }, exportFileName("call-sheet", "pdf", exportSource));
+      trackExport("pdf", isSample);
+    } catch {
+      window.alert("We couldn't create the call sheet. Please try again.");
+    } finally {
+      setSheetBusy(false);
+    }
+  };
+  const followUpActions = (
+    <>
+      <ActionButton onClick={downloadCallSheet} icon={ICONS.pdf} disabled={sheetBusy} title="A printable call sheet with Reached, Booked and Notes columns">
+        Download Call Sheet (PDF)
+      </ActionButton>
+      <ActionButton onClick={exportFollowUps} icon={ICONS.csv} title="One row per customer and vehicle, in call order">
+        Download Follow-up List (CSV)
+      </ActionButton>
+    </>
+  );
 
   // Builds the summary PDF in the browser and downloads it directly.
   const downloadPdf = async () => {
@@ -496,23 +537,9 @@ export default function Dashboard({
 
   const actions = (
     <>
+      {followUpActions}
       <ActionButton onClick={requestReset} icon={ICONS.upload} className="col-span-2">
         {uploadLabel}
-      </ActionButton>
-      <ActionButton
-        onClick={downloadPdf}
-        icon={ICONS.pdf}
-        disabled={pdfBusy}
-        title="Download a PDF summary of this report"
-      >
-        Download PDF
-      </ActionButton>
-      <ActionButton
-        onClick={exportCsv}
-        icon={ICONS.csv}
-        title="Download every opportunity as a CSV spreadsheet"
-      >
-        Download CSV
       </ActionButton>
     </>
   );
@@ -536,7 +563,7 @@ export default function Dashboard({
         <div className="min-w-0">
           <p className="eyebrow text-ink-2">Declined-work review</p>
           <h1 className="mt-2 text-3xl font-medium tracking-tight text-ink sm:text-4xl">
-            Your opportunity, in view.
+            Your follow-up plan
           </h1>
           <p className="mt-2 wrap-anywhere text-sm text-ink-2">{fileName}</p>
           <p className="mt-0.5 text-sm text-ink-3">
@@ -609,6 +636,51 @@ export default function Dashboard({
         </Reveal>
       )}
 
+      <Reveal delay={80}>
+        <Card
+          flush
+          id="follow-ups"
+          title="Follow-up plan"
+          subtitle={
+            plan.basis === "customer"
+              ? `${plural(plan.followUps.length, "follow-up", "follow-ups")}, one for each customer and vehicle, in call order.`
+              : "No customer column in this export, so each declined job is its own follow-up."
+          }
+        >
+          <div className="flex flex-col gap-3 border-b border-line px-4 py-4 sm:flex-row sm:items-center sm:justify-between sm:px-6 print:hidden">
+            <p className="text-sm text-ink-2">
+              {plan.hasContactFields ? (
+                <>
+                  <span className="font-semibold text-ink">{plural(plan.tiers.call_first.count, "follow-up", "follow-ups")}</span> to call first
+                  {" · "}
+                  <span className="font-semibold text-ink">{money(plan.tiers.call_first.value)}</span>
+                </>
+              ) : (
+                "No phone or email column in this export, so every follow-up is in Review."
+              )}
+            </p>
+          </div>
+          <FollowUpList plan={plan} money={money} />
+          <details className="group border-t border-line text-sm text-ink-2">
+            <summary className="cursor-pointer list-none px-4 py-3 font-medium text-ink hover:bg-canvas focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-navy sm:px-6 [&::-webkit-details-marker]:hidden">
+              How follow-ups are grouped and ordered
+            </summary>
+            <div className="space-y-2 px-4 pb-4 sm:px-6">
+              <p>{tierRule(plan.hasDates)}</p>
+              {plan.basis === "customer" && <p>{GROUPING_RULE}</p>}
+            </div>
+          </details>
+        </Card>
+      </Reveal>
+
+      <div className="border-t border-line pt-8">
+        <p className="eyebrow text-ink-2">Declined-job analysis</p>
+        <h2 className="mt-2 text-2xl font-medium tracking-tight text-ink">Every declined job behind the plan</h2>
+        <p className="mt-1 text-sm text-ink-3">
+          Value, timing and service categories for the {plural(a.count, "declined job", "declined jobs")} in this export, with the summary PDF and declined-job CSV.
+        </p>
+      </div>
+
       <Reveal delay={100}>
         <section
           ref={heroRef}
@@ -640,7 +712,7 @@ export default function Dashboard({
                   <span className="font-semibold text-white">
                     {a.count.toLocaleString("en-US")}
                   </span>{" "}
-                  {a.count === 1 ? "opportunity" : "opportunities"} found
+                  {a.count === 1 ? "declined job" : "declined jobs"} found
                 </p>
                 {showRecent && (
                   <p className="flex items-center gap-2">
@@ -663,7 +735,7 @@ export default function Dashboard({
             {showLead && (
               <div className="min-w-0 border-t border-white/20 pt-5 lg:border-t-0 lg:border-l lg:pl-8 lg:col-span-5">
                 <p className="eyebrow text-slate-400">
-                  Largest {LEAD_N} opportunities
+                  Largest {LEAD_N} declined jobs
                 </p>
                 <p className="mt-3 text-3xl font-semibold tracking-tight tabular-nums text-white">
                   {money(leadValue)}
@@ -713,15 +785,15 @@ export default function Dashboard({
         <Reveal delay={220}>
           <Stat
             tone="neutral"
-            label="Declined opportunities"
+            label="Declined jobs"
             value={a.count.toLocaleString("en-US")}
-            note="Jobs included in this review"
+            note="Repair line items in this review"
           />
         </Reveal>
         <Reveal delay={280}>
           <Stat
             tone="secondary"
-            label="Average opportunity"
+            label="Average declined job"
             value={formatAverage(a.average, a.showCents)}
             note="Per declined job"
           />
@@ -732,7 +804,7 @@ export default function Dashboard({
         >
           <Stat
             tone="amber"
-            label="Highest-value opportunity"
+            label="Highest-value declined job"
             value={money(a.highest.amount)}
             note={a.highest.service}
           />
@@ -746,7 +818,7 @@ export default function Dashboard({
               note={`${recentPct}% of dated declined value`}
               help={{
                 label: "dated declined value",
-                text: "Declined work that has a usable date. Opportunities without one count toward the total but can't be placed as recent or older.",
+                text: "Declined work that has a usable date. Declined jobs without one count toward the total but can't be placed as recent or older.",
               }}
             />
           </Reveal>
@@ -754,7 +826,7 @@ export default function Dashboard({
       </div>
 
       <section className="report-guidance" aria-label="How to use this review">
-        <div><h2>Start with a job worth revisiting.</h2><p>Open its source evidence below. Confirm the work is still needed, check whether it was completed elsewhere, and choose a suitable follow-up.</p></div>
+        <div><h2>Start with a job worth revisiting.</h2><p>Begin at the top of Call first in the follow-up plan. Confirm the work is still needed and wasn&rsquo;t completed elsewhere, then call or text.</p></div>
         <div><h2>Know what the numbers mean.</h2><p>These are reported estimates, not independently verified findings or recovered revenue. Report checks explain what was included and left out.</p></div>
       </section>
 
@@ -763,8 +835,8 @@ export default function Dashboard({
           flush
           id="opportunities"
           tour="opportunities"
-          title="Highest-value opportunities"
-          subtitle="The largest declined jobs in this report."
+          title="Every declined job"
+          subtitle="Largest first, with the source details from your export."
         >
           <OpportunityList
             items={a.ranked}
@@ -810,7 +882,7 @@ export default function Dashboard({
                   </dd>
                   <dd className="mt-0.5 text-xs tabular-nums text-ink-3 sm:text-sm">
                     {b.count ? pct : 0}% of value ·{" "}
-                    {plural(b.count, "opportunity", "opportunities")}
+                    {plural(b.count, "declined job", "declined jobs")}
                   </dd>
                 </div>
               ))}
@@ -906,18 +978,20 @@ export default function Dashboard({
       <Reveal delay={100} className="print:hidden">
         <section
           data-tour="exports"
-          className="flex flex-col gap-4 rounded-2xl border border-navy/10 bg-navy/[0.03] px-5 py-5 sm:px-6 lg:flex-row lg:items-center lg:justify-between"
+          className="flex flex-col gap-4 rounded-2xl border border-navy/10 bg-navy/[0.03] px-5 py-5 sm:px-6"
         >
           <div>
             <h2 className="text-base font-semibold tracking-tight text-navy">
               Keep or share this review
             </h2>
             <p className="mt-0.5 text-sm text-ink-3">
-              A PDF summary and a CSV of every opportunity, created on this
-              device. Nothing is uploaded.
+              A call sheet and follow-up list for working the calls, plus a PDF
+              summary and a CSV of every declined job. All created on this
+              device; nothing is uploaded.
             </p>
           </div>
-          <div className="grid grid-cols-2 gap-2 sm:flex sm:flex-wrap lg:shrink-0 lg:flex-nowrap">
+          <div className="grid grid-cols-2 gap-2 sm:flex sm:flex-wrap lg:shrink-0">
+            {followUpActions}
             <ActionButton
               onClick={downloadPdf}
               icon={ICONS.pdf}
@@ -929,7 +1003,7 @@ export default function Dashboard({
             <ActionButton
               onClick={exportCsv}
               icon={ICONS.csv}
-              title="Download every opportunity as a CSV spreadsheet"
+              title="Download every declined job as a CSV spreadsheet"
             >
               Download CSV
             </ActionButton>

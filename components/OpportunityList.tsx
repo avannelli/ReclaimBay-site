@@ -265,7 +265,7 @@ export default function OpportunityList({
       <div className="flex flex-col gap-2.5 border-b border-line px-5 py-3.5 sm:px-6 lg:flex-row lg:items-center lg:gap-3 print:hidden">
         <div className="relative min-w-0 lg:flex-1">
           <label htmlFor={searchId} className="sr-only">
-            Search opportunities
+            Search declined jobs
           </label>
           <svg
             aria-hidden
@@ -346,7 +346,7 @@ export default function OpportunityList({
           <p className="flex flex-wrap items-center justify-between gap-x-4 gap-y-1 border-b border-line bg-canvas/70 px-5 py-2 text-xs text-ink-2 sm:px-6">
             <span>
               Showing {filtered.length.toLocaleString("en-US")} of{" "}
-              {items.length.toLocaleString("en-US")} opportunities. This filters
+              {items.length.toLocaleString("en-US")} declined jobs. This filters
               the list only; report totals are unchanged.
             </span>
             {/* With no matches, the empty state below offers this instead. */}
@@ -369,7 +369,7 @@ export default function OpportunityList({
         >
           <span className="w-7 shrink-0" />
           <div className={`eyebrow flex-1 text-ink-3 ${COLUMNS}`}>
-            <span>Opportunity</span>
+            <span>Declined job</span>
             <span>Category</span>
             <span>Declined</span>
             <span className="text-right">Amount</span>
@@ -394,11 +394,11 @@ export default function OpportunityList({
               <path d="m10.5 10.5 3 3" />
             </svg>
           </span>
-          <p className="mt-3 font-semibold text-ink">No matching opportunities</p>
+          <p className="mt-3 font-semibold text-ink">No matching declined jobs</p>
           <p className="mt-1 text-sm text-ink-2">
             {needle
               ? `Nothing in this report matches \u201c${query.trim()}\u201d${recency !== "all" ? " with this filter" : ""}.`
-              : "No opportunities fall in this date range."}
+              : "No declined jobs fall in this date range."}
           </p>
           <button
             type="button"
@@ -428,7 +428,7 @@ export default function OpportunityList({
       {printed < filtered.length && (
         <p className="hidden border-t border-line px-6 py-3 text-xs text-ink-3 print:block">
           Showing the {printed} largest of {filtered.length.toLocaleString("en-US")}{" "}
-          opportunities. Download the CSV for the full list.
+          declined jobs. Download the CSV for the full list.
         </p>
       )}
       {expandable && (

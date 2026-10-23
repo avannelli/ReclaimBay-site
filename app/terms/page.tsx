@@ -32,8 +32,10 @@ export default function TermsPage() {
               scanner. It is not a subscription and there are no recurring charges.
             </p>
             <p className="mt-3">
-              The complete report includes the full opportunity list, available age and service
-              breakdowns, report checks, and the PDF/CSV exports and summary copy for that report.
+              The complete report includes the call list (each customer and vehicle with its
+              declined jobs and the contact details in your export, in call order), a printable call
+              sheet, the full declined-job list, available age and service breakdowns, report checks,
+              and the PDF/CSV exports and summary copy for that report.
               Access is kept for the browser on the device you purchased with. Clearing that
               browser&rsquo;s site data removes its device key, so keep your Stripe receipt.
             </p>

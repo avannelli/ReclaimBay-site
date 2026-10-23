@@ -1,10 +1,16 @@
 import type { ParsedTable, RawCell } from "./types";
 
 /**
- * Entirely synthetic demo data: fictional names, reserved 555-01xx phone
- * numbers and example.com emails. Dates are relative to today so the age
- * breakdowns look realistic whenever the sample is opened.
+ * The "See an example" report: one fictional shop's declined-work export.
+ * Entirely synthetic: made-up names, reserved 555-01xx phone numbers and
+ * example.com emails. Dates are relative to today, so the follow-up groups
+ * always demonstrate correctly. The rows deliberately cover what a real
+ * export contains: several jobs on one vehicle, one customer with two
+ * vehicles, email-only and no-contact customers, an old decline, an undated
+ * line and a line without a customer name.
  */
+export const SAMPLE_FILE_NAME = "Juniper Auto Care — sample declined work (fictional).csv";
+
 const HEADERS = [
   "Customer Name",
   "Vehicle",
@@ -15,70 +21,49 @@ const HEADERS = [
   "Email",
 ];
 
-const CUSTOMERS = [
-  "Alex Morgan", "Jordan Lee", "Casey Rivera", "Taylor Brooks", "Riley Chen",
-  "Morgan Diaz", "Jamie Patel", "Drew Sullivan", "Avery Nguyen", "Quinn Foster",
-  "Parker Reed", "Sam Ortega", "Reese Bennett", "Cameron Hayes", "Dana Whitfield",
+// [customer, vehicle, service, amount, days ago (null = no date), phone, email]
+type Row = [string, string, string, number, number | null, string, string];
+const ROWS: Row[] = [
+  ["Riley Chen", "2014 Ford F-150", "Timing belt and water pump", 1285, 12, "555-0110", ""],
+  ["Riley Chen", "2014 Ford F-150", "Serpentine belt replacement", 235, 12, "555-0110", ""],
+  ["Morgan Diaz", "2012 Chevrolet Silverado", "Front struts and mounts", 1140, 25, "555-0111", "morgan.diaz@example.com"],
+  ["Morgan Diaz", "2012 Chevrolet Silverado", "Four-wheel alignment", 129.95, 25, "555-0111", "morgan.diaz@example.com"],
+  ["Casey Rivera", "2016 Toyota Camry", "Front brake pads and rotors", 612.5, 8, "", "casey.rivera@example.com"],
+  ["Casey Rivera", "2016 Toyota Camry", "Brake fluid flush", 149.99, 8, "", "casey.rivera@example.com"],
+  ["Casey Rivera", "2019 Subaru Outback", "Battery replacement", 219.99, 61, "", "casey.rivera@example.com"],
+  ["Quinn Foster", "2016 Kia Sorento", "Oil pan gasket leak repair", 485, 15, "555-0114", ""],
+  ["Quinn Foster", "2016 Kia Sorento", "Spark plugs and ignition coils", 398, 15, "555-0114", ""],
+  ["Sam Ortega", "2018 Ford Escape", "Set of four tires", 864, 33, "555-0115", "sam.ortega@example.com"],
+  ["Drew Sullivan", "2020 Hyundai Elantra", "Wheel bearing replacement", 540, 70, "555-0116", ""],
+  ["Reese Bennett", "", "Check engine light diagnostic", 135, 5, "555-0117", ""],
+  ["Jordan Patel", "2013 Honda Accord", "Radiator replacement", 920, 112, "555-0118", ""],
+  ["Taylor Brooks", "2018 Honda CR-V", "A/C compressor replacement", 1495, 140, "555-0119", "taylor.brooks@example.com"],
+  ["Taylor Brooks", "2018 Honda CR-V", "A/C recharge and leak test", 210, 140, "555-0119", "taylor.brooks@example.com"],
+  ["Avery Nguyen", "2011 Dodge Ram 1500", "Power steering rack replacement", 1385, 205, "", "avery.nguyen@example.com"],
+  ["Jamie Ellis", "2017 Jeep Wrangler", "Control arm and ball joint", 780.25, 44, "", ""],
+  ["Alex Morgan", "2015 Nissan Altima", "Catalytic converter replacement", 2140, 420, "555-0122", ""],
+  ["Dana Whitfield", "2019 Toyota RAV4", "Transmission fluid service", 289, null, "555-0123", ""],
+  ["", "2010 Honda Odyssey", "Exhaust muffler replacement", 445, 96, "", ""],
 ];
-
-const VEHICLES = [
-  "2016 Toyota Camry", "2014 Ford F-150", "2018 Honda CR-V", "2012 Chevrolet Silverado",
-  "2019 Subaru Outback", "2015 Nissan Altima", "2017 Jeep Wrangler", "2013 Honda Accord",
-  "2020 Hyundai Elantra", "2011 Dodge Ram 1500", "2016 Kia Sorento", "2018 Ford Escape",
-];
-
-// [service, amount]
-const JOBS: [string, number][] = [
-  ["Front brake pads and rotors", 612.5],
-  ["Rear brake pads and rotors", 548],
-  ["Brake fluid flush", 149.99],
-  ["Timing belt and water pump", 1285],
-  ["Serpentine belt replacement", 235],
-  ["Front struts and mounts", 1140],
-  ["Control arm and ball joint", 780.25],
-  ["Four-wheel alignment", 129.95],
-  ["Set of four tires", 864],
-  ["Transmission fluid service", 289],
-  ["Coolant system flush", 175],
-  ["Radiator replacement", 920],
-  ["A/C compressor replacement", 1495],
-  ["A/C recharge and leak test", 210],
-  ["Alternator replacement", 655],
-  ["Battery replacement", 219.99],
-  ["Catalytic converter replacement", 2140],
-  ["Oil pan gasket leak repair", 485],
-  ["Spark plugs and ignition coils", 398],
-  ["Fuel injector cleaning service", 189],
-  ["Wheel bearing replacement", 540],
-  ["Check engine light diagnostic", 135],
-  ["Cabin air filter and wipers", 89.5],
-  ["Power steering rack replacement", 1385],
-  ["Exhaust muffler replacement", 445],
-];
-
-// Ages in days, spread across the reporting buckets.
-const AGES = [3, 8, 14, 21, 27, 35, 44, 52, 61, 73, 85, 97, 118, 140, 166, 192, 231, 275, 318, 352, 401, 470];
 
 export function buildSampleTable(now: Date = new Date()): ParsedTable {
-  const rows: RawCell[][] = [];
-  for (let i = 0; i < 38; i++) {
-    const [service, amount] = JOBS[(i * 7) % JOBS.length];
-    const date = new Date(now);
-    date.setHours(12, 0, 0, 0);
-    date.setDate(date.getDate() - AGES[(i * 5) % AGES.length] - (i % 3));
-    rows.push([
-      CUSTOMERS[i % CUSTOMERS.length],
-      VEHICLES[(i * 5) % VEHICLES.length],
+  const rows: RawCell[][] = ROWS.map(([customer, vehicle, service, amount, ago, phone, email]) => {
+    let date = "";
+    if (ago !== null) {
+      const d = new Date(now);
+      d.setHours(12, 0, 0, 0);
+      d.setDate(d.getDate() - ago);
+      date = d.toLocaleDateString("en-US");
+    }
+    return [
+      customer,
+      vehicle,
       service,
       `$${amount.toLocaleString("en-US", { minimumFractionDigits: 2 })}`,
-      date.toLocaleDateString("en-US"),
-      `555-01${String(10 + (i % 90)).padStart(2, "0")}`,
-      `customer${i + 1}@example.com`,
-    ]);
-  }
-  return {
-    fileName: "Sample report (synthetic data)",
-    headers: HEADERS,
-    rows,
-  };
+      date,
+      phone,
+      email,
+    ];
+  });
+  return { fileName: SAMPLE_FILE_NAME, headers: HEADERS, rows };
 }

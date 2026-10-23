@@ -47,14 +47,46 @@ test("free preview is meaningful and withholds full rows and exports", () => {
     />,
   );
   assert.match(html, /4,327.48/);
-  assert.match(html, /6 opportunities/);
+  assert.match(html, /6 declined jobs/);
   assert.match(html, /Timing belt and water pump/);
   assert.doesNotMatch(
     html,
     /Download PDF|Download CSV|Jordan|JAC-004|data-tour="total"/,
   );
   assert.match(html, /one-time|one-time purchase/i);
-  assert.match(html, /refreshing or closing this tab clears/);
+  // No phone/email column: the preview says so instead of inventing a call order.
+  assert.match(html, /no phone or email column/);
+  // Recovery is secondary and explained in one place, not in the primary view.
+  assert.match(html, /If you close this tab/);
+  assert.match(html, /reopen the same file/);
+  assert.doesNotMatch(html, /type="checkbox"/);
+});
+test("a contact-rich report previews priorities but withholds names, vehicles and contact details", async () => {
+  const [{ buildSampleTable }, { detectColumns, normalizeRows }, { analyze }] = await Promise.all([
+    import("../lib/sampleData"),
+    import("../lib/normalize"),
+    import("../lib/analyze"),
+  ]);
+  const now = new Date("2026-10-23T12:00:00");
+  const table = buildSampleTable(now);
+  const data = normalizeRows(table, detectColumns(table).mapping, now);
+  const analysis = analyze(data.opportunities, data.quality)!;
+  const render = (isSample: boolean) =>
+    renderToStaticMarkup(
+      <ReportAccess reportId={crypto.randomUUID()} fileName={table.fileName} analysis={analysis} analyzedAt={now} isSample={isSample} onReset={() => {}} />,
+    );
+  const preview = render(false);
+  assert.match(preview, /Call first/);
+  assert.match(preview, /8 follow-ups/);
+  assert.match(preview, /across <span[^>]*>15 follow-ups/);
+  assert.match(preview, /14 more follow-ups in the complete call list/);
+  assert.doesNotMatch(preview, /Riley Chen|Morgan Diaz|555-01|@example\.com|Ford F-150|Download PDF|Download CSV/);
+  const sample = render(true);
+  assert.match(sample, /Fictional sample/);
+  assert.match(sample, /Riley Chen/);
+  assert.match(sample, /555-0110/);
+  assert.match(sample, /cannot be purchased/);
+  assert.doesNotMatch(sample, /Unlock complete report|Purchase terms|Download PDF|Download CSV|type="password"/);
 });
 test("price display comes from a server offer and supports replacement prices", () => {
   assert.equal(

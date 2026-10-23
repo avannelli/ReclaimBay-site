@@ -1,5 +1,5 @@
 "use client";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { Analysis } from "@/lib/types";
 import { moneyFormat } from "@/lib/format";
 import {
@@ -19,6 +19,9 @@ import {
   type ReportSnapshot,
 } from "@/lib/reportRecovery";
 import type { Root } from "react-dom/client";
+import { buildFollowUps } from "@/lib/followUps";
+import ResultsOverview from "./ResultsOverview";
+import { button, size } from "./ui";
 
 type Props = {
   reportId: string;
@@ -90,7 +93,6 @@ export default function ReportAccess(props: Props) {
     [pending, setPending] = useState(false),
     [error, setError] = useState(""),
     [saved, setSaved] = useState(false),
-    [consent, setConsent] = useState(false),
     [password, setPassword] = useState("");
   useEffect(() => {
     reportOffer()
@@ -174,19 +176,6 @@ export default function ReportAccess(props: Props) {
       "Preparing secure Stripe Checkout. Your analysis remains in the original tab.";
     setPending(true);
     try {
-      if (consent && !saved) {
-        await saveRecovery(
-          {
-            reportId,
-            fileName: props.fileName,
-            analysis: a,
-            analyzedAt: props.analyzedAt,
-          },
-          password,
-        );
-        setSaved(true);
-        setPassword("");
-      }
       const s = await (
         await purchaseRequest("checkout", { reportId, priceId: offer.priceId! })
       ).json();
@@ -225,175 +214,225 @@ export default function ReportAccess(props: Props) {
       setError((e as Error).message);
     }
   };
+  const plan = useMemo(() => buildFollowUps(a.ranked), [a]);
+  const price = offerPrice(offer);
+  const access = (
+    <AccessOptions
+      paid={paid}
+      saved={saved}
+      password={password}
+      onPassword={setPassword}
+      onSave={save}
+      onDelete={() => {
+        clearRecovery(reportId)
+          .then(() => setSaved(false))
+          .catch((e) => setError(e.message));
+      }}
+    />
+  );
+  const alert = error && (
+    <p role="alert" className="rounded-lg border border-danger/30 bg-danger-soft px-4 py-3 text-sm text-danger">
+      {error}
+    </p>
+  );
+  const resetLink = (
+    <button
+      type="button"
+      className="text-sm font-medium text-navy underline decoration-navy/30 underline-offset-4 hover:decoration-navy focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-navy"
+      onClick={() => {
+        if (
+          isSample ||
+          confirm(
+            "Replace this report? Save a recovery copy first if you want to keep it. Your payment, if any, remains recorded.",
+          )
+        )
+          props.onReset();
+      }}
+    >
+      {isSample ? "Analyze your own report" : "Analyze another report"}
+    </button>
+  );
+  const termsLink = (
+    // A new tab, so following the link never clears this report.
+    <a href="/terms" target="_blank" rel="noopener noreferrer" className="font-medium text-navy underline decoration-navy/30 underline-offset-2 hover:decoration-navy">
+      Purchase terms and refunds
+    </a>
+  );
+  const n = plan.followUps.length,
+    count = n === 1 ? "the 1" : `all ${n.toLocaleString("en-US")}`;
+  const included = [
+    plan.basis === "customer"
+      ? `The complete call list: ${count} ${n === 1 ? "follow-up" : "follow-ups"} with customer, vehicle, phone or email and declined jobs, in call order`
+      : `The complete call list: ${count} declined ${n === 1 ? "job" : "jobs"} with the details in your export, in call order`,
+    "A printable call sheet with Reached, Booked and Notes columns",
+    "A follow-up spreadsheet (CSV) for your texting or email tool, plus every declined line",
+    "Every service category and age breakdown, report checks and a PDF summary",
+  ];
+
+  if (paid)
+    return (
+      <div className="report-layout space-y-6 py-8">
+        <section className="flex flex-col gap-3 rounded-2xl border border-positive/25 bg-positive-soft/60 px-5 py-4 sm:flex-row sm:items-center sm:justify-between sm:px-6">
+          <div>
+            <p className="eyebrow text-positive-ink">Complete report unlocked</p>
+            <p className="mt-1 text-sm text-ink-2">
+              Payment verified with Stripe. Your call list and exports are below. {termsLink}
+            </p>
+          </div>
+          {access}
+        </section>
+        {alert}
+        <PaidReport props={props} />
+      </div>
+    );
+
   return (
-    <div className="mx-auto max-w-5xl space-y-6 py-8">
-      <div className="rounded-2xl border border-line bg-white p-6">
-        <p className="eyebrow">
-          {paid
-            ? "Complete report unlocked"
-            : isSample
-              ? "Fictional sample preview"
-              : "Free scanner preview"}
-        </p>
-        {!paid && (
-          <>
-            <h1 className="mt-3 text-3xl">Your declined-work preview</h1>
-            <p className="mt-4 text-3xl font-semibold">{money(a.total)}</p>
-            <p>
-              {a.count} opportunities in this report. This is reported declined
-              value, not recovered revenue.
+    <div className="report-layout space-y-6 py-8">
+      <ResultsOverview
+        analysis={a}
+        plan={plan}
+        isSample={isSample}
+        fileName={props.fileName}
+        analyzedAt={props.analyzedAt}
+        money={money}
+      />
+      {isSample ? (
+        <section className="flex flex-col gap-4 rounded-2xl border border-navy/10 bg-navy/[0.03] px-5 py-5 sm:flex-row sm:items-center sm:justify-between sm:px-6">
+          <div className="max-w-2xl">
+            <h2 className="text-lg font-semibold tracking-tight text-navy">See your own call list</h2>
+            <p className="mt-1 text-sm text-ink-2">
+              This example is fictional and cannot be purchased. Open your shop&rsquo;s declined-work export to get a free preview of your numbers.
             </p>
-            <p className="mt-4">
-              Highest-value opportunity: {a.highest.service} —{" "}
-              {money(a.highest.amount)}
-            </p>
-            <p className="mt-3 text-sm">
-              Report checks: {a.quality.skippedRows} invalid/zero-value rows
-              excluded; {a.quality.confirmedDuplicateRows} confirmed duplicate
-              rows removed; {a.quality.possibleDuplicateRows} possible repeated
-              rows remain in the total.
-            </p>
-            <p className="mt-4">
-              Free: total reported value, opportunity count and the
-              highest-value job. Purchase: the complete opportunity list,
-              available age and service breakdowns, report checks, and existing
-              PDF/CSV exports and summary copy for this report.
-            </p>
-          </>
-        )}
-        {!isSample && (
-          <>
-            <p className="mt-4">
-              {paid
-                ? "Payment verified. Your complete report and exports are available below."
-                : offer.available
-                  ? `${offerPrice(offer)} USD one-time for this report. No subscription.`
-                  : "One-time complete-report purchases are not available yet. Your free preview still works."}
-            </p>
-            <p className="mt-2 text-sm">
-              {/* A new tab, so following the link never clears this report. */}
-              <a href="/terms" target="_blank" rel="noopener noreferrer" className="underline">
-                Purchase terms and refunds
-              </a>{" "}
-              (opens in a new tab)
-            </p>
-            <p className="mt-3 text-sm">
-              {!paid &&
-                "Checkout opens in a separate tab. This analysis stays here. "}
-              Without a recovery copy, refreshing or closing this tab clears the
-              report; reopen the original file to resume. Your payment is kept
-              for this browser. Clearing browser site data removes the device
-              key; keep your Stripe receipt and contact us if access is lost.
-            </p>
-            {!saved && (
-              <>
-                <label className="mt-4 flex gap-2">
-                  <input
-                    type="checkbox"
-                    checked={consent}
-                    onChange={(e) => setConsent(e.target.checked)}
-                  />
-                  Save an encrypted recovery copy on this device (optional)
-                </label>
-                {consent && (
-                  <div className="mt-3">
-                    <label>
-                      Recovery password (12+ characters)
-                      <input
-                        type="password"
-                        autoComplete="new-password"
-                        minLength={12}
-                        className="ml-3 border p-2"
-                        value={password}
-                        onChange={(e) => setPassword(e.target.value)}
-                      />
-                    </label>
-                    <p className="text-sm">
-                      Only encrypted report data is saved, with your consent. We
-                      do not store the password; you will need it after refresh.
-                    </p>
-                    <button
-                      type="button"
-                      onClick={save}
-                      className="mt-2 rounded border p-2"
-                    >
-                      Save recovery copy
-                    </button>
-                  </div>
-                )}
-              </>
-            )}
-            {saved && (
-              <p className="mt-3">
-                Encrypted copy saved on this device.{" "}
-                <button
-                  type="button"
-                  className="underline"
-                  onClick={() => {
-                    clearRecovery(reportId)
-                      .then(() => setSaved(false))
-                      .catch((e) => setError(e.message));
-                  }}
-                >
-                  Delete recovery copy
-                </button>
-              </p>
-            )}
-            {!paid && (
-              <button
-                type="button"
-                className="mt-5 rounded bg-navy px-5 py-3 text-white disabled:opacity-50"
-                disabled={
-                  !offer.available ||
-                  (consent && !saved && password.length < 12)
-                }
-                onClick={buy}
-              >
-                {pending
-                  ? "Reopen secure Checkout"
-                  : `Unlock complete report${offerPrice(offer) ? " — " + offerPrice(offer) : ""}`}
-              </button>
-            )}
-            {pending && !paid && (
-              <p role="status" className="mt-3">
-                Payment is verified with Stripe on the server. A success page
-                alone never unlocks access. If you cancelled, your preview is
-                unchanged; reopen Checkout when ready.
-              </p>
-            )}
-          </>
-        )}
-        {isSample && (
-          <p className="mt-4">
-            This example is fictional and cannot be purchased. Open your own
-            report to purchase a complete report.
-          </p>
-        )}
-        {error && (
-          <p role="alert" className="mt-4 text-red-700">
-            {error}
-          </p>
-        )}
-        {!paid && (
-          <button
-            type="button"
-            className="ml-4 mt-4 underline"
-            onClick={() => {
-              if (
-                isSample ||
-                confirm(
-                  "Replace this report? Save a recovery copy first if you want to keep it. Your payment, if any, remains recorded.",
-                )
-              )
-                props.onReset();
-            }}
-          >
-            Analyze another report
+          </div>
+          <button type="button" onClick={props.onReset} className={`${button.primary} ${size.lg} shrink-0`}>
+            Analyze your own report
           </button>
+        </section>
+      ) : (
+        <section aria-labelledby="offer-heading" className="grid gap-6 rounded-2xl border border-line bg-surface px-5 py-6 shadow-sm sm:px-7 lg:grid-cols-[minmax(0,1.4fr)_minmax(0,1fr)] lg:gap-10">
+          <div>
+            <h2 id="offer-heading" className="text-xl font-semibold tracking-tight text-navy">
+              Get the complete call list
+            </h2>
+            <ul className="mt-4 space-y-2.5 text-sm text-ink-2">
+              {included.map((item) => (
+                <li key={item} className="flex gap-2.5">
+                  <svg aria-hidden viewBox="0 0 16 16" className="mt-0.5 h-4 w-4 shrink-0 text-positive-ink" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="m3.5 8.5 3 3 6-7" />
+                  </svg>
+                  <span>{item}</span>
+                </li>
+              ))}
+            </ul>
+            <p className="mt-4 text-xs text-ink-3">
+              Built in this browser from your export. Your report&rsquo;s contents are never sent to ReclaimBay or Stripe.
+            </p>
+          </div>
+          <div className="flex flex-col justify-center gap-3 border-t border-line pt-5 lg:border-l lg:border-t-0 lg:pl-8 lg:pt-0">
+            {offer.available ? (
+              <p>
+                <span className="text-4xl font-semibold tracking-tight tabular-nums text-ink">{price}</span>{" "}
+                <span className="ml-1 text-sm text-ink-2">USD one-time for this report. No subscription.</span>
+              </p>
+            ) : (
+              <p className="text-sm text-ink-2">
+                One-time complete-report purchases are not available yet. Your free preview still works.
+              </p>
+            )}
+            <button
+              type="button"
+              className={`${button.primary} ${size.lg} w-full`}
+              disabled={!offer.available}
+              onClick={buy}
+            >
+              {pending ? "Reopen secure Checkout" : `Unlock complete report${price ? " — " + price : ""}`}
+            </button>
+            {pending ? (
+              <p role="status" className="text-sm text-ink-2">
+                Waiting for Stripe. Payment is verified on the server; a success page alone never unlocks access. If you cancelled, your preview is unchanged.
+              </p>
+            ) : (
+              <p className="text-xs text-ink-3">
+                Secure checkout by Stripe opens in a new tab. Keep this tab open; your report unlocks here after payment.
+              </p>
+            )}
+            <p className="text-xs text-ink-3">{termsLink} (opens in a new tab)</p>
+          </div>
+        </section>
+      )}
+      {alert}
+      {/* The sample's own call to action already offers "Analyze your own report". */}
+      {!isSample && (
+        <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+          {access}
+          {resetLink}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * Optional, explicit and secondary: keeping access is automatic (the device
+ * key stays in this browser and the original file reopens the report), so the
+ * password copy only matters when the original file won't be at hand.
+ */
+function AccessOptions({
+  paid,
+  saved,
+  password,
+  onPassword,
+  onSave,
+  onDelete,
+}: {
+  paid: boolean;
+  saved: boolean;
+  password: string;
+  onPassword: (v: string) => void;
+  onSave: () => void;
+  onDelete: () => void;
+}) {
+  return (
+    <details className="group max-w-xl rounded-xl border border-line bg-surface/80 text-sm text-ink-2">
+      <summary className="flex cursor-pointer list-none items-center gap-2 rounded-xl px-4 py-3 font-medium text-ink hover:bg-canvas focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-navy [&::-webkit-details-marker]:hidden">
+        <svg aria-hidden viewBox="0 0 16 16" className="h-4 w-4 text-ink-3 transition-transform group-open:rotate-90 motion-reduce:transition-none" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+          <path d="m6 4 4 4-4 4" />
+        </svg>
+        {saved ? "Encrypted copy saved on this device" : paid ? "Keep access to this report" : "If you close this tab"}
+      </summary>
+      <div className="space-y-3 border-t border-line px-4 py-4">
+        <p>
+          {paid ? "Your purchase is kept for this browser." : "A purchase is kept for this browser."} To come back, open ReclaimBay here, choose <em>Resume your previous report</em> and reopen the same file. Clearing this browser&rsquo;s site data removes that access; keep your Stripe receipt and contact us if it happens.
+        </p>
+        {saved ? (
+          <button type="button" className="font-medium text-navy underline underline-offset-2" onClick={onDelete}>
+            Delete recovery copy
+          </button>
+        ) : (
+          <div>
+            <p>
+              Won&rsquo;t have the file? Save an encrypted copy of this report on this device. Only you know the password; it isn&rsquo;t stored or sent anywhere.
+            </p>
+            <div className="mt-2 flex flex-col gap-2 sm:flex-row sm:items-end">
+              <label className="flex min-w-0 flex-1 flex-col gap-1 text-xs font-medium text-ink-2">
+                Recovery password (12+ characters)
+                <input
+                  type="password"
+                  autoComplete="new-password"
+                  minLength={12}
+                  className="h-10 rounded-lg border border-slate-300 px-3 text-sm text-ink focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-navy"
+                  value={password}
+                  onChange={(e) => onPassword(e.target.value)}
+                />
+              </label>
+              <button type="button" onClick={onSave} disabled={password.length < 12} className={`${button.secondary} ${size.md}`}>
+                Save encrypted copy
+              </button>
+            </div>
+          </div>
         )}
       </div>
-      {paid && <PaidReport props={props} />}
-    </div>
+    </details>
   );
 }
 

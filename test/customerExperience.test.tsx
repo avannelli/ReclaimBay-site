@@ -143,7 +143,7 @@ test("FAQ asks the practical questions in a first-visit order, all closed, witho
 test("approved free preview and one-time complete-report purchase are stated without subscriptions", () => {
   const home = renderToStaticMarkup(<UploadPanel onFile={noop} onSample={noop} busy={false} error={null} />);
   assert.match(home, /Free scanner preview\. No account needed\./);
-  assert.match(home, /A one-time purchase unlocks the complete report and PDF\/CSV exports/);
+  assert.match(home, /A one-time purchase unlocks the complete report: your call list, a printable call sheet and PDF\/CSV exports/);
   assert.doesNotMatch(home, /get started|free forever|always free|pricing|per month|credit card|trial/i);
   const invite = readFileSync(new URL("../components/InvitationExperience.tsx", import.meta.url), "utf8");
   assert.match(invite, /Start a free analysis/);
@@ -234,6 +234,27 @@ test("results expose total, real report details, next step and complete local ex
   assert.match(summary, /SAMPLE REPORT/);
   assert.match(summary, /Reported declined value: \$4,327.48/);
   assert.match(summary, /Recovery is not tracked/);
+});
+test("the paid report leads with the follow-up plan and uses one vocabulary", async () => {
+  const [{ buildSampleTable }, { detectColumns: detect, normalizeRows: normalize }] = await Promise.all([import("../lib/sampleData"), import("../lib/normalize")]);
+  const now = new Date("2026-10-23T12:00:00");
+  const table = buildSampleTable(now);
+  const data = normalize(table, detect(table).mapping, now);
+  const html = renderToStaticMarkup(<Dashboard analysis={analyze(data.opportunities, data.quality)!} fileName={table.fileName} isSample={false} analyzedAt={now} onReset={noop} />);
+  const at = (s: string) => html.indexOf(s);
+  assert.ok(at("Your follow-up plan") >= 0);
+  // The call list and its two exports come before the legacy analysis and its exports.
+  assert.ok(at("Download Call Sheet (PDF)") < at("Follow-up plan"));
+  assert.ok(at("Download Follow-up List (CSV)") < at("Follow-up plan"));
+  assert.ok(at("Follow-up plan") < at("Declined-job analysis"));
+  assert.ok(at("Riley Chen") < at("Reported declined value to review"));
+  assert.ok(at("Declined-job analysis") < at("Reported declined value to review"));
+  assert.ok(at("Reported declined value to review") < at("Largest first, with the source details from your export."));
+  // "Follow-ups" are customer/vehicle records; "declined jobs" are line items. No visible "opportunity".
+  const text = html.replace(/<[^>]+>/g, " ");
+  assert.doesNotMatch(text, /opportunit/i);
+  assert.match(text, /15 follow-ups, one for each customer and vehicle, in call order/);
+  assert.match(text, /20 declined jobs/);
 });
 test("missing source details are stated plainly and imported text stays escaped", () => {
   const { analysis } = demoAnalysis();

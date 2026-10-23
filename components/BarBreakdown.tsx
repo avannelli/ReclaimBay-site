@@ -54,7 +54,7 @@ export default function BarBreakdown({
   const detail = (count: number, pct: number) => (
     <>
       {count.toLocaleString("en-US")}{" "}
-      {count === 1 ? "opportunity" : "opportunities"}
+      {count === 1 ? "declined job" : "declined jobs"}
       <span aria-hidden> · </span>
       {pct}% of value
     </>

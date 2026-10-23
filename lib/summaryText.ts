@@ -1,4 +1,5 @@
 import { RECENT_DAYS } from "./analyze";
+import { buildFollowUps, TIER_LABEL } from "./followUps";
 import { BRAND } from "./brand";
 import { formatAverage, formatDateTime, moneyFormat } from "./format";
 import type { Analysis } from "./types";
@@ -31,6 +32,10 @@ export function buildSummaryText({
   if (a.hasDates) {
     lines.push(`Declined in last ${RECENT_DAYS} days: ${money(a.recency.recent.value)}`);
   }
+  const plan = buildFollowUps(a.ranked);
+  if (plan.basis === "customer") lines.push(`Follow-ups (customer vehicles): ${plan.followUps.length.toLocaleString("en-US")}`);
+  if (plan.hasContactFields)
+    lines.push(`${TIER_LABEL.call_first}: ${plan.tiers.call_first.count.toLocaleString("en-US")} (${money(plan.tiers.call_first.value)})`);
   lines.push(
     `Highest-value opportunity: ${money(a.highest.amount)}`,
     "",

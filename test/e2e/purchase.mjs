@@ -2,13 +2,15 @@
 // Build first with the localhost URLs documented in docs/SCANNER_PURCHASES.md.
 import { createServer } from "node:http";
 import { spawn } from "node:child_process";
-import { readFile, writeFile, mkdir, stat, readdir } from "node:fs/promises";
+import { readFile, writeFile, mkdir, stat, readdir, rm } from "node:fs/promises";
 import path from "node:path";
 import assert from "node:assert/strict";
 import pg from "../../backend/node_modules/pg/lib/index.js";
 
 const root = process.cwd(),
   folder = path.resolve("review/m2-purchase-verification");
+// Fresh downloads each run, so export assertions never see an earlier run's files.
+await rm(path.join(folder, "downloads"), { recursive: true, force: true });
 await mkdir(path.join(folder, "downloads"), { recursive: true });
 try {
   process.loadEnvFile(path.join(root, "backend/.env"));
@@ -330,19 +332,22 @@ try {
     evaluate(
       `(()=>{const e=document.querySelector('input[type=password]');Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(e,${JSON.stringify(value)});e.dispatchEvent(new Event('input',{bubbles:true}));})()`,
     );
-  // Opt in before purchase; the Checkout action saves only encrypted local data.
-  await evaluate(`document.querySelector('input[type=checkbox]').click()`);
+  // Optional, explicit and secondary: open "If you close this tab" and save an encrypted local copy.
+  await evaluate(
+    `[...document.querySelectorAll('main details summary')].find(s=>s.textContent.includes('If you close this tab')).click()`,
+  );
   await setPassword("private recovery phrase 123");
+  await click("Save encrypted copy");
+  await wait(
+    `document.querySelector('main').innerText.includes('Encrypted copy saved')`,
+    "pre-checkout encrypted copy",
+  );
   await click("Unlock complete report");
   await sleep(700);
   assert.equal((await state()).sessions, 1);
   assert.match(
     await evaluate('document.querySelector("main").innerText'),
     /FREE SCANNER PREVIEW/,
-  );
-  await wait(
-    `document.querySelector('main').innerText.includes('Encrypted copy saved')`,
-    "pre-checkout encrypted copy",
   );
   assert.doesNotMatch(
     await storage(),
@@ -413,10 +418,18 @@ try {
   );
   await click("Download CSV");
   await click("Download PDF");
-  await sleep(1000);
+  await click("Download Call Sheet (PDF)");
+  await click("Download Follow-up List (CSV)");
+  await sleep(1500);
   const downloads = await readdir(path.join(folder, "downloads"));
   assert(downloads.some((f) => f.endsWith(".pdf")));
   assert(downloads.some((f) => f.endsWith(".csv")));
+  const callList = downloads.find((f) => /call-list.*.csv$/.test(f));
+  assert(callList, "follow-up list CSV downloaded");
+  assert(downloads.some((f) => /call-sheet.*.pdf$/.test(f)), "call sheet PDF downloaded");
+  const callListCsv = await readFile(path.join(folder, "downloads", callList), "utf8");
+  assert.match(callListCsv, /Call order,Group,Customer/);
+  assert.match(callListCsv, /PRIVATE_TEST_BO/);
   const csv = await readFile(
     path.join(
       folder,
@@ -456,9 +469,8 @@ try {
     `!document.querySelector('main').innerText.includes('Encrypted copy saved')`,
     "delete pre-checkout copy",
   );
-  await evaluate(`document.querySelector('input[type=checkbox]').click()`);
   await setPassword("private recovery phrase 123");
-  await click("Save recovery copy");
+  await click("Save encrypted copy");
   await wait(
     `document.querySelector('main').innerText.includes('Encrypted copy saved')`,
     "explicit encrypted recovery",

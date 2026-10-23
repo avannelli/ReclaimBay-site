@@ -28,7 +28,7 @@ const STEPS: Step[] = [
   {
     target: "recency",
     title: "See what’s recent",
-    body: "This shows how much declined work happened recently versus older opportunities.",
+    body: "This shows how much declined work happened recently versus older declined jobs.",
   },
   {
     target: "categories",
@@ -38,7 +38,7 @@ const STEPS: Step[] = [
   {
     target: "exports",
     title: "Keep your review",
-    body: "Download a PDF summary or the full job list as CSV for your own review and follow-up.",
+    body: "Download the call sheet and follow-up list for calling, or a PDF summary and a CSV of every declined job.",
   },
 ];
 

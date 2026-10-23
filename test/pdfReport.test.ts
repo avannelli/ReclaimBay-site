@@ -268,3 +268,46 @@ test("the existing PDF download saves locally with the unchanged filename and ma
     globalThis.fetch = originalFetch;
   }
 });
+
+test("call sheet lists every follow-up in call order with tiers, contact and check boxes", async () => {
+  const [{ createCallSheetPdf }, { buildFollowUps }, { buildSampleTable }, { moneyFormat }] = await Promise.all([
+    import("../lib/callSheetPdf"),
+    import("../lib/followUps"),
+    import("../lib/sampleData"),
+    import("../lib/format"),
+  ]);
+  const now = new Date("2026-10-23T12:00:00");
+  const table = buildSampleTable(now);
+  const data = normalizeRows(table, detectColumns(table).mapping, now);
+  const plan = buildFollowUps(data.opportunities);
+  const doc = await createCallSheetPdf({ plan, money: moneyFormat(true), fileName: table.fileName, isSample: true, analyzedAt: now });
+  const text = pageTexts(doc).flat().join("\n");
+  for (const label of ["Declined-work call sheet", "CALL FIRST · 8 FOLLOW-UPS", "NEXT · 3 FOLLOW-UPS", "REVIEW · 4 FOLLOW-UPS", "REACHED", "BOOKED", "NOTES", "SAMPLE · FICTIONAL DATA"])
+    assert.ok(text.includes(label), `call sheet shows ${label}`);
+  // Combined follow-up: both jobs on one row, customer and phone exactly as exported.
+  assert.ok(text.includes("Riley Chen") && text.includes("555-0110"));
+  assert.ok(text.includes("Timing belt and water pump · $1,285.00") && text.includes("Serpentine belt replacement · $235.00"));
+  assert.ok(text.includes("No customer name in export") && text.includes("No phone or email"));
+  assert.ok(text.indexOf("Riley Chen") < text.indexOf("Taylor Brooks") && text.indexOf("Taylor Brooks") < text.indexOf("Alex Morgan"), "tiers in call order");
+  assert.match(text, /not recovered revenue/);
+});
+
+test("follow-up CSV is one row per customer vehicle in call order, with blank working columns", async () => {
+  const [{ buildFollowUpsCsv }, { buildFollowUps }] = await Promise.all([import("../lib/exportCsv"), import("../lib/followUps")]);
+  const table: ParsedTable = {
+    fileName: "fixture.csv",
+    headers: ["Customer", "Vehicle", "Service", "Amount", "Date", "Phone"],
+    rows: [
+      ["=HYPERLINK(1)", "2014 Ford F-150", "Brakes", 100, "2026-10-01", "555-0101"],
+      ["=HYPERLINK(1)", "2014 Ford F-150", "Rotors, front", 50, "2026-10-10", "555-0101"],
+      ["Bo", "", "Tires", 900, "2025-01-01", ""],
+    ],
+  };
+  const now = new Date("2026-10-23T12:00:00");
+  const data = normalizeRows(table, detectColumns(table).mapping, now);
+  const csv = buildFollowUpsCsv(buildFollowUps(data.opportunities).followUps).split("\r\n");
+  assert.equal(csv[0], "Call order,Group,Customer,Vehicle,Phone,Email,Declined jobs,Declined work,Total declined value,Most recent decline,Days since decline,Reached,Booked,Notes");
+  assert.equal(csv.length, 3);
+  assert.match(csv[1], /^1,Call first,'=HYPERLINK\(1\),2014 Ford F-150,555-0101,,2,"Brakes \(100\.00\); Rotors, front \(50\.00\)",150\.00,2026-10-10,13,,,$/);
+  assert.match(csv[2], /^2,Review,Bo,,,,1,Tires \(900\.00\),900\.00,2025-01-01,\d+,,,$/);
+});

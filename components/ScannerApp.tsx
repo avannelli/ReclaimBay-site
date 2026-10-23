@@ -23,7 +23,7 @@ import ColumnMapper from "./ColumnMapper";
 import HeaderChooser from "./HeaderChooser";
 import ReportAccess, {ResumeReport} from "./ReportAccess";
 import EmptyResult from "./EmptyResult";
-import { buildDemoTable } from "@/lib/demoReport";
+import { buildSampleTable } from "@/lib/sampleData";
 import UploadPanel from "./UploadPanel";
 import { useReportHistory } from "./useReportHistory";
 
@@ -212,7 +212,8 @@ export default function ScannerApp() {
 
   const handleSample = () =>
     startScan(() => {
-      const table = buildDemoTable();
+      // A fuller fictional export than the landing demo, so the sample shows a real call list.
+      const table = buildSampleTable();
       const detection = detectColumns(table);
       return analyzeToStage({ table, detection, remembered: 0 }, detection.mapping, {
         isSample: true,

@@ -115,7 +115,7 @@ export default function SummaryBar({
           </span>
           <span className="hidden truncate text-sm text-slate-400 sm:inline">
             {count.toLocaleString("en-US")}{" "}
-            {count === 1 ? "opportunity" : "opportunities"}
+            {count === 1 ? "declined job" : "declined jobs"}
           </span>
           {isSample && (
             <span className="self-center rounded-full bg-white/10 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wider text-slate-200 ring-1 ring-inset ring-white/15">

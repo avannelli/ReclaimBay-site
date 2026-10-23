@@ -34,7 +34,7 @@ export interface SummaryInput {
 // Reliable built-in PDF fonts: Helvetica body/data, Times for editorial headings.
 // Preserve the existing Latin-1 fallback; unsupported characters become "?".
 const EXTRA_OK = new Set("–—‘’“”•…€™");
-const clean = (s: string) =>
+export const clean = (s: string) =>
   Array.from(s)
     .map((ch) => {
       if (ch === "\n") return ch;
