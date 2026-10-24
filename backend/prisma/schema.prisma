@@ -11,6 +11,99 @@ datasource db {
   provider = "postgresql"
 }
 
+// Supply replenishment (src/replenishment): finding and prescreening new businesses for Discovery.
+// Supply only: no relation to sending controls, messages or campaign authorization. It acts only when
+// REPLENISHMENT_ENABLED=1 on the service AND this persisted control is enabled and not paused; both default OFF.
+model ReplenishmentControl {
+  id          String                       @id @default("default") @db.VarChar(40)
+  enabled     Boolean                      @default(false)
+  /// Validated overrides of the code defaults (areas, limits); null means the defaults.
+  config      Json?
+  pausedAt    DateTime?
+  pauseReason String?                      @db.VarChar(500)
+  updatedAt   DateTime                     @updatedAt
+  changes     ReplenishmentControlChange[]
+}
+
+/// Append-only: every enable, disable, pause, resume, configuration change and automatic pause.
+model ReplenishmentControlChange {
+  id        String               @id @default(uuid()) @db.Uuid
+  controlId String               @db.VarChar(40)
+  action    String               @db.VarChar(24)
+  reason    String               @db.VarChar(500)
+  enabled   Boolean
+  paused    Boolean
+  config    Json?
+  createdAt DateTime             @default(now())
+  control   ReplenishmentControl @relation(fields: [controlId], references: [id], onDelete: Restrict)
+
+  @@index([createdAt])
+}
+
+/// One sourcing pass over one rotation area, its bounded prescreen and its intake into Discovery.
+model ReplenishmentBatch {
+  id              String           @id @default(uuid()) @db.Uuid
+  /// screening, ready, intake, completed, exhausted, failed, imported (a person's earlier prescreen)
+  status          String           @db.VarChar(24)
+  area            String           @db.VarChar(60)
+  provider        String           @db.VarChar(40)
+  release         String           @db.VarChar(20)
+  /// The supply snapshot that triggered the batch.
+  trigger         Json
+  limits          Json
+  sourceRead      Int              @default(0)
+  sourceSelected  Int              @default(0)
+  screened        Int              @default(0)
+  accepted        Int              @default(0)
+  rejected        Int              @default(0)
+  errors          Int              @default(0)
+  skippedBudget   Int              @default(0)
+  ingested        Int              @default(0)
+  duplicates      Int              @default(0)
+  /// Physical HTTP requests and response bytes actually used, and what is still reserved.
+  fetches         Int              @default(0)
+  bytes           Int              @default(0)
+  reservedFetches Int              @default(0)
+  reservedBytes   Int              @default(0)
+  runId           String?          @unique @db.Uuid
+  reason          String?          @db.VarChar(500)
+  report          Json?
+  createdAt       DateTime         @default(now())
+  finishedAt      DateTime?
+  run             DiscoveryRun?    @relation(fields: [runId], references: [id], onDelete: SetNull)
+  entries         ScreeningEntry[]
+
+  @@index([createdAt])
+  @@index([status])
+}
+
+/// A provider record is screened once, ever: (provider, externalId) is unique across batches and releases.
+model ScreeningEntry {
+  id             String              @id @default(uuid()) @db.Uuid
+  batchId        String              @db.Uuid
+  provider       String              @db.VarChar(40)
+  externalId     String              @db.VarChar(200)
+  /// pending, screening, accepted, rejected, error, budget, ingested, duplicate
+  status         String              @db.VarChar(24)
+  /// The minimized provider record (no raw payload).
+  business       Json
+  reasons        Json                @default("[]")
+  evidence       Json?
+  /// The email the official site published at prescreen. Never a verified contact: Research verifies.
+  publishedEmail String?             @db.VarChar(254)
+  fetches        Int                 @default(0)
+  bytes          Int                 @default(0)
+  candidateId    String?             @unique @db.Uuid
+  screenedAt     DateTime?
+  createdAt      DateTime            @default(now())
+  updatedAt      DateTime            @updatedAt
+  batch          ReplenishmentBatch  @relation(fields: [batchId], references: [id], onDelete: Restrict)
+  candidate      DiscoveryCandidate? @relation(fields: [candidateId], references: [id], onDelete: SetNull)
+
+  @@unique([provider, externalId])
+  @@index([batchId, status])
+}
+
 // Purchase identities and payment evidence only: never report data, filenames,
 // report hashes, amounts from repair exports, or customer repair details.
 model ReportBuyer {
@@ -436,6 +529,7 @@ model DiscoveryRun {
 
   import     ProviderImport?      @relation(fields: [importId], references: [id], onDelete: SetNull)
   candidates DiscoveryCandidate[]
+  replenishment ReplenishmentBatch?
 
   @@index([createdAt])
   @@index([status, createdAt])
@@ -448,6 +542,7 @@ model DiscoveryRun {
 model DiscoveryCandidate {
   id    String  @id @default(uuid()) @db.Uuid
   runId String? @db.Uuid
+  screening ScreeningEntry?
 
   // Identity
   businessName  String  @db.VarChar(120)

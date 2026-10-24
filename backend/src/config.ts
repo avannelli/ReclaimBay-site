@@ -37,6 +37,11 @@ export interface Config {
    * without it `discovery:research --auto` exits at once.
    */
   researchAutorunEnabled: boolean;
+  /**
+   * Arm for automatic supply replenishment (REPLENISHMENT_ENABLED=1), run by the research worker.
+   * It also needs the persisted control enabled (npm run discovery:replenish -- --enable).
+   */
+  replenishmentArmed: boolean;
   billing: { secretKey: string | null; webhookSecret: string | null; priceId: string | null; productId: string | null; mode: "test" | "live" };
   /** This backend's public base URL, for one-click unsubscribe links. */
   publicApiUrl: string | null;
@@ -114,6 +119,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     },
     outreachSendingArmed: env.OUTREACH_SENDING_ENABLED === "1",
     researchAutorunEnabled: env.RESEARCH_AUTORUN_ENABLED === "1",
+    replenishmentArmed: env.REPLENISHMENT_ENABLED === "1",
     billing: {
       secretKey: env.STRIPE_SECRET_KEY?.trim() || null,
       webhookSecret: env.STRIPE_WEBHOOK_SECRET?.trim() || null,

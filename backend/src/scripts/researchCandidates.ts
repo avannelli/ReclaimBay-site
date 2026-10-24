@@ -29,6 +29,11 @@
  * advances the launched autonomous campaign, if any (runAutonomousCampaign): creates prospects for
  * eligible candidates within the caps, and prepares and queues their first messages as campaign members.
  * The sender job (outreach:send) remains the only thing that sends.
+ *
+ * Then, still in the same locked run and only when REPLENISHMENT_ENABLED=1 here, supply replenishment
+ * (src/replenishment): it does nothing unless its persisted control is on, and otherwise sources and
+ * prescreens new businesses within its budgets and the rest of the run's time, adding the accepted ones
+ * to Discovery for the next research pass. It never creates prospects or messages.
  */
 import { parseArgs } from "node:util";
 import { loadConfig } from "../config.js";
@@ -37,6 +42,7 @@ import { isAutoApproved } from "../discovery/autoApproval.js";
 import { listCandidates } from "../discovery/service.js";
 import { autoResearchIds, enqueueResearch, processQueuedResearch, runAutoResearch, type AutoResearchReport } from "../research/service.js";
 import { runAutonomousCampaign, type AutonomousRunReport } from "../outreach/autonomousCampaign.js";
+import { replenishmentSummary, runReplenishment, type ReplenishmentReport } from "../replenishment/service.js";
 
 /** Of the worker's time budget, what is kept for the autonomous campaign step after research. */
 const AUTONOMOUS_RESERVE_MS = 3 * 60 * 1000;
@@ -93,6 +99,7 @@ async function auto() {
   const db = createDb(config.databaseUrl);
   try {
     let campaign: AutonomousRunReport | null = null;
+    let replenishment: ReplenishmentReport | null = null;
     const report = await runAutoResearch(db, {
       enabled: config.researchAutorunEnabled,
       databaseUrl: config.databaseUrl,
@@ -102,10 +109,16 @@ async function auto() {
       reserveMs: AUTONOMOUS_RESERVE_MS,
       afterResearch: async ({ shouldStop, deadline }) => {
         campaign = await runAutonomousCampaign(db, { draft: { siteUrl: config.publicSiteUrl, sender: config.outreachSender }, compliance: config, shouldStop, deadline });
+        // Unarmed services skip this entirely: no control read, no provider or website request.
+        if (config.replenishmentArmed && !shouldStop()) replenishment = await runReplenishment(db, { armed: true, shouldStop, deadline });
       },
     });
     console.log(summary(report));
     if (campaign) console.log(campaignSummary(campaign));
+    if (replenishment) {
+      console.log(replenishmentSummary(replenishment));
+      if ((replenishment as ReplenishmentReport).outcome === "failed") process.exitCode = 1;
+    }
   } catch (err) {
     // Never echo connection strings.
     console.error(`Automatic research failed: ${(err instanceof Error ? err.message : "unknown error").replace(/\S+:\/\/\S+/g, "[url]").slice(0, 300)}`);

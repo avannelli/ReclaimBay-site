@@ -558,6 +558,11 @@ again. It never sends anything and never starts outreach.
 7. Prints **one summary line**. Exit code 0 (also when disarmed, locked, or
    with nothing to do); 1 only for an unexpected error.
 
+**Supply replenishment.** With `REPLENISHMENT_ENABLED=1` on the service and its persisted control on
+(both default OFF), the same run then sources, prescreens and adds new businesses when eligible supply
+is low, within strict budgets; see [REPLENISHMENT.md](REPLENISHMENT.md). It never creates prospects or
+messages.
+
 **Retries** (`retryDecision`, from the run history; no new table). A candidate
 is tried again only when its latest run **failed without an outcome** (an
 error, or interrupted) or **couldn't reach the website**

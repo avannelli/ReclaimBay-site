@@ -28,6 +28,7 @@
     "discovery:auto-approve": "node --env-file-if-exists=.env dist/scripts/autoApprove.js",
     "discovery:automation": "node --env-file-if-exists=.env dist/scripts/discoveryAutomation.js",
     "discovery:calibrate": "node --env-file-if-exists=.env dist/scripts/readinessCalibration.js",
+    "discovery:replenish": "node --env-file-if-exists=.env dist/scripts/replenish.js",
     "outreach:draft": "node --env-file-if-exists=.env dist/scripts/draftOutreach.js",
     "outreach:prepare": "node --env-file-if-exists=.env dist/scripts/prepareOutreach.js",
     "outreach:send": "node --env-file-if-exists=.env dist/scripts/sendOutreach.js",
