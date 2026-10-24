@@ -60,7 +60,7 @@ describe("Acquisition Command Center (read-only pages)", { skip: skipReason }, (
   test("campaigns use stored version/counts without creating a cohort engine", async () => {
     const p = await prospect(); await createOutreachDraft(db, p.id, OPTS);
     const html = (await get("/admin/campaigns")).body;
-    assert.match(html, /outreach-intro-t4/); assert.match(html, /intro@t4/); assert.match(html, /cohort management are not implemented/);
+    assert.match(html, /outreach-intro-t5/); assert.match(html, /intro@t5/); assert.match(html, /cohort management are not implemented/);
     assert.equal(await db.outreachControlChange.count(), 0); assert.equal(await db.outreach.count({ where: { status: "queued" } }), 0);
   });
   test("activity does not expose free-text invitation tokens", async () => {

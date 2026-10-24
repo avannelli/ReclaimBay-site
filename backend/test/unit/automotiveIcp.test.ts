@@ -321,18 +321,18 @@ describe("human approval and outreach safeguards are unchanged", () => {
   });
   test("collision/body shops get exactly the approved opening, as before", () => {
     const body = composeIntro(intro({ businessName: "Harbor Collision", signals: [{ key: "collision_repair_services", value: "yes" }], evidence: [{ signalKey: "collision_repair_services", sourceUrl: SITE + "services", excerpt: "We offer collision repair." }] })).body;
-    assert.match(body, /I came across Harbor Collision and noticed you offer collision repair\./);
+    assert.match(body, /I came across Harbor Collision and saw you offer collision repair, so I wanted/);
   });
   test("a verified mechanic is never told it does collision and body repair", () => {
     const m = composeIntro(intro({ signals: [{ key: FIT_CRITERION, value: "yes" }, { key: "collision_repair_services", value: "no" }], evidence: [{ signalKey: FIT_CRITERION, sourceUrl: SITE + "services", excerpt: "Names brakes: We offer brake repair for cars." }] }));
-    assert.match(m.body, /I came across Joe's Garage and noticed you handle automotive repair\./);
+    assert.match(m.body, /I came across Joe's Garage and saw you handle automotive repair, so I wanted/);
     assert.doesNotMatch(m.body, /collision|body repair/);
     assert.deepEqual(m.evidence.map((f) => f.key), ["business_name", "recipient", FIT_CRITERION]);
-    assert.equal(m.template, "intro@t4");
+    assert.equal(m.template, "intro@t5");
   });
   test("repair evidence that fails the stored-excerpt check is never cited, and the opening still never claims collision", () => {
     const m = composeIntro(intro({ signals: [{ key: FIT_CRITERION, value: "yes" }], evidence: [{ signalKey: FIT_CRITERION, sourceUrl: "https://elsewhere.example.org/", excerpt: "We offer brake repair for cars." }] }));
     assert.equal(m.evidence.filter((f) => f.signalKey).length, 0);
-    assert.match(m.body, /noticed you handle automotive repair\./);
+    assert.match(m.body, /saw you handle automotive repair, so I wanted/);
   });
 });

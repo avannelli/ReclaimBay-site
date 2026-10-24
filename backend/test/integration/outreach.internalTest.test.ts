@@ -145,7 +145,7 @@ describe("internal outreach test (service)", { skip: skipReason }, () => {
     assert.deepEqual(facts.map((f) => [f.key, f.sourceUrl]), [["internal_test", CONTACT_PAGE]]);
     assert.match(facts[0]!.statement, /^This is ReclaimBay's internal outreach test, not a business\. Its recipient, reclaimbay\.test@gmail\.com, is a mailbox ReclaimBay controls, documented at https:\/\/reclaimbay\.com\/internal-test-contact\.$/);
     assert.doesNotMatch(JSON.stringify(facts), /publishes|business email|The business is called/);
-    assert.equal(outreach.subject, `A quick question about ${NAME}`);
+    assert.equal(outreach.subject, `A free declined-work check for ${NAME}`);
     assert.ok(outreach.body.includes(`If you'd rather not receive emails from ReclaimBay, reply "no thanks".`));
 
     // A business keeps its facts exactly.

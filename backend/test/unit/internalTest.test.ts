@@ -169,7 +169,7 @@ describe("internal test composition: what it is, never a business claim", () => 
     const business = composeIntro(input({ internalTest: false }));
     const internal = composeIntro(input());
     assert.equal(internal.body, business.body, "the copy under test is exactly what a business gets");
-    assert.equal(internal.subject, "A quick question about ReclaimBay Internal Test");
+    assert.equal(internal.subject, "A free declined-work check for ReclaimBay Internal Test");
     assert.deepEqual(business.evidence.map((f) => f.key), ["business_name", "recipient"], "a business keeps its facts");
   });
 });

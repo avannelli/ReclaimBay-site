@@ -126,7 +126,7 @@ describe("autonomous campaigns: membership, launch and emergency stop", { skip: 
       const r = await prepareCampaignOutreach(db, campaign.id, prep);
       assert.equal(r.committed.length, 2); assert.equal(r.stoppedBecause, null);
       for (const m of await members(campaign.id)) {
-        assert.equal(m.outreach.status, "queued"); assert.equal(m.outreach.template, "intro@t4"); assert.equal(m.messageHash, approvedMessageHash(m.outreach));
+        assert.equal(m.outreach.status, "queued"); assert.equal(m.outreach.template, "intro@t5"); assert.equal(m.messageHash, approvedMessageHash(m.outreach));
         assert.ok(await db.invitation.findUnique({ where: { outreachId: m.outreachId } }), "its invitation");
       }
       for (const p of prospects) assert.equal((await db.prospect.findUniqueOrThrow({ where: { id: p.id } })).status, "ready_to_contact");
@@ -158,7 +158,7 @@ describe("autonomous campaigns: membership, launch and emergency stop", { skip: 
       await eligible();
       const { campaign: live } = await launched(0);
       const outsider = await db.prospect.create({ data: { referralCode: "outsider", businessName: "Outsider", city: "Ventura", state: "CA" } });
-      await db.outreach.create({ data: { prospectId: outsider.id, kind: "initial", template: "intro@t4", campaign: live.attributionCampaign, subject: "s", body: "b", evidence: [], generatedAt: new Date(), recipientEmail: "outsider@example.com", recipientSourceUrl: "https://o.example.com", status: "queued", queuedAt: new Date() } });
+      await db.outreach.create({ data: { prospectId: outsider.id, kind: "initial", template: "intro@t5", campaign: live.attributionCampaign, subject: "s", body: "b", evidence: [], generatedAt: new Date(), recipientEmail: "outsider@example.com", recipientSourceUrl: "https://o.example.com", status: "queued", queuedAt: new Date() } });
       assert.equal((await dispatch(sender)).sent.length, 0); assert.equal(sender.calls.length, 0);
       await assert.rejects(commitCampaignMessage(db, live.id, (await db.outreach.findFirstOrThrow({ where: { prospectId: outsider.id } })).id, CFG), /not created by this campaign/);
     });

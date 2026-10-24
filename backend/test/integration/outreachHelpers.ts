@@ -48,7 +48,7 @@ export async function approveFixtureSelection(db: Db, messageIds?: string[]) {
   await db.$transaction(async tx => {
     await lockSendGate(tx);
     const rows = await tx.outreach.findMany({ where: { status: "queued", ...(messageIds ? { id: { in: messageIds } } : {}) } });
-    const campaign = await tx.outreachCampaign.create({ data: { name: "Reviewed test selection", attributionCampaign: rows[0]?.campaign ?? "outreach-intro-t4",
+    const campaign = await tx.outreachCampaign.create({ data: { name: "Reviewed test selection", attributionCampaign: rows[0]?.campaign ?? "outreach-intro-t5",
       messages: { create: rows.map(o => ({ outreachId: o.id, messageHash: approvedMessageHash(o) })) } } });
     await appendSendingControlInTx(tx, { activeCampaignId: campaign.id }, "Test fixture approval", new Date());
   });

@@ -97,7 +97,7 @@ describe("outreach preparation and queueing", { skip: skipReason }, () => {
     const o = await db.outreach.findUniqueOrThrow({ where: { id: first.id } });
     assert.equal(o.status, "draft");
     assert.equal(o.kind, "initial");
-    assert.match(o.body, /I came across Harbor Lane Auto and noticed you offer collision repair\./, "the one evidenced collision observation");
+    assert.match(o.body, /I came across Harbor Lane Auto and saw you offer collision repair, so I wanted/, "the one evidenced collision observation");
     assert.ok(JSON.stringify(o.evidence).includes("collision_repair_services"), "the evidence it relies on is stored with it");
     await draftedInvitation(db, o); // the invitation exists, and the link carries its token
     noSend();
@@ -116,9 +116,9 @@ describe("outreach preparation and queueing", { skip: skipReason }, () => {
     assert.match(html, /DRAFT — NOT SENT<\/h2>/);
     assert.match(html, /<dt>Business<\/dt><dd><a href="\/admin\/prospects\/[0-9a-f-]{36}">Review Auto<\/a>/);
     assert.match(html, /<dt>Qualification<\/dt><dd>[\s\S]*?Meets criteria/);
-    assert.match(html, /<dt>Template<\/dt><dd><code>intro@t4<\/code>/);
-    assert.match(html, /<dt>Campaign<\/dt><dd><code>outreach-intro-t4<\/code>/);
-    assert.match(html, /A quick question about Review Auto/);
+    assert.match(html, /<dt>Template<\/dt><dd><code>intro@t5<\/code>/);
+    assert.match(html, /<dt>Campaign<\/dt><dd><code>outreach-intro-t5<\/code>/);
+    assert.match(html, /A free declined-work check for Review Auto/);
     assert.match(html, /Evidence used[\s\S]*?We offer automotive collision repair\./);
     assert.match(html, /<h2 id="invitation-h">Invitation<\/h2>[\s\S]*?Not opened/);
     assert.match(html, /<a href="\/admin\/outreach\/messages\?status=draft">Messages<\/a>/, "back to the drafts in the Operations Center");

@@ -55,7 +55,7 @@ describe("autonomous campaigns: authorization and prospect creation", { skip: sk
     test("records bounds and provenance; changes no sending control, message or draft", async () => {
       const before = await downstream();
       const c = await authorize({ prospectCap: 3, messageCap: 5 });
-      assert.deepEqual([c.mode, c.prospectCap, c.messageCap, c.commercialMinimum, c.authorizedVia, c.attributionCampaign], ["autonomous", 3, 5, "medium", "service", "outreach-intro-t4"]);
+      assert.deepEqual([c.mode, c.prospectCap, c.messageCap, c.commercialMinimum, c.authorizedVia, c.attributionCampaign], ["autonomous", 3, 5, "medium", "service", "outreach-intro-t5"]);
       assert.equal(c.authorizedReason, "Bounded autonomous test run."); assert.ok(c.authorizedAt); assert.equal(c.stoppedAt, null);
       assert.deepEqual(c.policyVersions, { research: RESEARCH_VERSION, automation: "discovery@d2", commercial: "reclaimbay.commercial@v1", acquisition: "reclaimbay.acquisition@v1" });
       assert.deepEqual(await downstream(), before);
@@ -73,7 +73,7 @@ describe("autonomous campaigns: authorization and prospect creation", { skip: sk
       assert.equal(await db.outreachCampaign.count({ where: { mode: "autonomous", stoppedAt: null } }), 1);
     });
     test("the database itself refuses an autonomous campaign without bounds or a stop without a reason", async () => {
-      await assert.rejects(db.outreachCampaign.create({ data: { name: "Raw", attributionCampaign: "outreach-intro-t4", mode: "autonomous" } }), /autonomous_bounds_check|check constraint/i);
+      await assert.rejects(db.outreachCampaign.create({ data: { name: "Raw", attributionCampaign: "outreach-intro-t5", mode: "autonomous" } }), /autonomous_bounds_check|check constraint/i);
       const c = await authorize();
       await assert.rejects(db.outreachCampaign.update({ where: { id: c.id }, data: { stoppedAt: NOW } }), /stop_reason_check|check constraint/i);
     });
@@ -223,7 +223,7 @@ describe("autonomous campaigns: authorization and prospect creation", { skip: sk
       const c = await eligible();
       await assert.rejects(approveCandidate(db, c.id, { automatic: true }), /Automatic prospect creation is disabled/);
       await assert.rejects(createProspectAutonomously(db, c.id, "00000000-0000-4000-8000-000000000000", NOW), /Campaign not found/);
-      const selected = await db.outreachCampaign.create({ data: { name: "Selected", attributionCampaign: "outreach-intro-t4" } });
+      const selected = await db.outreachCampaign.create({ data: { name: "Selected", attributionCampaign: "outreach-intro-t5" } });
       await refused(c.id, selected.id, /does not authorize automatic prospect creation/);
     });
     test("a person's approval creates no campaign record and keeps its own provenance", async () => {

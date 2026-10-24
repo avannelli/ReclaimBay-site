@@ -35,7 +35,7 @@ export const AUTONOMOUS_COMMERCIAL_MINIMUM: CommercialMinimum = "medium";
 export const AUTONOMOUS_BOUNDS = { prospectCap: { min: 1, max: 100 }, messageCap: { min: 1, max: 250 }, maxDays: 30 } as const;
 export const AUTONOMOUS_REASON_MAX = 500;
 /** The first message's attribution campaign (campaignOf(INTRO_TEMPLATE); a unit test keeps them equal). Discovery never imports outreach drafting. */
-export const AUTONOMOUS_ATTRIBUTION = "outreach-intro-t4";
+export const AUTONOMOUS_ATTRIBUTION = "outreach-intro-t5";
 const AUTHORIZATION_LOCK = "discovery-autonomous-campaign-authorization";
 
 export const policyVersions = () => ({ research: RESEARCH_VERSION, automation: AUTOMATION_RULES, commercial: COMMERCIAL_RULES, acquisition: ACQUISITION_RULES });

@@ -88,17 +88,17 @@ describe("outreach (service)", { skip: skipReason }, () => {
     assert.equal(o.prospectId, p.id);
     assert.equal(o.status, "draft");
     assert.equal(o.kind, "initial");
-    assert.equal(o.template, "intro@t4");
-    assert.equal(o.campaign, "outreach-intro-t4");
+    assert.equal(o.template, "intro@t5");
+    assert.equal(o.campaign, "outreach-intro-t5");
     assert.equal(o.recipientEmail, EMAIL);
     assert.equal(o.recipientSourceUrl, `${WEBSITE}/contact`);
-    assert.equal(o.subject, "A quick question about Smith Auto");
+    assert.equal(o.subject, "A free declined-work check for Smith Auto");
     // Its one link is its own invitation, made with it: the stored hash is the hash of the token in the link.
     const token = /https:\/\/reclaimbay\.com\/invite#([A-Za-z0-9_-]{43})\n/.exec(o.body)?.[1];
     assert.ok(token, "the message links its invitation");
     const invitation = await db.invitation.findUniqueOrThrow({ where: { outreachId: o.id } });
     assert.equal(invitation.tokenHash, hashInvitationToken(token));
-    assert.equal(invitation.campaign, "outreach-intro-t4");
+    assert.equal(invitation.campaign, "outreach-intro-t5");
     assert.ok(!o.body.includes("?ref="), "no referral link alongside it");
     assert.equal(o.openForProspectId, p.id);
     assert.ok(o.generatedAt instanceof Date);
@@ -181,7 +181,7 @@ describe("outreach (service)", { skip: skipReason }, () => {
     assert.equal(follow.created, true);
     assert.equal(follow.outreach.kind, "follow_up");
     assert.equal(follow.outreach.followUpOfId, first.id);
-    assert.equal(follow.outreach.subject, "Re: A quick question about Smith Auto");
+    assert.equal(follow.outreach.subject, "Re: A free declined-work check for Smith Auto");
     const dup = await createOutreachDraft(db, p.id, OPTS);
     assert.equal(dup.created, false, "the open follow-up is returned, not a second message");
     assert.equal(dup.outreach.id, follow.outreach.id);
@@ -275,7 +275,7 @@ describe("outreach (service)", { skip: skipReason }, () => {
     await queueOutreach(db, outreach.id, CFG);
     const history = await db.prospectStatusChange.findMany({ where: { prospectId: p.id }, orderBy: { createdAt: "asc" } });
     assert.deepEqual(history.map((h) => h.toStatus), ["new", "qualified", "ready_to_contact"]);
-    assert.match(history.at(-1)!.reason!, /Outreach queued \(intro@t4\)/);
+    assert.match(history.at(-1)!.reason!, /Outreach queued \(intro@t5\)/);
     assert.equal((await db.outreach.findUniqueOrThrow({ where: { id: outreach.id } })).status, "queued");
   });
 
@@ -377,11 +377,11 @@ describe("outreach (admin HTTP)", { skip: skipReason }, () => {
 
     const view = (await get(`/admin/outreach/${o.id}?done=drafted`)).body;
     assert.match(view, /Draft prepared from the stored evidence\. Nothing was sent\./);
-    assert.match(view, /A quick question about Smith Auto/);
-    assert.match(view, /I came across Smith Auto and noticed you offer collision repair\./);
+    assert.match(view, /A free declined-work check for Smith Auto/);
+    assert.match(view, /I came across Smith Auto and saw you offer collision repair, so I wanted/);
     assert.match(view, /Evidence used/);
     assert.match(view, /We offer automotive collision repair\./);
-    assert.match(view, /<code>intro@t4<\/code>/);
+    assert.match(view, /<code>intro@t5<\/code>/);
     assert.match(view, /Discard/);
     assert.doesNotMatch(view, /Record a reply/, "a draft has no reply to record");
 

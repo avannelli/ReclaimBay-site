@@ -24,7 +24,7 @@
 import { collisionEvidenceErrors, collisionFit } from "../research/collisionFit.js";
 import { repairEvidenceErrors } from "../research/repairFit.js";
 
-export const INTRO_TEMPLATE = "intro@t4";
+export const INTRO_TEMPLATE = "intro@t5";
 /** A follow-up that reuses its first message's invitation link. */
 export const FOLLOW_UP_TEMPLATE = "follow-up@t2";
 /** A follow-up to a first message without an invitation (made before invitations existed): the referral link. */
@@ -223,20 +223,22 @@ export function composeIntro(input: ComposeInput): ComposedMessage {
   const verified = collisionObservation(input) ?? repairObservation(input);
   if (verified?.fact) used.push(verified.fact);
 
+  // Every product statement below describes the live scanner: a free browser-only preview and an optional
+  // one-time $49 call list. No customer results, conversion rates or recovered revenue are claimed.
+  const firstName = input.sender.name?.trim().split(/\s+/)[0];
   const body = [
     `Hi ${name} team,`,
     "",
-    `I came across ${name} and noticed ${verified?.observation ?? "you handle collision and body repair"}.`,
+    `${firstName ? `I'm ${firstName}, and I build ReclaimBay.` : "We build ReclaimBay."} I came across ${name} and saw ${verified?.observation ?? "you handle collision and body repair"}, so I wanted to share a free tool for shops.`,
     "",
-    "One thing we've been looking at is how much repair work can get left behind after an estimate is written — a customer declines it, puts it off, or the work simply never makes it back onto the schedule.",
+    "If your shop software can export the estimates customers declined or put off, ReclaimBay reads that CSV or Excel file in your browser and shows the total declined value, how much was declined in the last 90 days, and how many follow-ups to call first. It's free, there's no account, and the file isn't uploaded to us.",
     "",
-    "That's what we built ReclaimBay around. It looks at the repair information a shop already has and helps identify past opportunities that may still be worth recovering.",
+    "If the preview is useful, an optional one-time $49 unlocks the complete follow-up call list: each customer and vehicle with its declined jobs and the contact details from your export, ranked by who to call first, plus a printable call sheet. No subscription.",
     "",
-    "See what your shop may be leaving behind →",
-    "",
+    "You can try it with your own export, or open the built-in example first:",
     input.link,
     "",
-    "It takes just a few minutes to take a look, and there's nothing to schedule.",
+    "It shows reported declined value, not a promise of recovered revenue; you decide which calls are worth making.",
     "",
     "Best,",
     input.sender.name ? `${input.sender.name}\nReclaimBay` : "The ReclaimBay team",
@@ -248,7 +250,7 @@ export function composeIntro(input: ComposeInput): ComposedMessage {
   return {
     template: INTRO_TEMPLATE,
     campaign: campaignOf(INTRO_TEMPLATE),
-    subject: `A quick question about ${name}`,
+    subject: `A free declined-work check for ${name}`,
     body,
     evidence: used,
   };
